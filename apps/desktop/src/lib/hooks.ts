@@ -3,10 +3,16 @@
  * They never change what the app does for a user who does not type them, and they are ignored
  * inside the Tauri window, where nobody can type a URL anyway.
  */
-export type HookView = 'start' | 'scanning' | 'overview' | 'explorer' | 'cleanup' | 'settings';
+export type HookView = 'start' | 'scanning' | 'overview' | 'explorer' | 'cleanup' | 'advisor' | 'settings';
+
+/** Where the advisor mock starts: not downloaded, a download held at 40%, a download that failed at 40%, on disk, or loaded into RAM. */
+export type HookAdvisor = 'none' | 'downloading' | 'failed' | 'disk' | 'loaded';
 
 export interface TestHooks {
-  /** Jump to a view; `overview`, `scanning`, `explorer` and `cleanup` start a scan on the mock first. */
+  /**
+   * Jump to a view; `overview`, `scanning`, `explorer` and `cleanup` start a scan on the mock first, and so does
+   * `advisor` with `labels` or `root` (without them it opens with no scan).
+   */
   view: HookView | null;
   /** Start with the sidebar collapsed (not saved). */
   mini: boolean;
@@ -36,9 +42,38 @@ export interface TestHooks {
   warn: boolean;
   /** With `view=scanning`: show the Cleanup view's Scan step instead of the plain progress screen. */
   cleanup: boolean;
+  /** The state the advisor mock starts in; the model is also switched on in the settings (not saved). */
+  advisor: HookAdvisor | null;
+  /** With `view=advisor`: scan, and let the mock model label the folders before the page opens. */
+  labels: boolean;
+  /**
+   * With `view=advisor` and a scan: ask this free question once the page is ready (`ask=biggest folders`). On the demo
+   * disk `ask=can I delete the src folder?` is asked back (four projects have a `src`), to look at the choices.
+   */
+  ask: string | null;
+  /**
+   * With `view=advisor` and a scan: ask this many questions, one after another and each answered, before the page
+   * opens (`chat=12`), to look at a long conversation.
+   */
+  chat: number | null;
+  /**
+   * The mock starts with rules of the user's own (`rules`, six demo rules), or with a rules file that cannot be used
+   * (`rules=broken`).
+   */
+  rules: 'seed' | 'broken' | null;
 }
 
-const VIEWS: readonly string[] = ['start', 'scanning', 'overview', 'explorer', 'cleanup', 'settings'];
+const VIEWS: readonly string[] = [
+  'start',
+  'scanning',
+  'overview',
+  'explorer',
+  'cleanup',
+  'advisor',
+  'settings',
+];
+
+const ADVISOR_STATES: readonly string[] = ['none', 'downloading', 'failed', 'disk', 'loaded'];
 
 const NO_HOOKS: TestHooks = {
   view: null,
@@ -56,6 +91,11 @@ const NO_HOOKS: TestHooks = {
   dominant: false,
   warn: false,
   cleanup: false,
+  advisor: null,
+  labels: false,
+  ask: null,
+  chat: null,
+  rules: null,
 };
 
 function isInsideTauri(): boolean {
@@ -86,6 +126,7 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
   const params = new URLSearchParams(search);
   const view = params.get('view');
   const ex = params.get('ex');
+  const advisor = params.get('advisor');
 
   return {
     view: view !== null && VIEWS.includes(view) ? (view as HookView) : null,
@@ -103,6 +144,11 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
     dominant: params.has('dominant'),
     warn: params.has('warn'),
     cleanup: params.has('cleanup'),
+    advisor: advisor !== null && ADVISOR_STATES.includes(advisor) ? (advisor as HookAdvisor) : null,
+    labels: params.has('labels'),
+    ask: params.get('ask')?.trim() || null,
+    chat: wholeNumber(params.get('chat')),
+    rules: params.get('rules') === 'broken' ? 'broken' : params.has('rules') ? 'seed' : null,
   };
 }
 

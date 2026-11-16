@@ -19,7 +19,7 @@
 
   <p class="about">
     <b>Platter</b> is free software under the GNU General Public License, version 3 or later. Everything runs on
-    this machine. The only network calls are the update check and the optional model download.
+    this machine. The only network call is the optional model download.
   </p>
   <p class="links">
     <!-- Buttons, not links: target="_blank" does nothing inside the Tauri window, so the backend opens the page. -->

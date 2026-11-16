@@ -2,7 +2,7 @@ import type { NodeId, ScanId } from '../api/types';
 import { scan } from './scan.svelte';
 
 /** The item chosen in the sidebar. What is shown for it also depends on the scan (see navigation.ts). */
-export type Page = 'scan' | 'overview' | 'explorer' | 'cleanup' | 'settings';
+export type Page = 'scan' | 'overview' | 'explorer' | 'cleanup' | 'advisor' | 'settings';
 export type ToastKind = 'ok' | 'info' | 'error';
 
 export interface Toast {

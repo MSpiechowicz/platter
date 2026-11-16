@@ -1,6 +1,7 @@
 import { hooks } from '../hooks';
 import type { Api } from './client';
 import { createMockApi, MOCK_VOLUMES_WITH_SUBVOLUMES } from './mock';
+import { DEMO_USER_RULES } from './mock-user-rules';
 
 /** `tauri.ts` is written by the desktop backend package; until it exists the glob is empty. */
 const tauriModules = import.meta.glob<{ createTauriApi: () => Api }>('./tauri.ts');
@@ -28,6 +29,24 @@ function lazyApi(load: () => Promise<Api>): Api {
     startCleanup: async (plan, onEvent) => (await impl()).startCleanup(plan, onEvent),
     cancelCleanup: async (cleanup) => (await impl()).cancelCleanup(cleanup),
     undoCleanup: async (cleanup) => (await impl()).undoCleanup(cleanup),
+    advisorStatus: async () => (await impl()).advisorStatus(),
+    watchAdvisor: async (onEvent) => (await impl()).watchAdvisor(onEvent),
+    configureAdvisor: async (options) => (await impl()).configureAdvisor(options),
+    clearQuestionLog: async () => (await impl()).clearQuestionLog(),
+    startModelDownload: async () => (await impl()).startModelDownload(),
+    cancelModelDownload: async () => (await impl()).cancelModelDownload(),
+    loadModel: async () => (await impl()).loadModel(),
+    unloadModel: async () => (await impl()).unloadModel(),
+    labelFolders: async (scan) => (await impl()).labelFolders(scan),
+    cancelLabelling: async () => (await impl()).cancelLabelling(),
+    getAdvisorLabels: async (scan) => (await impl()).getAdvisorLabels(scan),
+    askAdvisor: async (scan, node, units) => (await impl()).askAdvisor(scan, node, units),
+    askScan: async (scan, question, units, pick) => (await impl()).askScan(scan, question, units, pick),
+    findFolders: async (scan, query, limit) => (await impl()).findFolders(scan, query, limit),
+    listUserRules: async () => (await impl()).listUserRules(),
+    addUserRule: async (scan, node, verdict) => (await impl()).addUserRule(scan, node, verdict),
+    removeUserRule: async (id) => (await impl()).removeUserRule(id),
+    resetUserRules: async () => (await impl()).resetUserRules(),
     openInFileManager: async (scan, node) => (await impl()).openInFileManager(scan, node),
     openExternal: async (link) => (await impl()).openExternal(link),
   };
@@ -51,6 +70,12 @@ function selectApi(): Api {
     holdAt: hooks.view === 'scanning' ? 0.62 : undefined,
     dominant: hooks.dominant,
     warnings: hooks.warn ? ['mountTableUnavailable'] : undefined,
+    userRules:
+      hooks.rules === 'broken'
+        ? { broken: true }
+        : hooks.rules === 'seed'
+          ? { rules: DEMO_USER_RULES }
+          : undefined,
   });
 }
 

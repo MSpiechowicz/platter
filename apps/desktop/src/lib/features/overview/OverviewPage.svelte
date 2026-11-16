@@ -8,6 +8,7 @@
   import Notice from '../../components/ui/Notice.svelte';
   import Pill from '../../components/ui/Pill.svelte';
   import { describeError } from '../../api/client';
+  import { advisor } from '../../state/advisor.svelte';
   import { cleanup } from '../../state/cleanup.svelte';
   import { resource } from '../../state/resource.svelte';
   import { scan, type ReadyScan } from '../../state/scan.svelte';
@@ -43,8 +44,13 @@
   // Suggestions arrive on their own, so a slow or failed answer never holds back the rest of the page.
   let attempt = $state(0);
 
+  // The labels of the local model, or switching it on or off, change the suggestions: they are fetched again, but
+  // not while a cleanup runs.
+  const stamp = $derived(cleanup.stampFor(advisor.suggestionsVersion));
+
   const suggestions = resource(() => {
     void attempt;
+    void stamp;
 
     return api.getSuggestions(ready.scanId);
   });

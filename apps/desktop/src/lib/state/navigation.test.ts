@@ -71,6 +71,17 @@ describe('resolveScreen', () => {
     expect(Object.values(screenIds('settings'))).toEqual(Array(5).fill('settings'));
   });
 
+  it('shows the Advisor view only for a ready scan, progress while scanning, else the start screen', () => {
+    expect(screenIds('advisor')).toEqual({
+      idle: 'start',
+      scanning: 'progress',
+      ready: 'advisor',
+      cancelled: 'start',
+      failed: 'start',
+    });
+    expect(resolveScreen(ready, 'advisor')).toEqual({ id: 'advisor', scan: ready });
+  });
+
   it('hands the scan to the screens that are about it', () => {
     expect(resolveScreen(running, 'scan')).toEqual({ id: 'progress', scan: running });
     expect(resolveScreen(ready, 'explorer')).toEqual({ id: 'explorer', scan: ready });
@@ -89,15 +100,18 @@ describe('highlightedPage', () => {
     expect(highlightedPage(resolveScreen(ready, 'cleanup'))).toBe('cleanup');
     expect(highlightedPage(resolveScreen(running, 'cleanup'))).toBe('cleanup');
     expect(highlightedPage(resolveScreen(running, 'settings'))).toBe('settings');
+    expect(highlightedPage(resolveScreen(running, 'advisor'))).toBe('scan');
+    expect(highlightedPage(resolveScreen(ready, 'advisor'))).toBe('advisor');
   });
 });
 
 describe('isPageAvailable', () => {
-  it('opens Overview, Explorer and Cleanup only for a ready scan', () => {
+  it('opens Overview, Explorer, Cleanup and Advisor only for a ready scan', () => {
     for (const [name, state] of Object.entries(states)) {
       expect(isPageAvailable('overview', state.status), name).toBe(name === 'ready');
       expect(isPageAvailable('explorer', state.status), name).toBe(name === 'ready');
       expect(isPageAvailable('cleanup', state.status), name).toBe(name === 'ready');
+      expect(isPageAvailable('advisor', state.status), name).toBe(name === 'ready');
     }
   });
 
@@ -110,11 +124,12 @@ describe('isPageAvailable', () => {
 });
 
 describe('pageAfterScan', () => {
-  it('goes to Overview, but leaves Settings and Cleanup alone', () => {
+  it('goes to Overview, but leaves Settings, Advisor and Cleanup alone', () => {
     expect(pageAfterScan('scan')).toBe('overview');
     expect(pageAfterScan('overview')).toBe('overview');
     expect(pageAfterScan('explorer')).toBe('overview');
     expect(pageAfterScan('settings')).toBe('settings');
     expect(pageAfterScan('cleanup')).toBe('cleanup');
+    expect(pageAfterScan('advisor')).toBe('advisor');
   });
 });

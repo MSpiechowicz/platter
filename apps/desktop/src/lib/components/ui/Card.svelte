@@ -8,23 +8,30 @@
     hint?: string;
     /** Take the spare height of a flex column. */
     grow?: boolean;
+    /** Buttons on the right of the title; the header keeps the height it has without them. */
+    actions?: Snippet;
     children: Snippet;
   }
 
-  let { title, hint, grow = false, class: className = '', children, ...rest }: Props = $props();
+  let { title, hint, grow = false, actions, class: className = '', children, ...rest }: Props = $props();
 
   const headingId = $props.id();
 </script>
 
 <section class="card {className}" class:grow aria-labelledby={title ? headingId : undefined} {...rest}>
   {#if title}
-    <h3 id={headingId}>
-      {title}
-      {#if hint}
-        <span class="sp"></span>
-        <span class="hint">{hint}</span>
+    <div class="head">
+      <h3 id={headingId}>
+        {title}
+        {#if hint}
+          <span class="sp"></span>
+          <span class="hint">{hint}</span>
+        {/if}
+      </h3>
+      {#if actions}
+        <div class="actions">{@render actions()}</div>
       {/if}
-    </h3>
+    </div>
   {/if}
   {@render children()}
 </section>
@@ -51,16 +58,31 @@
     z-index: 40;
   }
 
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
   h3 {
+    flex: 1;
+    min-width: 0;
     font-size: 11px;
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--muted);
     font-weight: 600;
-    margin-bottom: 12px;
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  /* A button is taller than the title: it reaches into the card's padding, so every card's title sits at the same place. */
+  .actions {
+    display: flex;
+    gap: 8px;
+    margin-block: -10px;
   }
 
   .sp {

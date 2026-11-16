@@ -1,4 +1,5 @@
 import type { MockNode, MockTree } from './mock-tree';
+import type { Category } from './types';
 
 // A hand-made tree for tests, written like the backend's `FakeFs`: a list of files with sizes. Directories have no
 // size of their own unless `own` says so, ids are breadth-first in the order paths were given, and children are
@@ -22,6 +23,17 @@ export interface Sketch {
   own?: Record<string, number>;
   /** Directories that could not be read. */
   unreadable?: string[];
+  /** Modification times (unix seconds) of folders, for the ones that are not from the day before the scan. */
+  mtimes?: Record<string, number>;
+  /** The category of a folder or a file, for the ones that are not `other`. */
+  categories?: Record<string, Category>;
+  /** What the machine calls its personal folders where that is not the English name (`{ Downloads: 'Pobrane' }`). */
+  userDirs?: Record<string, string>;
+  /**
+   * The folder that was scanned, when it is not `/`: only what lies below it is in the tree, and every path of the
+   * sketch is still written in full (`/home/u/a` with `root: '/home/u'` is `a`).
+   */
+  root?: string;
 }
 
 const NOW = 1_750_000_000;
@@ -45,7 +57,40 @@ function entryAt(root: Entry, path: string, kind: Entry['kind']): Entry {
   return current;
 }
 
-export function sketchTree(sketch: Sketch): MockTree {
+/** The sketch of a scan that started at `root`: what lies below it, written from there. */
+function scannedFrom(sketch: Sketch, root: string): Sketch {
+  const relative = (path: string): string | null =>
+    path === root ? '/' : path.startsWith(`${root}/`) ? path.slice(root.length) : null;
+  const record = <T>(entries: Record<string, T> | undefined): Record<string, T> | undefined =>
+    entries &&
+    Object.fromEntries(
+      Object.entries(entries).flatMap(([path, value]) => {
+        const inner = relative(path);
+
+        return inner === null ? [] : [[inner, value]];
+      }),
+    );
+  const list = (paths: string[] | undefined): string[] | undefined =>
+    paths?.flatMap((path) => {
+      const inner = relative(path);
+
+      return inner === null ? [] : [inner];
+    });
+
+  return {
+    ...sketch,
+    files: record(sketch.files) ?? {},
+    dirs: list(sketch.dirs),
+    mounts: list(sketch.mounts),
+    own: record(sketch.own),
+    unreadable: list(sketch.unreadable),
+    mtimes: record(sketch.mtimes),
+    categories: record(sketch.categories),
+  };
+}
+
+export function sketchTree(given: Sketch): MockTree {
+  const sketch = given.root === undefined || given.root === '/' ? given : scannedFrom(given, given.root);
   const root: Entry = { name: '/', kind: 'dir', size: 0, kids: new Map() };
 
   for (const [path, size] of Object.entries(sketch.files)) {
@@ -116,7 +161,20 @@ export function sketchTree(sketch: Sketch): MockTree {
     }
   }
 
-  return { nodes, now: NOW, rootPath: '/' };
+  for (const [path, mtime] of Object.entries(sketch.mtimes ?? {})) {
+    nodeAt({ nodes, now: NOW, rootPath: '/' }, path).mtime = mtime;
+  }
+
+  for (const [path, category] of Object.entries(sketch.categories ?? {})) {
+    nodeAt({ nodes, now: NOW, rootPath: '/' }, path).category = category;
+  }
+
+  return {
+    nodes,
+    now: NOW,
+    rootPath: given.root ?? '/',
+    ...(sketch.userDirs ? { userDirs: sketch.userDirs } : {}),
+  };
 }
 
 /** The value, or a failed test when there is none. */

@@ -813,7 +813,7 @@ describe('the rows of a selected "smaller items" tile', () => {
 });
 
 describe('the details of a chain tile', () => {
-  it('describe its last folder: the same one "Open folder" opens and "Show in file manager" shows', async () => {
+  it('describe its last folder: the same one "Go into folder" opens and "Show in file manager" shows', async () => {
     const mock = await scanMock('/real');
     const openInFileManager = vi.fn().mockResolvedValue(undefined);
     const store = open(mock, { ...mock.api, openInFileManager });

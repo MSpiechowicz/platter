@@ -83,7 +83,7 @@
   const waiting = delayed(() => store.frame.loading);
   const reading = $derived(`Reading ${store.opening ?? store.node?.name ?? 'the folder'}…`);
 
-  // What the details card is about: the selected child (a chain tile: its last folder, the one "Open folder" opens),
+  // What the details card is about: the selected child (a chain tile: its last folder, the one "Go into folder" opens),
   // or else the open folder. The path, the numbers and both actions all refer to this one folder.
   const detail = $derived(store.selectedTarget ?? store.node);
   const detailPath = $derived.by(() => {

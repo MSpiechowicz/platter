@@ -114,6 +114,72 @@ describe('selection', () => {
   });
 });
 
+describe('suggestions fetched again for the same scan', () => {
+  it('keeps the rows the user ticked while they still exist, and drops the ones that are gone', async () => {
+    const { store, data, scanId } = await setup();
+    const gone = ids(data, 'safe')[0] as string;
+
+    store.select('all');
+
+    const rest = data.suggestions.filter((item) => item.id !== gone);
+
+    store.load(scanId, { ...data, suggestions: rest });
+
+    expect(store.selected.has(gone)).toBe(false);
+    expect(sorted(store.selected)).toEqual(
+      sorted(rest.filter((item) => item.verdict !== 'keep').map((item) => item.id)),
+    );
+  });
+
+  it('does not tick a review row that appears, and ticks a safe one that appears', async () => {
+    const { store, data, scanId } = await setup();
+    const row = (id: string, verdict: 'safe' | 'review') => ({
+      ...(data.suggestions[0] as SuggestionsDto['suggestions'][number]),
+      id,
+      verdict,
+    });
+
+    store.select('none');
+    store.load(scanId, {
+      ...data,
+      suggestions: [...data.suggestions, row('advisor', 'review'), row('mine', 'safe')],
+    });
+
+    expect(sorted(store.selected)).toEqual(['mine']);
+  });
+
+  it('keeps a row the user unticked unticked, and ticks no review row, when the same scan is fetched again', async () => {
+    const { store, data, scanId } = await setup();
+    const unticked = ids(data, 'safe')[0] as string;
+
+    store.toggle(unticked);
+    expect(store.selected.has(unticked)).toBe(false);
+
+    store.load(scanId, { ...data, suggestions: [...data.suggestions] });
+
+    expect(store.selected.has(unticked)).toBe(false);
+    expect(ids(data, 'review').length).toBeGreaterThan(0);
+
+    for (const review of ids(data, 'review')) {
+      expect(store.selected.has(review)).toBe(false);
+    }
+
+    expect(sorted(store.selected)).toEqual(sorted(ids(data, 'safe').filter((id) => id !== unticked)));
+  });
+
+  it('holds the stamp that triggers a fetch while a cleanup runs, and lets it go afterwards', async () => {
+    const { store } = await setup();
+
+    expect(store.stampFor(1)).toBe(1);
+
+    store.phase = { kind: 'planning' };
+    expect(store.stampFor(2)).toBe(1);
+
+    store.phase = { kind: 'idle' };
+    expect(store.stampFor(2)).toBe(2);
+  });
+});
+
 describe('planning', () => {
   it('plans only the ids of the selection, and runs a plan of safe items without asking', async () => {
     const { api, store, data, scanId } = await setup();

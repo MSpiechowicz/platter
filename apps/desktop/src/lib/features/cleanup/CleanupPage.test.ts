@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../../../App.svelte';
+import { api } from '../../api';
+import { advisor } from '../../state/advisor.svelte';
 import { cleanup } from '../../state/cleanup.svelte';
 import { scan } from '../../state/scan.svelte';
 import { settings } from '../../state/settings.svelte';
@@ -50,14 +52,14 @@ describe('the Cleanup view', () => {
     restore();
   });
 
-  it('is in the sidebar between Explorer and Settings, and off until a scan is ready', async () => {
+  it('is in the sidebar between Explorer and Advisor, and off until a scan is ready', async () => {
     render(App);
 
     const labels = within(screen.getByRole('navigation', { name: 'Main' }))
       .getAllByRole('button')
       .map((button) => button.textContent?.trim());
 
-    expect(labels).toEqual(['Scan', 'Overview', 'Explorer', 'Cleanup', 'Settings']);
+    expect(labels).toEqual(['Scan', 'Overview', 'Explorer', 'Cleanup', 'Advisor', 'Settings']);
     expect(nav('Cleanup').getAttribute('aria-disabled')).toBe('true');
     expect(nav('Cleanup').getAttribute('title')).toBe('Scan a disk or folder first');
 
@@ -81,6 +83,52 @@ describe('the Cleanup view', () => {
     expect(await screen.findByRole('heading', { name: /^Advisor/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^Clean safe/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^Clean selected/ })).toBeTruthy();
+  });
+
+  it('says LOCAL MODEL on its Advisor card only while the model is loaded', async () => {
+    render(App);
+    await openCleanup();
+
+    const tag = async (): Promise<string> =>
+      (await screen.findByRole('heading', { name: /^Advisor/ })).textContent ?? '';
+
+    expect(await tag()).toContain('RULES');
+
+    advisor.status = {
+      state: 'loaded',
+      model: {
+        name: 'Qwen3.5-4B',
+        format: 'GGUF · Q4_K_M',
+        bytes: 1,
+        host: 'huggingface.co',
+      },
+      options: { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true },
+      ramTotal: 1,
+    };
+
+    await waitFor(async () => expect(await tag()).toContain('LOCAL MODEL'));
+
+    advisor.status = undefined;
+  });
+
+  it('fetches the suggestions again when the advisor changes them, but not while a cleanup is planned or runs', async () => {
+    render(App);
+    await openCleanup();
+    await screen.findAllByText('Pacman package cache', undefined, { timeout: 3000 });
+
+    const fetched = vi.spyOn(api, 'getSuggestions');
+
+    advisor.suggestionsVersion++;
+    await waitFor(() => expect(fetched).toHaveBeenCalledTimes(1));
+
+    cleanup.phase = { kind: 'planning' };
+    advisor.suggestionsVersion++;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(fetched).toHaveBeenCalledTimes(1);
+
+    cleanup.phase = { kind: 'idle' };
+    await waitFor(() => expect(fetched).toHaveBeenCalledTimes(2));
   });
 
   it('shares its selection with the list: "All" in the list ticks every group of the chart', async () => {

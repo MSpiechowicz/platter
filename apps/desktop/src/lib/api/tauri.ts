@@ -2,23 +2,32 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 
 import { ApiRequestError, isApiError, type Api } from './client';
 import type {
+  AdvisorAnswerDto,
+  AdvisorLabelsDto,
+  AdvisorOptionsDto,
+  AdvisorStatusDto,
   ChildrenPage,
   CleanupEvent,
   CleanupId,
   CleanupPlanDto,
   ExternalLink,
+  FolderMatchDto,
   LodNode,
   NodeDto,
   NodeId,
   PathDto,
   PlanId,
+  ScanAnswerDto,
   ScanEvent,
   ScanId,
   ScanOptions,
+  SizeUnits,
   SortKey,
   SuggestionsDto,
   SummaryDto,
   UndoDto,
+  UserRulesDto,
+  UserVerdict,
   VolumeDto,
 } from './types';
 
@@ -107,6 +116,55 @@ export function createTauriApi(): Api {
     cancelCleanup: (cleanup: CleanupId) => callVoid('cancel_cleanup', { cleanup }),
 
     undoCleanup: (cleanup: CleanupId) => call<UndoDto[]>('undo_cleanup', { cleanup }),
+
+    advisorStatus: () => call<AdvisorStatusDto>('advisor_status'),
+
+    watchAdvisor(onEvent: (status: AdvisorStatusDto) => void): Promise<void> {
+      const channel = new Channel<AdvisorStatusDto>();
+      channel.onmessage = onEvent;
+
+      return callVoid('watch_advisor', { onEvent: channel });
+    },
+
+    configureAdvisor: (options: AdvisorOptionsDto) =>
+      call<AdvisorStatusDto>('configure_advisor', { options }),
+
+    clearQuestionLog: () => callVoid('clear_question_log'),
+
+    startModelDownload: () => callVoid('start_model_download'),
+
+    cancelModelDownload: () => callVoid('cancel_model_download'),
+
+    loadModel: () => call<AdvisorStatusDto>('load_model'),
+
+    unloadModel: () => call<AdvisorStatusDto>('unload_model'),
+
+    labelFolders: (scan: ScanId) => callVoid('label_folders', { scan }),
+
+    cancelLabelling: () => callVoid('cancel_labelling'),
+
+    getAdvisorLabels: (scan: ScanId) => call<AdvisorLabelsDto>('get_advisor_labels', { scan }),
+
+    askAdvisor: (scan: ScanId, node: NodeId, units?: SizeUnits) =>
+      call<AdvisorAnswerDto>('ask_advisor', units === undefined ? { scan, node } : { scan, node, units }),
+
+    askScan: (scan: ScanId, question: string, units: SizeUnits, pick?: number) =>
+      call<ScanAnswerDto>(
+        'ask_scan',
+        pick === undefined ? { scan, question, units } : { scan, question, units, pick },
+      ),
+
+    findFolders: (scan: ScanId, query: string, limit: number) =>
+      call<FolderMatchDto[]>('find_folders', { scan, query, limit }),
+
+    listUserRules: () => call<UserRulesDto>('list_user_rules'),
+
+    addUserRule: (scan: ScanId, node: NodeId, verdict: UserVerdict) =>
+      call<UserRulesDto>('add_user_rule', { scan, node, verdict }),
+
+    removeUserRule: (id: number) => call<UserRulesDto>('remove_user_rule', { id }),
+
+    resetUserRules: () => call<UserRulesDto>('reset_user_rules'),
 
     openInFileManager: (scan: ScanId, node: NodeId) => callVoid('open_in_file_manager', { scan, node }),
 

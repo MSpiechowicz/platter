@@ -1,5 +1,12 @@
 import { ApiRequestError, type Api } from './client';
-import { RULE_IDS, suggestionsOf } from './mock-suggestions';
+import {
+  ADVISOR_ID,
+  advisorNodes,
+  RULE_IDS,
+  suggestionsOf,
+  type MockLabel,
+  type UserRuleInput,
+} from './mock-suggestions';
 import type { MockNode, MockTree } from './mock-tree';
 import type {
   CleanupActionKind,
@@ -21,7 +28,18 @@ import type {
  *
  * Still different from the backend:
  * - The mock knows only the up to 20 largest matches of a rule (what `getSuggestions` lists as `nodes`), so a
- *   group has at most 20 items; the backend plans every match.
+ *   group has at most 20 items; the backend plans every match. The exception is the `advisor` group, which holds
+ *   every review label the mock advisor made (at most 50) that no rule touches.
+ * - `advisor` is a cleanable id only while the advisor is switched on and the scan has review labels that the
+ *   `advisor` suggestion lists (`invalid` otherwise: off, no review label, or every label left out because a rule
+ *   covers or holds it). As in the backend it is checked after an unknown id and an outdated scan. Its group is
+ *   `trash`, verdict `review`, planned after the rules' groups. There is no guard to refuse a label, so nothing is
+ *   `refused`. A cleanup outdates only the scan it ran on, and drops that scan's labels (the backend outdates every
+ *   finished scan and drops all their labels).
+ * - The user's rules (`mock-user-rules.ts`) are in the plans as in the backend: `user-safe` is a cleanable id (group
+ *   verdict `safe`, action `trash`, never a direct delete), `user-keep` is never planned (its folders come back as
+ *   `refused`, like every kept item), and while the rules file is broken every plan is `invalid` before anything
+ *   else is looked at. A change of the rules drops the plans that were waiting (`dropPlans`).
  * - It has no disk to guard, so nothing is refused for being protected or changed since the plan. (A marked plan
  *   refuses the scan root, an item a `keep` suggestion covers, holds or lies in, links, mounts, unreadable
  *   folders and an item inside another marked one, as the backend does; the mock only knows the up to 20
@@ -93,6 +111,9 @@ const ACTIONS: Record<string, Action> = {
 
   trash: { kind: 'emptyTrash' },
 
+  [ADVISOR_ID]: TRASH,
+  'user-safe': TRASH,
+
   'old-downloads': TRASH,
   'disk-images': TRASH,
   'docker-desktop-vm': TRASH,
@@ -105,7 +126,8 @@ const ACTIONS: Record<string, Action> = {
   'docker-data': tool('docker', ['--context', 'default', 'system', 'prune', '--force'], false),
 };
 
-const RULE_ORDER = new Map(RULE_IDS.map((id, index) => [id, index]));
+/** The groups are planned in the table's order, the model's labels after them. */
+const RULE_ORDER = new Map([...RULE_IDS, ADVISOR_ID].map((id, index) => [id, index]));
 
 const fail = (code: 'notFound' | 'invalid', message: string): never => {
   throw new ApiRequestError(code, message);
@@ -147,12 +169,27 @@ export interface MockCleanupHost {
   pathOf(tree: MockTree, node: MockNode): string;
   /** The mock's scan duration: 0 plays a cleanup out at once, anything else spreads it over that long. */
   durationMs: number;
+  /** The labels the mock advisor made in a scan, none while the advisor is switched off (`advisor` is planned from them). */
+  labelsOf(scan: ScanId): readonly MockLabel[];
+  /** Whether the advisor is switched on; planning `advisor` is `invalid` while it is not. */
+  advisorEnabled(): boolean;
+  /** The user's rules now: none, and a `problem`, while their file is broken (every plan is then `invalid`). */
+  userRules(): { rules: readonly UserRuleInput[]; problem?: string };
+  /** Scans a cleanup ran on, shared with the advisor, which refuses to label them. */
+  outdated: ReadonlySet<ScanId>;
+  /** A cleanup ran on the scan: it is outdated from now on, and its labels are gone. */
+  outdate(scan: ScanId): void;
 }
 
 export type MockCleanupApi = Pick<
   Api,
   'planCleanup' | 'planMarkedCleanup' | 'startCleanup' | 'cancelCleanup' | 'undoCleanup'
 >;
+
+export type MockCleanup = MockCleanupApi & {
+  /** Forgets every plan that was waiting to be started: the user's rules changed, so none is still what they plan. */
+  dropPlans(): void;
+};
 
 /** The nodes the `keep` suggestions list (up to 20 per rule, the most the mock knows of what a keep rule matches). */
 const keptNodes = (suggestions: SuggestionDto[]): Set<number> =>
@@ -196,10 +233,10 @@ const withinAny = (tree: MockTree, node: MockNode, others: ReadonlySet<number>):
 /** As in the backend, every plan with something to do is confirmed (the mock has no dialog to show). */
 const needsConfirmation = (groups: PlannedGroup[]): boolean => groups.length > 0;
 
-export function createMockCleanup(host: MockCleanupHost): MockCleanupApi {
+export function createMockCleanup(host: MockCleanupHost): MockCleanup {
   const plans = new Map<PlanId, StoredPlan>();
   /** Scans a cleanup has run on: they no longer describe the disk. */
-  const outdated = new Set<ScanId>();
+  const { outdated } = host;
   /** Finished runs: the paths each moved to the trash, until it is undone. */
   const done = new Map<CleanupId, string[]>();
   let running: Running | null = null;
@@ -226,14 +263,47 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanupApi {
     return id;
   };
 
+  /** A broken rules file refuses every plan: nothing then says which folders the user keeps. */
+  const checkRulesUsable = (): readonly UserRuleInput[] => {
+    const { rules, problem } = host.userRules();
+
+    if (problem !== undefined) {
+      fail(
+        'invalid',
+        `Your rules file cannot be used, so Platter makes no cleanup plan: ${problem} Fix the file, or start over in the Advisor view.`,
+      );
+    }
+
+    return rules;
+  };
+
+  /** The backend's checks for planning `advisor`: the advisor is on, and some review label can be cleaned. */
+  const checkAdvisorPlannable = (scan: ScanId, tree: MockTree, user: readonly UserRuleInput[]): void => {
+    if (!host.advisorEnabled()) {
+      fail('invalid', 'the local model is switched off in the settings');
+    }
+
+    const labels = host.labelsOf(scan);
+
+    if (!labels.some((label) => label.verdict === 'review')) {
+      fail('invalid', 'the local model has not labelled any folder to clean in this scan');
+    }
+
+    if (advisorNodes(tree, labels, user).length === 0) {
+      fail('invalid', 'no labelled folder can be cleaned');
+    }
+  };
+
   /** What the plan will do, as the wire description (without an id) and as groups to play out. */
   const describe = (
     scan: ScanId,
     ids: string[],
     tree: MockTree,
+    user: readonly UserRuleInput[],
   ): { plan: Omit<CleanupPlanDto, 'planId'>; planned: PlannedGroup[] } => {
     const chosen = new Set(ids);
-    const { suggestions } = suggestionsOf(tree);
+    const labels = host.labelsOf(scan);
+    const { suggestions } = suggestionsOf(tree, labels, user);
     const byRule = new Map(suggestions.map((suggestion) => [suggestion.id, suggestion]));
     const groups: PlanGroupDto[] = [];
     const planned: PlannedGroup[] = [];
@@ -247,7 +317,11 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanupApi {
       const suggestion = byRule.get(id) as SuggestionDto;
       const action = ACTIONS[id];
 
-      const nodes = suggestion.nodes.map((node) => tree.nodes[node]).filter((node) => node !== undefined);
+      // The labels are all known, so the group takes every one; a rule's matches are the 20 the suggestion lists.
+      const nodes =
+        id === ADVISOR_ID
+          ? advisorNodes(tree, labels, user)
+          : suggestion.nodes.map((node) => tree.nodes[node]).filter((node) => node !== undefined);
       const targets: Target[] = [];
 
       for (const node of nodes) {
@@ -333,7 +407,7 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanupApi {
 
     const finish = (cancelled: boolean): void => {
       // Whatever happened, the scan no longer describes the disk.
-      outdated.add(scan);
+      host.outdate(scan);
       running = null;
       done.set(cleanup, trashed);
 
@@ -436,8 +510,9 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanupApi {
     scan: ScanId,
     ids: number[],
     tree: MockTree,
+    user: readonly UserRuleInput[],
   ): { plan: Omit<CleanupPlanDto, 'planId'>; planned: PlannedGroup[] } => {
-    const kept = keptNodes(suggestionsOf(tree).suggestions);
+    const kept = keptNodes(suggestionsOf(tree, [], user).suggestions);
     // Outer items first, so an item inside one that is planned is found out.
     const nodes = [...new Set(ids)]
       .map((id) => tree.nodes[id] as MockNode)
@@ -492,7 +567,13 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanupApi {
   };
 
   return {
+    dropPlans() {
+      plans.clear();
+    },
+
     async planMarkedCleanup(scan, nodes) {
+      const user = checkRulesUsable();
+
       if (nodes.length === 0 || nodes.length > MAX_MARKED) {
         return fail('invalid', `mark between 1 and ${MAX_MARKED} items`);
       }
@@ -508,12 +589,14 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanupApi {
         return fail('notFound', `node ${unknown} does not exist`);
       }
 
-      const { plan, planned } = describeMarked(scan, nodes, tree);
+      const { plan, planned } = describeMarked(scan, nodes, tree, user);
 
       return { planId: store(scan, planned), ...plan };
     },
 
     async planCleanup(scan, suggestionIds) {
+      const user = checkRulesUsable();
+
       if (suggestionIds.length === 0 || suggestionIds.length > MAX_RULES) {
         return fail('invalid', `choose between 1 and ${MAX_RULES} suggestions`);
       }
@@ -528,7 +611,13 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanupApi {
         return fail('invalid', 'the disk changed since this scan; rescan first');
       }
 
-      const { plan, planned } = describe(scan, suggestionIds, host.treeOf(scan));
+      const tree = host.treeOf(scan);
+
+      if (suggestionIds.includes(ADVISOR_ID)) {
+        checkAdvisorPlannable(scan, tree, user);
+      }
+
+      const { plan, planned } = describe(scan, suggestionIds, tree, user);
 
       return { planId: store(scan, planned), ...plan };
     },

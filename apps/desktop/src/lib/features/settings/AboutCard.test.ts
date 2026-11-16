@@ -19,4 +19,11 @@ describe('AboutCard', () => {
     expect(openExternal.mock.calls).toEqual([['source'], ['issues'], ['license']]);
     expect(document.querySelector('a[target="_blank"]')).toBeNull();
   });
+
+  it('says the only network call is the optional model download', () => {
+    render(AboutCard);
+
+    expect(screen.getByText(/The only network call is the optional model download\./)).toBeTruthy();
+    expect(screen.queryByText(/update check/)).toBeNull();
+  });
 });

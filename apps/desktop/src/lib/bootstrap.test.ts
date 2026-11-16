@@ -1,0 +1,75 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Each test loads `bootstrap` afresh with its own URL hooks.
+const state = vi.hoisted(() => ({ calls: [] as string[] }));
+
+vi.mock('./api', () => ({
+  api: {
+    listVolumes: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+vi.mock('./api/mock-advisor', () => ({
+  setMockAdvisorState: (value: string) => state.calls.push(`mock:${value}`),
+}));
+
+async function boot(hooks: Record<string, unknown>) {
+  vi.resetModules();
+  vi.doMock('./hooks', () => ({
+    hooks: {
+      view: null,
+      mini: false,
+      update: false,
+      overlays: false,
+      root: null,
+      advisor: null,
+      labels: false,
+      ...hooks,
+    },
+  }));
+
+  const { advisor } = await import('./state/advisor.svelte');
+  const { settings } = await import('./state/settings.svelte');
+  const { bootstrap } = await import('./bootstrap');
+
+  vi.spyOn(advisor, 'configure').mockImplementation(async () => {
+    state.calls.push(`configure:${settings.advisorEnabled}`);
+  });
+  vi.spyOn(advisor, 'watch').mockImplementation(async () => {
+    state.calls.push('watch');
+  });
+
+  await bootstrap();
+
+  return { advisor, settings };
+}
+
+describe('bootstrap: the advisor', () => {
+  beforeEach(() => {
+    state.calls = [];
+    localStorage.clear();
+  });
+
+  it('sends the stored options first, then subscribes to the status, and asks nothing at start', async () => {
+    await boot({});
+
+    expect(state.calls).toEqual(['configure:false', 'watch']);
+  });
+
+  it('asks nothing at start either when a view or a model state was asked for in the URL', async () => {
+    await boot({ view: 'settings' });
+    expect(state.calls).toEqual(['configure:false', 'watch']);
+
+    state.calls = [];
+    await boot({ advisor: 'none' });
+    expect(state.calls).toEqual(['configure:false', 'mock:none', 'watch']);
+  });
+
+  it('switches the model on for a mock state on disk without saving that, and sets the state after the options', async () => {
+    const { settings } = await boot({ advisor: 'loaded' });
+
+    expect(settings.advisorEnabled).toBe(true);
+    expect(state.calls).toEqual(['configure:true', 'mock:loaded', 'watch']);
+    expect(localStorage.getItem('platter.settings')).toBeNull();
+  });
+});

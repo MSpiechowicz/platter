@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { api } from '../../api';
   import Card from '../../components/ui/Card.svelte';
+  import { advisor } from '../../state/advisor.svelte';
   import { cleanup } from '../../state/cleanup.svelte';
   import { resource } from '../../state/resource.svelte';
   import { scan, type ReadyScan } from '../../state/scan.svelte';
@@ -21,8 +22,13 @@
   // either view is on screen in both.
   let attempt = $state(0);
 
+  // The labels of the local model, or switching it on or off, change the suggestions: they are fetched again, but
+  // not while a cleanup runs.
+  const stamp = $derived(cleanup.stampFor(advisor.suggestionsVersion));
+
   const suggestions = resource(() => {
     void attempt;
+    void stamp;
 
     return api.getSuggestions(ready.scanId);
   });
@@ -49,7 +55,7 @@
   {#if finished}
     <ResultPanel store={cleanup} {basis} />
   {:else}
-    <Card title="Advisor" hint="RULES" class="advisor">
+    <Card title="Advisor" hint={advisor.loaded ? 'LOCAL MODEL' : 'RULES'} class="advisor">
       <AdvisorList
         suggestions={suggestions.data}
         scanId={ready.scanId}

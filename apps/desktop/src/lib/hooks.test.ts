@@ -17,6 +17,11 @@ const ALL_OFF = {
   dominant: false,
   warn: false,
   cleanup: false,
+  advisor: null,
+  labels: false,
+  ask: null,
+  chat: null,
+  rules: null,
 };
 
 describe('parseHooks', () => {
@@ -106,5 +111,43 @@ describe('parseHooks', () => {
 
     expect(parseHooks(search, false)).toEqual({ ...ALL_OFF, view: 'cleanup', mark: [0] });
     expect(Object.keys(parseHooks(search, false)).sort()).toEqual(Object.keys(ALL_OFF).sort());
+  });
+
+  it('reads the Advisor view and its mock model hooks, outside Tauri only', () => {
+    expect(parseHooks('?view=advisor&advisor=loaded&labels', false)).toMatchObject({
+      view: 'advisor',
+      advisor: 'loaded',
+      labels: true,
+    });
+
+    for (const state of ['none', 'downloading', 'disk', 'loaded']) {
+      expect(parseHooks(`?advisor=${state}`, false).advisor).toBe(state);
+    }
+
+    expect(parseHooks('?advisor=huge', false).advisor).toBeNull();
+    expect(parseHooks('?view=advisor&advisor=loaded&labels', true)).toEqual(ALL_OFF);
+  });
+
+  it('reads the question to ask on the Advisor view, outside Tauri only', () => {
+    expect(parseHooks('?view=advisor&advisor=loaded&ask=biggest%20folders', false).ask).toBe(
+      'biggest folders',
+    );
+    expect(parseHooks('?view=advisor&ask=%20%20', false).ask).toBeNull();
+    expect(parseHooks('?view=advisor', false).ask).toBeNull();
+    expect(parseHooks('?view=advisor&ask=biggest', true)).toEqual(ALL_OFF);
+  });
+
+  it('reads the number of questions to seed the Advisor conversation with, outside Tauri only', () => {
+    expect(parseHooks('?view=advisor&advisor=loaded&chat=12', false).chat).toBe(12);
+    expect(parseHooks('?view=advisor&chat=many', false).chat).toBeNull();
+    expect(parseHooks('?view=advisor&chat=12', true)).toEqual(ALL_OFF);
+  });
+
+  it('reads the hook that seeds the user rules, or breaks their file, outside Tauri only', () => {
+    expect(parseHooks('?view=advisor&rules', false).rules).toBe('seed');
+    expect(parseHooks('?view=advisor&rules=broken', false).rules).toBe('broken');
+    expect(parseHooks('?view=advisor&rules=whatever', false).rules).toBe('seed');
+    expect(parseHooks('?view=advisor', false).rules).toBeNull();
+    expect(parseHooks('?view=advisor&rules=broken', true).rules).toBeNull();
   });
 });

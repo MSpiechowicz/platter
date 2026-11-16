@@ -263,4 +263,38 @@ describe('the app', () => {
     expect(nav('Overview').getAttribute('title')).toBe('Overview: Scan a disk or folder first');
     expect(screen.getByRole('button', { name: 'Expand menu' })).toBeTruthy();
   });
+
+  it('has an Advisor item between Cleanup and Settings that waits for a scan, and no History item', async () => {
+    render(App);
+
+    const labels = within(screen.getByRole('navigation', { name: 'Main' }))
+      .getAllByRole('button')
+      .map((button) => button.textContent?.trim());
+
+    expect(labels).toEqual(['Scan', 'Overview', 'Explorer', 'Cleanup', 'Advisor', 'Settings']);
+    // Like Overview, Explorer and Cleanup: nothing to show before a scan (owner decision).
+    expect(nav('Advisor').getAttribute('aria-disabled')).toBe('true');
+    expect(nav('Advisor').getAttribute('aria-disabled')).toBe(nav('Overview').getAttribute('aria-disabled'));
+    expect(screen.queryByText('ADVISOR')).toBeNull();
+  });
+
+  it('opens the Advisor view once a scan is ready, and disables it again while a new scan runs', async () => {
+    render(App);
+    await startScan();
+
+    expect(nav('Advisor').getAttribute('aria-disabled')).toBe('true');
+
+    await waitFor(() => expect(scan.state.status).toBe('ready'), { timeout: 3000 });
+    await waitFor(() => expect(nav('Advisor').getAttribute('aria-disabled')).toBeNull());
+    await fireEvent.click(nav('Advisor'));
+
+    expect(await screen.findByText('ADVISOR')).toBeTruthy();
+    expect(nav('Advisor').getAttribute('aria-current')).toBe('page');
+    expect(within(main()).queryByText('Scan a disk or folder first.')).toBeNull();
+
+    await fireEvent.click(nav('Scan'));
+    await startScan();
+
+    expect(nav('Advisor').getAttribute('aria-disabled')).toBe('true');
+  });
 });

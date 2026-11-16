@@ -145,6 +145,7 @@ export class CleanupStore {
   readonly #scan: ScanHost;
   #data: SuggestionsDto | undefined;
   #run: Run | undefined;
+  #stamp = 0;
   /** Bumped when an answer that is still on its way no longer matters. */
   #epoch = 0;
 
@@ -351,6 +352,11 @@ export class CleanupStore {
       return;
     }
 
+    // The same scan with other suggestions (the advisor's labels or on/off changed): the rows the user ticked stay
+    // ticked while they still exist, and a safe row that is new is ticked like the others.
+    const refetched = !newScan && this.#data !== undefined && data !== undefined;
+    const known = this.suggestions.map((item) => item.id);
+
     this.scanId = scanId;
     this.#data = data;
     this.suggestions = data?.suggestions ?? [];
@@ -376,11 +382,39 @@ export class CleanupStore {
       return;
     }
 
+    if (refetched) {
+      for (const id of [...this.selected]) {
+        if (!this.cleanable.some((item) => item.id === id)) {
+          this.selected.delete(id);
+        }
+      }
+
+      for (const item of this.safeItems) {
+        if (!known.includes(item.id)) {
+          this.selected.add(item.id);
+        }
+      }
+
+      return;
+    }
+
     this.selected.clear();
 
     for (const item of this.safeItems) {
       this.selected.add(item.id);
     }
+  }
+
+  /**
+   * The number the pages watch to fetch the suggestions again: the advisor's version, held still while a cleanup
+   * runs (a list that changes under a plan would confuse it) and let go when it ends.
+   */
+  stampFor(version: number): number {
+    if (!this.busy) {
+      this.#stamp = version;
+    }
+
+    return this.#stamp;
   }
 
   toggle(id: string): void {

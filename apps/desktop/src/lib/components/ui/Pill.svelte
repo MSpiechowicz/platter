@@ -4,16 +4,18 @@
   interface Props {
     /** A small accent dot in front of the text. */
     dot?: boolean;
+    /** The dot is grey: the thing the pill describes is not active. */
+    idle?: boolean;
     /** Fill the free width of a flex row. */
     grow?: boolean;
     children: Snippet;
   }
 
-  let { dot = false, grow = false, children }: Props = $props();
+  let { dot = false, idle = false, grow = false, children }: Props = $props();
 </script>
 
 <div class="pill" class:grow>
-  {#if dot}<span class="dot"></span>{/if}
+  {#if dot}<span class="dot" class:idle></span>{/if}
   {@render children()}
 </div>
 
@@ -46,5 +48,9 @@
     background: var(--accent);
     transform: translateY(-1px);
     flex: none;
+  }
+
+  .dot.idle {
+    background: var(--dim);
   }
 </style>

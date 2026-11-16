@@ -1,12 +1,47 @@
 import { REAL_ROOT, SKEW_ROOT } from './mock-layouts';
 import { childrenOf, DAY, type MockNode, type MockTree } from './mock-tree';
-import type { Category, NodeId, SuggestionDto, SuggestionsDto, Verdict } from './types';
+import type {
+  Category,
+  ModelVerdict,
+  NodeId,
+  SuggestionDto,
+  SuggestionsDto,
+  UserVerdict,
+  Verdict,
+} from './types';
 
 // The mock's stand-in for `get_suggestions`: the rule table of `crates/platter-rules/src/table.rs` (same ids,
 // titles, verdicts and reasons) evaluated over the demo tree the way `evaluate.rs` does.
+//
+// The user's own rules (A4) are two more entries of the table, as in `RuleSet::with_user`: `user-keep` first and
+// `user-safe` last (source `user`), each matching exactly the folders of the rules with that verdict, by path. So a
+// `keep` of any source wins over everything, then the built-in rules, then `user-safe`. A folder that holds a kept
+// folder (of any source) somewhere below it is entered, not claimed by another rule.
+//
+// Still different from the backend:
+// - The `advisor` group (source `model`) is built from the labels the mock advisor made (`mock-advisor.ts`):
+//   review labels only, without a label whose folder is covered by a rule match, holds one, or lies in a scan
+//   inside a kept folder. It lists at most 20 nodes like every suggestion; the backend's cache by label
+//   generation does not exist here (the rule matches of a tree are cached, the group is rebuilt on every call).
+//   The group is listed only while the advisor is switched on: `mock.ts` passes no labels while it is off.
+// - Paths of the demo disks `?root=/real` and `?root=/skew` start at `/`, as the rules see them.
 
 /** The most nodes one suggestion lists, like the real backend. */
 export const MAX_SUGGESTION_NODES = 20;
+
+/** The id and title of the suggestion made from the model's labels. */
+export const ADVISOR_ID = 'advisor';
+export const ADVISOR_TITLE = 'Labelled by the local model';
+
+const ADVISOR_REASON =
+  'The local model thinks these folders hold data that can be made again or downloaded again. It can be wrong, so look before removing anything.';
+
+/** One folder the mock advisor labelled. */
+export interface MockLabel {
+  node: NodeId;
+  verdict: ModelVerdict;
+  reason: string;
+}
 
 const GIB = 2 ** 30;
 
@@ -44,7 +79,9 @@ type Matcher =
   | { type: 'home'; relative: string }
   | { type: 'userDir'; name: string }
   | { type: 'named'; named: Named }
-  | { type: 'files'; files: FilesMatcher };
+  | { type: 'files'; files: FilesMatcher }
+  /** The folders of the user's rules with this verdict. */
+  | { type: 'user'; verdict: UserVerdict };
 
 interface Rule {
   id: string;
@@ -68,6 +105,15 @@ const home = (relative: string): Matcher => ({ type: 'home', relative });
 const userDir = (name: string): Matcher => ({ type: 'userDir', name });
 const named = (value: Named): Matcher => ({ type: 'named', named: value });
 const files = (value: FilesMatcher): Matcher => ({ type: 'files', files: value });
+
+/** One rule of the user's own, as the rules see it: an exact folder, as an absolute path of the scan. */
+export interface UserRuleInput {
+  verdict: UserVerdict;
+  folder: string;
+}
+
+/** No user rules. */
+export const NO_USER_RULES: readonly UserRuleInput[] = [];
 
 const NODE_LOCKFILES = [
   'package-lock.json',
@@ -107,7 +153,7 @@ const KEPT_REASON = (what: string): string =>
   `Your ${what} folder. Left alone on purpose; nothing inside is suggested for cleanup.`;
 
 // Same order as the backend's table: when two rules match one folder, a `keep` rule wins, then the earlier one.
-const RULES: Rule[] = [
+const BUILTIN_RULES: Rule[] = [
   // Safe: regenerated or downloaded again on demand.
   rule(
     'apt-cache',
@@ -316,6 +362,28 @@ const RULES: Rule[] = [
   rule('desktop', 'Desktop', 'keep', userDir('Desktop'), KEPT_REASON('desktop')),
 ];
 
+const USER_KEEP_ID = 'user-keep';
+const USER_SAFE_ID = 'user-safe';
+
+/** The table with the user's rules: `user-keep` before every other rule, `user-safe` after them (`RuleSet::with_user`). */
+const RULES: Rule[] = [
+  rule(
+    USER_KEEP_ID,
+    'Folders you keep',
+    'keep',
+    { type: 'user', verdict: 'keep' },
+    'Chosen by you: {n:folder} to always keep. Nothing inside is suggested or cleaned.',
+  ),
+  ...BUILTIN_RULES,
+  rule(
+    USER_SAFE_ID,
+    'Folders you marked safe',
+    'safe',
+    { type: 'user', verdict: 'safe' },
+    'Chosen by you: {n:folder} that can be cleaned. Cleaning only moves a folder to the trash, so it can be put back.',
+  ),
+];
+
 const VERDICT_ORDER: Record<Verdict, number> = { safe: 0, review: 1, keep: 2 };
 
 /** Where the scan lives, and which folder is home. */
@@ -325,37 +393,42 @@ interface Environment {
   /** The home directory, when there is one in the scan or above it. Without one nothing can be kept. */
   home: string | null;
   now: number;
+  /** What this machine calls the personal folders, where it is not their English name (`Documents` is `Dokumenty`). */
+  userDirs: Readonly<Record<string, string>>;
 }
 
 function environmentOf(tree: MockTree): Environment {
   const root = tree.rootPath === REAL_ROOT || tree.rootPath === SKEW_ROOT ? '/' : tree.rootPath;
   const inside = /^\/home\/[^/]+/.exec(root);
+  const userDirs = tree.userDirs ?? {};
 
   if (inside) {
-    return { root, home: inside[0], now: tree.now };
+    return { root, home: inside[0], now: tree.now, userDirs };
   }
 
   if (root === '/') {
     const top = childrenOf(tree, tree.nodes[0] as MockNode).find((child) => child.name === 'home');
     const user = top && childrenOf(tree, top).find((child) => child.kind === 'dir');
 
-    return { root, home: user ? `/home/${user.name}` : null, now: tree.now };
+    return { root, home: user ? `/home/${user.name}` : null, now: tree.now, userDirs };
   }
 
-  return { root, home: null, now: tree.now };
+  return { root, home: null, now: tree.now, userDirs };
 }
 
-/** The folder a path rule (fixed, home or personal folder) is about, when it is known. */
-function claimedPath(matcher: Matcher, env: Environment): string | null {
+/** The folders a path rule (fixed, home or personal folder, or the user's own) is about, as far as they are known. */
+function claimedPaths(matcher: Matcher, env: Environment, user: readonly UserRuleInput[]): string[] {
   switch (matcher.type) {
     case 'fixed':
-      return matcher.path;
+      return [matcher.path];
     case 'home':
-      return env.home && `${env.home}/${matcher.relative}`;
+      return env.home ? [`${env.home}/${matcher.relative}`] : [];
     case 'userDir':
-      return env.home && `${env.home}/${matcher.name}`;
+      return env.home ? [`${env.home}/${env.userDirs[matcher.name] ?? matcher.name}`] : [];
+    case 'user':
+      return user.filter((entry) => entry.verdict === matcher.verdict).map((entry) => entry.folder);
     default:
-      return null;
+      return [];
   }
 }
 
@@ -380,7 +453,7 @@ function holds(age: Age | undefined, mtime: number, now: number): boolean {
 }
 
 /** `/home/me/code` becomes `~/code` and the home directory itself `~`; other paths are kept. */
-function shortenHome(path: string, home: string | null): string {
+export function shortenHome(path: string, home: string | null): string {
   if (home && path === home) {
     return '~';
   }
@@ -482,15 +555,55 @@ function namedMatches(tree: MockTree, env: Environment, rule: Named, node: MockN
   return !rule.notBelow?.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
 
+/** Whether the scan has a folder at this absolute path (`root` is the scan root's own path). */
+function hasFolderAt(tree: MockTree, root: string, path: string): boolean {
+  const namesOf = (full: string): string[] => {
+    const trimmed = full.replace(/\/+$/, '');
+
+    return trimmed === '' ? [] : trimmed.slice(1).split('/');
+  };
+  const names = namesOf(path);
+  const rootNames = namesOf(root);
+
+  if (names.length < rootNames.length || rootNames.some((name, index) => names[index] !== name)) {
+    return false;
+  }
+
+  let at = tree.nodes[0] as MockNode;
+
+  for (const name of names.slice(rootNames.length)) {
+    const next = childrenOf(tree, at).find((child) => child.kind === 'dir' && child.name === name);
+
+    if (!next) {
+      return false;
+    }
+
+    at = next;
+  }
+
+  return at.kind === 'dir';
+}
+
+/** The folders of `keep` rules that the scan has: a folder that holds one of them is never claimed as a whole. */
+function keptFolders(tree: MockTree, env: Environment, user: readonly UserRuleInput[]): string[] {
+  return RULES.filter((entry) => entry.verdict === 'keep')
+    .flatMap((entry) => claimedPaths(entry.matcher, env, user))
+    .filter((path) => hasFolderAt(tree, env.root, path));
+}
+
 /** The single pass: walks the tree from the top and hands every rule the nodes it matched. */
 class Evaluation {
   readonly found = new Map<Rule, Found>();
   private readonly regions: { rule: Rule; files: FilesMatcher; path: string }[] = [];
+  private readonly kept: string[];
 
   constructor(
     private readonly tree: MockTree,
     private readonly env: Environment,
+    private readonly user: readonly UserRuleInput[],
   ) {
+    this.kept = keptFolders(tree, env, user);
+
     for (const entry of RULES) {
       const path = entry.matcher.type === 'files' ? regionPath(entry.matcher.files, env) : null;
 
@@ -519,7 +632,8 @@ class Evaluation {
       const isRoot = node.parent < 0;
       const matched = this.matchingRule(node, path, isRoot);
 
-      if (matched && this.take(matched.rule, matched.name, node, path)) {
+      // A folder with a kept folder inside is entered, not claimed: acting on it would act on what is kept.
+      if (matched && this.take(matched.rule, matched.name, node, path, this.holdsKept(path))) {
         continue;
       }
 
@@ -546,7 +660,7 @@ class Evaluation {
    * root has no parent in the tree, so a name rule cannot check its surroundings there.
    */
   private matchingRule(node: MockNode, path: string, isRoot: boolean): { rule: Rule; name?: string } | null {
-    const claims = RULES.filter((entry) => claimedPath(entry.matcher, this.env) === path);
+    const claims = RULES.filter((entry) => claimedPaths(entry.matcher, this.env, this.user).includes(path));
     const kept = claims.find((entry) => entry.verdict === 'keep');
     let best: Rule | undefined = kept ?? claims[0];
     let name: string | undefined;
@@ -573,8 +687,21 @@ class Evaluation {
     return best ? { rule: best, name } : null;
   }
 
+  /** A kept folder lies strictly below `path`. */
+  private holdsKept(path: string): boolean {
+    const prefix = path === '/' ? '/' : `${path}/`;
+
+    return this.kept.some((folder) => folder.startsWith(prefix) && folder !== path);
+  }
+
   /** Records the directory under `rule` unless it may not be suggested. Returns whether the folder is taken (not entered). */
-  private take(rule: Rule, name: string | undefined, node: MockNode, path: string): boolean {
+  private take(
+    rule: Rule,
+    name: string | undefined,
+    node: MockNode,
+    path: string,
+    holdsKept: boolean,
+  ): boolean {
     // A kept folder is never entered, whatever is in it.
     if (rule.verdict === 'keep') {
       if (node.allocated > 0) {
@@ -588,7 +715,10 @@ class Evaluation {
     // never `safe`: its size and age only cover what was read.
     const verdict = effectiveVerdict(rule, this.env);
     const suggestible =
-      node.allocated > 0 && !node.unreadable && (verdict !== 'safe' || !hasUnreadable(this.tree, node));
+      !holdsKept &&
+      node.allocated > 0 &&
+      !node.unreadable &&
+      (verdict !== 'safe' || !hasUnreadable(this.tree, node));
 
     if (suggestible) {
       this.add(rule, node, path, name);
@@ -654,7 +784,12 @@ function displayPath(rule: Rule, found: Found, env: Environment): string {
     case 'home':
       return matcher.relative === '' ? '~' : `~/${matcher.relative}`;
     case 'userDir':
-      return `~/${matcher.name}`;
+      return `~/${env.userDirs[matcher.name] ?? matcher.name}`;
+    case 'user':
+      // Exact folders, so a pattern would claim more than the user chose.
+      return found.nodes.length === 1
+        ? shortenHome(found.paths[0] as string, env.home)
+        : `${found.nodes.length} folders you chose`;
     case 'named':
     case 'files': {
       if (found.nodes.length === 1) {
@@ -709,59 +844,359 @@ function renderReason(rule: Rule, count: number): string {
   });
 }
 
+/** Who decided a rule: the user for the rules made of their own, otherwise the built-in table. */
+const sourceOf = (entry: Rule): 'rule' | 'user' => (entry.matcher.type === 'user' ? 'user' : 'rule');
+
+/** The home directory the rules see in a scan, when there is one (the same as `RuleView.home`, without the rule pass). */
+export function homeOf(tree: MockTree): string | null {
+  return environmentOf(tree).home;
+}
+
+/** The absolute path of a node as the rules see it (the demo disks `/real` and `/skew` start at `/`). */
+export function folderPathOf(tree: MockTree, node: MockNode): string {
+  const names: string[] = [];
+
+  for (let at: MockNode | undefined = node; at && at.parent >= 0; at = tree.nodes[at.parent]) {
+    names.unshift(at.name);
+  }
+
+  return joinPath(environmentOf(tree).root, names.join('/')).replace(/\/$/, '') || '/';
+}
+
 /** The ids of all rules, in the table's order (the backend plans groups in this order). */
 export const RULE_IDS: readonly string[] = RULES.map((entry) => entry.id);
 
-/** The mock's stand-in for `get_suggestions`. */
-export function suggestionsOf(tree: MockTree): SuggestionsDto {
+/** A built-in rule as a question can name it: its id and title, and the one place it looks in, when it has one. */
+export interface RuleName {
+  id: string;
+  title: string;
+  /** `/var/lib/docker` (an absolute path) or `~/.docker/desktop/vms` (below the home folder); none for the rest. */
+  place: string | null;
+}
+
+/** The built-in rules, in the table's order (`Matcher::Fixed` and `Matcher::Home` have a place; nothing else does). */
+export const BUILTIN_RULE_NAMES: readonly RuleName[] = BUILTIN_RULES.map((entry) => ({
+  id: entry.id,
+  title: entry.title,
+  place:
+    entry.matcher.type === 'fixed'
+      ? entry.matcher.path
+      : entry.matcher.type === 'home'
+        ? `~/${entry.matcher.relative}`
+        : null,
+}));
+
+/** What the rules found in one tree; a tree never changes, so it is worked out once. */
+interface Analysis {
+  env: Environment;
+  /** The scan starts inside a kept folder: nothing is suggested. */
+  insideKept: boolean;
+  found: Map<Rule, Found>;
+  /** The rule that matched a node (every match, not only the 20 a suggestion lists). */
+  matchedBy: Map<number, Rule>;
+  /** Folders with a match somewhere below them. */
+  holding: Set<number>;
+}
+
+/** The analysis of a tree, with the user's rules it was made for (the answer changes when they do). */
+const analyses = new WeakMap<MockTree, { key: string; analysis: Analysis }>();
+
+const userKey = (user: readonly UserRuleInput[]): string =>
+  user.map((entry) => `${entry.verdict}:${entry.folder}`).join('\n');
+
+function analyse(tree: MockTree, user: readonly UserRuleInput[]): Analysis {
+  const key = userKey(user);
+  const cached = analyses.get(tree);
+
+  if (cached?.key === key) {
+    return cached.analysis;
+  }
+
   const env = environmentOf(tree);
-  const empty: SuggestionsDto = { suggestions: [], totals: { safe: 0, review: 0, keep: 0 } };
 
   // A scan that starts inside a kept folder (but is not that folder) gets no suggestions.
-  const insideKept = RULES.some((entry) => {
-    const kept = claimedPath(entry.matcher, env);
+  const insideKept = RULES.some(
+    (entry) =>
+      entry.verdict === 'keep' &&
+      claimedPaths(entry.matcher, env, user).some(
+        (kept) => env.root !== kept && env.root.startsWith(`${kept}/`),
+      ),
+  );
 
-    return entry.verdict === 'keep' && kept !== null && env.root !== kept && env.root.startsWith(`${kept}/`);
+  const evaluation = new Evaluation(tree, env, user);
+
+  if (!insideKept) {
+    evaluation.run();
+  }
+
+  const matchedBy = new Map<number, Rule>();
+  const holding = new Set<number>();
+
+  for (const [entry, found] of evaluation.found) {
+    for (const node of found.nodes) {
+      matchedBy.set(node.id, entry);
+
+      for (
+        let above = tree.nodes[node.parent];
+        above && !holding.has(above.id);
+        above = tree.nodes[above.parent]
+      ) {
+        holding.add(above.id);
+      }
+    }
+  }
+
+  const analysis: Analysis = { env, insideKept, found: evaluation.found, matchedBy, holding };
+
+  analyses.set(tree, { key, analysis });
+
+  return analysis;
+}
+
+/** The rule that decided about a folder, with the verdict and reason the suggestion shows. */
+export interface RuleCover {
+  id: string;
+  title: string;
+  /** The folder the rule matched: the node itself or the nearest folder above it. */
+  at: NodeId;
+  verdict: Verdict;
+  reason: string;
+  /** Whose rule it is: the built-in table's or the user's own. */
+  source: 'rule' | 'user';
+}
+
+/** What the rules matched in a tree, for the mock advisor: which folders it may label and what it may say. */
+export interface RuleView {
+  /** The home directory, when there is one in the scan or above it. */
+  home: string | null;
+  /** The scan starts inside a kept folder: the advisor labels and judges nothing. */
+  insideKept: boolean;
+  /** Every node a rule matched. */
+  matched: ReadonlySet<number>;
+  /** Folders with a rule match somewhere below them. */
+  holding: ReadonlySet<number>;
+  /** The rule matching the node or the nearest folder above it. */
+  covering(node: MockNode): RuleCover | null;
+  /** The node's path as the rules see it (the demo disks `/real` and `/skew` start at `/`). */
+  path(node: MockNode): string;
+  /** All rule matches together: how many folders and bytes, and the path and verdict of the largest rule. */
+  summary(): { folders: number; allocated: number; example?: { path: string; verdict: Verdict } };
+}
+
+export function ruleView(tree: MockTree, user: readonly UserRuleInput[] = NO_USER_RULES): RuleView {
+  const analysis = analyse(tree, user);
+  const { env, found, matchedBy } = analysis;
+
+  const coverOf = (entry: Rule, at: NodeId): RuleCover => ({
+    id: entry.id,
+    title: entry.title,
+    at,
+    verdict: effectiveVerdict(entry, env),
+    reason: renderReason(entry, (found.get(entry) as Found).nodes.length),
+    source: sourceOf(entry),
   });
+
+  return {
+    home: env.home,
+    insideKept: analysis.insideKept,
+    matched: new Set(matchedBy.keys()),
+    holding: analysis.holding,
+
+    covering(node) {
+      for (let at: MockNode | undefined = node; at; at = tree.nodes[at.parent]) {
+        const entry = matchedBy.get(at.id);
+
+        if (entry) {
+          return coverOf(entry, at.id);
+        }
+      }
+
+      return null;
+    },
+
+    path(node) {
+      return folderPathOf(tree, node);
+    },
+
+    summary() {
+      let folders = 0;
+      let allocated = 0;
+      let largest: { entry: Rule; allocated: number } | undefined;
+
+      for (const [entry, match] of found) {
+        folders += match.nodes.length;
+        allocated += match.allocated;
+
+        if (!largest || match.allocated > largest.allocated) {
+          largest = { entry, allocated: match.allocated };
+        }
+      }
+
+      if (!largest) {
+        return { folders, allocated };
+      }
+
+      const match = found.get(largest.entry) as Found;
+
+      return {
+        folders,
+        allocated,
+        example: {
+          path: displayPath(largest.entry, match, env),
+          verdict: effectiveVerdict(largest.entry, env),
+        },
+      };
+    },
+  };
+}
+
+/**
+ * The folders of the `advisor` group: the review labels, largest first, without a folder that a rule covers or holds
+ * a rule match in.
+ */
+export function advisorNodes(
+  tree: MockTree,
+  labels: readonly MockLabel[],
+  user: readonly UserRuleInput[] = NO_USER_RULES,
+): MockNode[] {
+  const { insideKept, holding, matchedBy } = analyse(tree, user);
+
+  if (insideKept) {
+    return [];
+  }
+
+  const touchesRules = (node: MockNode): boolean => {
+    if (holding.has(node.id)) {
+      return true;
+    }
+
+    for (let at: MockNode | undefined = node; at; at = tree.nodes[at.parent]) {
+      if (matchedBy.has(at.id)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  return labels
+    .filter((label) => label.verdict === 'review')
+    .map((label) => tree.nodes[label.node])
+    .filter((node): node is MockNode => node !== undefined && !touchesRules(node))
+    .sort((a, b) => b.allocated - a.allocated || a.id - b.id);
+}
+
+/** The `advisor` suggestion for the labelled folders, or `null` when there are none. */
+function advisorSuggestion(
+  tree: MockTree,
+  labels: readonly MockLabel[],
+  user: readonly UserRuleInput[],
+): SuggestionDto | null {
+  const nodes = advisorNodes(tree, labels, user);
+
+  if (nodes.length === 0) {
+    return null;
+  }
+
+  const view = ruleView(tree, user);
+  const paths = nodes.map((node) => view.path(node));
+  const shown =
+    nodes.length === 1
+      ? shortenHome(paths[0] as string, view.home)
+      : joinPath(shortenHome(commonParent(paths), view.home), '**');
+
+  return {
+    id: ADVISOR_ID,
+    title: ADVISOR_TITLE,
+    path: shown,
+    verdict: 'review',
+    reason: ADVISOR_REASON,
+    allocated: nodes.reduce((sum, node) => sum + node.allocated, 0),
+    items: nodes.length,
+    sharedFiles: nodes.reduce((sum, node) => sum + node.sharedFiles, 0),
+    nodes: nodes.slice(0, MAX_SUGGESTION_NODES).map((node): NodeId => node.id),
+    source: 'model',
+  };
+}
+
+/** One rule and every folder or file it matched in a tree, as `platter_rules::matches` lists them. */
+export interface RuleMatch {
+  id: string;
+  title: string;
+  verdict: Verdict;
+  nodes: MockNode[];
+}
+
+/** Every match of every rule that matched something, in the table's order (a suggestion lists only the 20 largest). */
+export function ruleMatches(tree: MockTree, user: readonly UserRuleInput[] = NO_USER_RULES): RuleMatch[] {
+  const { env, found, insideKept } = analyse(tree, user);
+
+  if (insideKept) {
+    return [];
+  }
+
+  return RULES.flatMap((entry) => {
+    const match = found.get(entry);
+
+    return match
+      ? [{ id: entry.id, title: entry.title, verdict: effectiveVerdict(entry, env), nodes: match.nodes }]
+      : [];
+  });
+}
+
+/** The mock's stand-in for `get_suggestions`; `labels` are the mock advisor's labels of this scan. */
+export function suggestionsOf(
+  tree: MockTree,
+  labels: readonly MockLabel[] = [],
+  user: readonly UserRuleInput[] = NO_USER_RULES,
+): SuggestionsDto {
+  const { env, found, insideKept } = analyse(tree, user);
+  const empty: SuggestionsDto = { suggestions: [], totals: { safe: 0, review: 0, keep: 0 } };
 
   if (insideKept) {
     return empty;
   }
 
-  const evaluation = new Evaluation(tree, env);
   const totals = { ...empty.totals };
   const ranked: { index: number; suggestion: SuggestionDto }[] = [];
 
-  evaluation.run();
   RULES.forEach((entry, index) => {
-    const found = evaluation.found.get(entry);
+    const match = found.get(entry);
 
-    if (!found) {
+    if (!match) {
       return;
     }
 
     const verdict = effectiveVerdict(entry, env);
-    const largest = found.nodes
+    const largest = match.nodes
       .slice()
       .sort((a, b) => b.allocated - a.allocated || a.id - b.id)
       .slice(0, MAX_SUGGESTION_NODES);
 
-    totals[verdict] += found.allocated;
+    totals[verdict] += match.allocated;
     ranked.push({
       index,
       suggestion: {
         id: entry.id,
         title: entry.title,
-        path: displayPath(entry, found, env),
+        path: displayPath(entry, match, env),
         verdict,
-        reason: renderReason(entry, found.nodes.length),
-        allocated: found.allocated,
-        items: found.nodes.length,
-        sharedFiles: found.sharedFiles,
+        reason: renderReason(entry, match.nodes.length),
+        allocated: match.allocated,
+        items: match.nodes.length,
+        sharedFiles: match.sharedFiles,
         nodes: largest.map((node): NodeId => node.id),
+        source: sourceOf(entry),
       },
     });
   });
+
+  const advisor = advisorSuggestion(tree, labels, user);
+
+  if (advisor) {
+    totals.review += advisor.allocated;
+    ranked.push({ index: RULES.length, suggestion: advisor });
+  }
 
   ranked.sort(
     (a, b) =>

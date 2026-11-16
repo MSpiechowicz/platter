@@ -114,7 +114,9 @@ describe('the Explorer', () => {
     expect(tile(/^home \/ demo, /).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('button', { name: /^home \d/ }).getAttribute('aria-pressed')).toBe('true');
     expect(crumbs()).toEqual(['/']);
-    expect((screen.getByRole('button', { name: 'Open folder' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Go into folder' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
 
     await fireEvent.click(tile(/^home \/ demo, /));
 
@@ -147,7 +149,7 @@ describe('the Explorer', () => {
       name: /^home \/ demo, /,
     });
 
-    const open = screen.getByRole('button', { name: 'Open folder' }) as HTMLButtonElement;
+    const open = screen.getByRole('button', { name: 'Go into folder' }) as HTMLButtonElement;
     const reveal = screen.getByRole('button', { name: 'Show in file manager' }) as HTMLButtonElement;
 
     expect(open.disabled).toBe(true);
@@ -227,7 +229,7 @@ describe('the Explorer', () => {
     expect((screen.getByRole('button', { name: 'Mark for cleanup' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
-    expect((screen.getByRole('button', { name: 'Open folder' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Go into folder' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('MARKED FOR CLEANUP')).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Clean' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('Selected', { selector: 'span' })).toBeTruthy();
@@ -323,8 +325,8 @@ describe('the Explorer', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Show in file manager' }));
     expect(openInFileManager).toHaveBeenCalledWith(scanId, demo.id);
 
-    // The same folder that "Open folder" goes to.
-    await fireEvent.click(screen.getByRole('button', { name: 'Open folder' }));
+    // The same folder that "Go into folder" goes to.
+    await fireEvent.click(screen.getByRole('button', { name: 'Go into folder' }));
     await waitFor(() => expect(crumbs()).toEqual(['/', 'home', 'demo']));
   });
 

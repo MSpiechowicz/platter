@@ -1,3 +1,4 @@
+import type { UnloadAfter } from '../api/types';
 import type { SizeUnits } from '../format';
 
 export type ExplorerView = 'flat' | '3d';
@@ -10,7 +11,15 @@ export interface SettingsData {
   sidebarCollapsed: boolean;
   /** How the Explorer draws the focused folder. */
   explorerView: ExplorerView;
+  /** Use the local advisor model. Off until the model is downloaded; a finished download switches it on. */
+  advisorEnabled: boolean;
+  /** When the model leaves RAM again. The backend keeps the timer; `bootstrap` and a change send it there. */
+  advisorUnloadAfter: UnloadAfter;
+  /** Keep a local log of the questions and how they were read. The backend holds it in memory only, so it is sent at start. */
+  advisorLogQuestions: boolean;
 }
+
+const UNLOAD_AFTER: readonly UnloadAfter[] = ['oneMinute', 'fiveMinutes', 'windowClose'];
 
 export const SETTINGS_KEY = 'platter.settings';
 
@@ -20,6 +29,9 @@ const DEFAULTS: SettingsData = {
   oneFileSystem: true,
   sidebarCollapsed: false,
   explorerView: 'flat',
+  advisorEnabled: false,
+  advisorUnloadAfter: 'fiveMinutes',
+  advisorLogQuestions: true,
 };
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
@@ -50,7 +62,17 @@ function sanitize(raw: unknown): Partial<SettingsData> {
     clean.explorerView = value.explorerView;
   }
 
-  for (const key of ['reduceMotion', 'oneFileSystem', 'sidebarCollapsed'] as const) {
+  if (UNLOAD_AFTER.includes(value.advisorUnloadAfter as UnloadAfter)) {
+    clean.advisorUnloadAfter = value.advisorUnloadAfter as UnloadAfter;
+  }
+
+  for (const key of [
+    'reduceMotion',
+    'oneFileSystem',
+    'sidebarCollapsed',
+    'advisorEnabled',
+    'advisorLogQuestions',
+  ] as const) {
     if (typeof value[key] === 'boolean') {
       clean[key] = value[key];
     }
@@ -65,6 +87,9 @@ export class SettingsStore implements SettingsData {
   oneFileSystem = $state(DEFAULTS.oneFileSystem);
   sidebarCollapsed = $state(DEFAULTS.sidebarCollapsed);
   explorerView = $state<ExplorerView>(DEFAULTS.explorerView);
+  advisorEnabled = $state(DEFAULTS.advisorEnabled);
+  advisorUnloadAfter = $state<UnloadAfter>(DEFAULTS.advisorUnloadAfter);
+  advisorLogQuestions = $state(DEFAULTS.advisorLogQuestions);
 
   readonly #storage: StorageLike | null;
 
@@ -98,6 +123,9 @@ export class SettingsStore implements SettingsData {
       oneFileSystem: this.oneFileSystem,
       sidebarCollapsed: this.sidebarCollapsed,
       explorerView: this.explorerView,
+      advisorEnabled: this.advisorEnabled,
+      advisorUnloadAfter: this.advisorUnloadAfter,
+      advisorLogQuestions: this.advisorLogQuestions,
     };
 
     try {

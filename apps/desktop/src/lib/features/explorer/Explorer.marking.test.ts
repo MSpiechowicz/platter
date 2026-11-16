@@ -145,10 +145,10 @@ describe('marking in the Explorer', () => {
   });
 
   describe('the details card', () => {
-    it('has "Mark for cleanup" beside "Open folder", always, and the file manager button', async () => {
+    it('has "Mark for cleanup" beside "Go into folder", always, and the file manager button', async () => {
       await openDemo();
 
-      expect(screen.getByRole('button', { name: 'Open folder' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Go into folder' })).toBeTruthy();
       expect(markButton().textContent?.trim()).toBe('Mark for cleanup');
       expect(screen.getByRole('button', { name: 'Show in file manager' })).toBeTruthy();
     });
@@ -209,7 +209,7 @@ describe('marking in the Explorer', () => {
 
       expect(markButton().disabled).toBe(true);
       expect(markButton().title).toBe('The scanned folder itself is never cleaned.');
-      expect(screen.getByRole('button', { name: 'Open folder' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Go into folder' })).toBeTruthy();
     });
 
     it('is off for a folder inside a kept one: nothing under Videos can be marked', async () => {

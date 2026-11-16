@@ -4,6 +4,7 @@
     | 'overview'
     | 'explorer'
     | 'cleanup'
+    | 'advisor'
     | 'settings'
     | 'collapse'
     | 'download'
@@ -13,7 +14,9 @@
     | 'close'
     | 'disk'
     | 'refresh'
-    | 'alert';
+    | 'alert'
+    | 'offline'
+    | 'lock';
 </script>
 
 <script lang="ts">
@@ -55,6 +58,8 @@
     <path d="M2 4.5h4l1.5 1.5H14v6.5H2z" />
   {:else if name === 'cleanup'}
     <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" />
+  {:else if name === 'advisor'}
+    <path d="M8 2a4 4 0 0 0-2.3 7.3V11h4.6V9.3A4 4 0 0 0 8 2zM6.3 13.5h3.4" />
   {:else if name === 'settings'}
     <path d="M2 5h7M12 5h2M2 11h2M7 11h7" />
     <circle cx="10.5" cy="5" r="1.5" />
@@ -81,6 +86,13 @@
   {:else if name === 'alert'}
     <circle cx="8" cy="8" r="6.2" />
     <path d="M8 4.8v3.8M8 11v.2" />
+  {:else if name === 'offline'}
+    <path
+      d="M2 8.2a8 8 0 0 1 3-1.8M14 8.2a8 8 0 0 0-3.4-1.9M4.6 10.4a4.5 4.5 0 0 1 2-1.1M11.4 10.4a4.5 4.5 0 0 0-1.9-1.1M8 13h.01M2.5 2.5l11 11"
+    />
+  {:else if name === 'lock'}
+    <rect x="3.5" y="7" width="9" height="6.5" rx="1.5" />
+    <path d="M5.5 7V5.2a2.5 2.5 0 0 1 5 0V7M8 9.8v1" />
   {/if}
 </svg>
 

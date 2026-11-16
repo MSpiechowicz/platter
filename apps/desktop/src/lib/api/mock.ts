@@ -1,5 +1,7 @@
 import { ApiRequestError, type Api } from './client';
+import { createMockAdvisor, type MockAdvisorOptions, type MockLabelRuns } from './mock-advisor';
 import { createMockCleanup } from './mock-cleanup';
+import { createMockUserRules, type MockUserRulesOptions } from './mock-user-rules';
 import { toDto } from './mock-dto';
 import { REAL_BYTES, REAL_ROOT, SKEW_BYTES, SKEW_ROOT } from './mock-layouts';
 import { lodOf } from './mock-lod';
@@ -103,6 +105,10 @@ export interface MockOptions {
   pickedFolder?: string | null;
   /** Test hook: warnings the finished scan reports. */
   warnings?: ScanWarning[];
+  /** Test hook: timers and starting state of the advisor model's state machine (see `mock-advisor.ts`). */
+  advisor?: MockAdvisorOptions;
+  /** Test hook: the rules the user's rule list starts with, or a broken rules file (see `mock-user-rules.ts`). */
+  userRules?: MockUserRulesOptions;
 }
 
 /** Elapsed time reported for an instant scan, so the header does not read "in 0 s". */
@@ -315,10 +321,49 @@ export function createMockApi(options: MockOptions = {}): Api {
     return volume ? volume.total - volume.available : FOLDER_BYTES;
   };
 
-  const cleanup = createMockCleanup({
+  /** The labels the advisor made, by scan; they go with the scan, and when a cleanup outdates it. */
+  const labelRuns: MockLabelRuns = new Map();
+  const outdated = new Set<ScanId>();
+
+  const userRules = createMockUserRules(
+    {
+      treeOf: (scan) => scanOf(scan).tree,
+      isRunning: (scan) => scanOf(scan).running,
+      changed: () => dropPlans(),
+    },
+    options.userRules,
+  );
+  const { view: userRulesView, ...userRulesApi } = userRules;
+
+  const { advisorEnabled, ...advisor } = createMockAdvisor(
+    {
+      treeOf: (scan) => scanOf(scan).tree,
+      pathOf: (tree, node) => pathOf(tree, node).path,
+      summary: summaryOf,
+      isRunning: (scan) => scanOf(scan).running,
+      outdated,
+      runs: labelRuns,
+      userRules: () => userRulesView().rules,
+      rulesProblem: () => userRulesView().problem,
+    },
+    options.advisor,
+  );
+
+  /** What the suggestions and plans see of the labels: nothing while the advisor is switched off. */
+  const labelsOf = (scan: ScanId) => (advisorEnabled() ? (labelRuns.get(scan)?.labels ?? []) : []);
+
+  const { dropPlans, ...cleanupApi } = createMockCleanup({
     treeOf: (scan) => scanOf(scan).tree,
     pathOf: (tree, node) => pathOf(tree, node).path,
     durationMs,
+    labelsOf,
+    advisorEnabled,
+    userRules: userRulesView,
+    outdated,
+    outdate: (scan) => {
+      outdated.add(scan);
+      labelRuns.delete(scan);
+    },
   });
 
   const run = (record: ScanRecord, id: ScanId): void => {
@@ -423,6 +468,7 @@ export function createMockApi(options: MockOptions = {}): Api {
       record.running = false;
       stopTimer(record);
       scans.delete(scan);
+      labelRuns.delete(scan);
       // Like the real scanner, which notices the flag at its next directory: the event follows, it does not interrupt.
       setTimeout(() => record.onEvent({ type: 'cancelled' }), 0);
     },
@@ -436,6 +482,7 @@ export function createMockApi(options: MockOptions = {}): Api {
       }
 
       scans.delete(scan);
+      labelRuns.delete(scan);
     },
 
     async getNode(scan, node) {
@@ -493,10 +540,14 @@ export function createMockApi(options: MockOptions = {}): Api {
     },
 
     async getSuggestions(scan) {
-      return suggestionsOf(scanOf(scan).tree);
+      return suggestionsOf(scanOf(scan).tree, labelsOf(scan), userRulesView().rules);
     },
 
-    ...cleanup,
+    ...cleanupApi,
+
+    ...advisor,
+
+    ...userRulesApi,
 
     async openInFileManager(scan, node) {
       nodeOf(scan, node);

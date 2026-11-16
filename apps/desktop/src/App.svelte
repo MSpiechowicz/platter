@@ -6,12 +6,14 @@
   import ToastHost from './lib/components/ui/ToastHost.svelte';
   import TooltipHost from './lib/components/ui/TooltipHost.svelte';
   import { bootstrap } from './lib/bootstrap';
+  import AdvisorPage from './lib/features/advisor/AdvisorPage.svelte';
   import CleanupPage from './lib/features/cleanup/CleanupPage.svelte';
   import Explorer from './lib/features/explorer/Explorer.svelte';
   import OverviewPage from './lib/features/overview/OverviewPage.svelte';
   import ScanProgress from './lib/features/scan/ScanProgress.svelte';
   import SettingsPage from './lib/features/settings/SettingsPage.svelte';
   import StartPage from './lib/features/start/StartPage.svelte';
+  import { advisor } from './lib/state/advisor.svelte';
   import { syncMotionAttribute } from './lib/state/motion.svelte';
   import {
     highlightedPage,
@@ -31,6 +33,7 @@
     { id: 'overview', label: 'Overview', icon: 'overview' },
     { id: 'explorer', label: 'Explorer', icon: 'explorer' },
     { id: 'cleanup', label: 'Cleanup', icon: 'cleanup' },
+    { id: 'advisor', label: 'Advisor', icon: 'advisor' },
     { id: 'settings', label: 'Settings', icon: 'settings' },
   ];
 
@@ -103,6 +106,7 @@
         ? undefined
         : () => settings.set('sidebarCollapsed', !settings.sidebarCollapsed)}
       volume={scan.volumeInfo?.volume}
+      advisorBytes={advisor.loaded ? advisor.status?.ramBytes : undefined}
       update={updater.info}
       updatePhase={updater.phase}
       updateProgress={updater.progress}
@@ -113,6 +117,8 @@
   <!-- One boundary per page: a page that fails shows a card, and going elsewhere starts afresh. -->
   {#if screen.id === 'settings'}
     <PageBoundary><SettingsPage /></PageBoundary>
+  {:else if screen.id === 'advisor'}
+    <PageBoundary><AdvisorPage ready={screen.scan} scanning={state.status === 'scanning'} /></PageBoundary>
   {:else if screen.id === 'progress'}
     <PageBoundary><ScanProgress running={screen.scan} /></PageBoundary>
   {:else if screen.id === 'explorer'}

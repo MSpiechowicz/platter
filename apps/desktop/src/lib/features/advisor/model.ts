@@ -1,0 +1,338 @@
+import type {
+  AdvisorAnswerDto,
+  AdvisorLabelsDto,
+  AdvisorStatusDto,
+  LabelDto,
+  ModelState,
+  StepDto,
+  UnloadAfter,
+  Verdict,
+} from '../../api/types';
+
+/** Formats bytes the way the rest of the interface does (it follows the size-unit setting). */
+export type SizeFormat = (bytes: number) => string;
+
+/** What the state pill says. `undefined` is the moment before the backend has answered. */
+export function pillText(state: ModelState | undefined): string {
+  switch (state) {
+    case 'loaded':
+      return 'Model loaded';
+    case 'onDisk':
+      return 'Model on disk, not loaded';
+    case 'notDownloaded':
+      return 'Not downloaded';
+    case 'downloading':
+      return 'Downloading…';
+    case 'loading':
+      return 'Loading model…';
+    case 'unavailable':
+      return 'Not available here';
+    default:
+      return 'Checking the model…';
+  }
+}
+
+/** The text for a download that has bytes: "512 MB of 2.7 GB". */
+export function receivedText(download: { received: number; total: number }, size: SizeFormat): string {
+  return `${size(download.received)} of ${size(download.total)}`;
+}
+
+/** How much of the download has arrived, 0 to 1. */
+export function downloadShare(download: { received: number; total: number }): number {
+  if (download.total <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(1, download.received / download.total));
+}
+
+/** The label of the download button: a cancelled download is continued, not started again. */
+export function downloadLabel(status: AdvisorStatusDto, size: SizeFormat): string {
+  if (status.download) {
+    return `Continue download (${receivedText(status.download, size)})`;
+  }
+
+  return `Download ${status.model.name} (${size(status.model.bytes)})`;
+}
+
+export type PrimaryAction =
+  | { kind: 'download'; label: string }
+  | { kind: 'cancel'; label: string }
+  | { kind: 'load'; label: string; disabled: boolean; hint?: string }
+  | { kind: 'unload'; label: string }
+  | { kind: 'busy'; label: string };
+
+/** What a card about a scan says while there is no finished scan: nothing was scanned, or the scan is still running. */
+export function noScanText(scanning: boolean): string {
+  return scanning
+    ? 'A scan is running; the advisor uses it once it finishes.'
+    : 'Scan a disk or folder first.';
+}
+
+export const SWITCHED_OFF_HINT = 'The local model is switched off in Settings.';
+
+/** The one button of the page header, by the model's state. Nothing for a build without a runtime. */
+export function primaryAction(
+  status: AdvisorStatusDto | undefined,
+  enabled: boolean,
+  size: SizeFormat,
+): PrimaryAction | undefined {
+  switch (status?.state) {
+    case 'notDownloaded':
+      // The Model card right below names the model; the header keeps the button short so it ends where the cards do.
+      return {
+        kind: 'download',
+        label: status.download ? downloadLabel(status, size) : `Download (${size(status.model.bytes)})`,
+      };
+    case 'downloading':
+      return { kind: 'cancel', label: 'Cancel download' };
+    case 'onDisk':
+      return {
+        kind: 'load',
+        label: 'Load into RAM',
+        disabled: !enabled,
+        hint: enabled ? undefined : SWITCHED_OFF_HINT,
+      };
+    case 'loaded':
+      return { kind: 'unload', label: 'Unload from RAM' };
+    case 'loading':
+      return { kind: 'busy', label: 'Loading…' };
+    default:
+      return undefined;
+  }
+}
+
+/** The text of the "Unloads after" row. */
+export function unloadAfterText(unloadAfter: UnloadAfter): string {
+  switch (unloadAfter) {
+    case 'oneMinute':
+      return '1 min idle';
+    case 'fiveMinutes':
+      return '5 min idle';
+    case 'windowClose':
+      return 'When the window closes';
+  }
+}
+
+/** The options of the Unload dropdown in Settings. */
+export const UNLOAD_OPTIONS: { value: UnloadAfter; label: string }[] = [
+  { value: 'oneMinute', label: '1 minute idle' },
+  { value: 'fiveMinutes', label: '5 minutes idle' },
+  { value: 'windowClose', label: 'When the window closes' },
+];
+
+/** "36 tokens/s", or a dash before the first answer. */
+export function speedText(tokensPerSecond: number | undefined): string {
+  if (tokensPerSecond === undefined || !Number.isFinite(tokensPerSecond)) {
+    return '—';
+  }
+
+  return `${Math.round(tokensPerSecond)} tokens/s`;
+}
+
+/** How much of the machine's memory the model holds, 0 to 1. */
+export function ramShare(status: AdvisorStatusDto): number {
+  if (status.ramBytes === undefined || status.ramTotal <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(1, status.ramBytes / status.ramTotal));
+}
+
+/** "2.1 GB of 34 GB RAM in use"; undefined while the model is not in memory. */
+export function ramText(status: AdvisorStatusDto, size: SizeFormat): string | undefined {
+  if (status.ramBytes === undefined) {
+    return undefined;
+  }
+
+  return `${size(status.ramBytes)} of ${size(status.ramTotal)} RAM in use`;
+}
+
+/** The "On disk" row: the size once the file is there. */
+export function onDiskText(status: AdvisorStatusDto, size: SizeFormat): string {
+  switch (status.state) {
+    case 'onDisk':
+    case 'loading':
+    case 'loaded':
+      return size(status.model.bytes);
+    case 'downloading':
+      return 'Downloading…';
+    default:
+      return 'Not downloaded';
+  }
+}
+
+/** One part of the bar under the three steps. `share` is 0 to 1; the parts add up to 1. */
+export interface SplitPart {
+  key: 'rules' | 'model' | 'guard';
+  folders: number;
+  share: number;
+}
+
+/** The folders each step handled, as parts of all of them (the mockup's bar counts folders). */
+export function splitParts(labels: AdvisorLabelsDto): SplitPart[] {
+  const steps: [SplitPart['key'], StepDto][] = [
+    ['rules', labels.rules],
+    ['model', labels.model],
+    ['guard', labels.guard],
+  ];
+  const total = steps.reduce((sum, [, step]) => sum + step.folders, 0);
+
+  return steps
+    .filter(([, step]) => step.folders > 0)
+    .map(([key, step]) => ({ key, folders: step.folders, share: step.folders / total }));
+}
+
+/** "87%" for the legend. Never "100%" while something else holds a part, and never "0%" for a part that exists. */
+export function percentText(share: number): string {
+  if (share >= 1) {
+    return '100%';
+  }
+
+  if (share > 0 && share < 0.005) {
+    return '<1%';
+  }
+
+  return `${Math.min(99, Math.round(share * 100))}%`;
+}
+
+/**
+ * The labels the user has to look at: the model says `review`. One the user has decided already (`decided`) stays in
+ * the list and shows that decision in place of the buttons, so a decision is seen and the list does not jump.
+ */
+export function needsInput(labels: AdvisorLabelsDto | undefined): LabelDto[] {
+  return (labels?.labels ?? []).filter((label) => label.verdict === 'review');
+}
+
+/** The name of whoever decided, for the verdict line of an answer. */
+export function sourceLabel(source: AdvisorAnswerDto['source']): string {
+  switch (source) {
+    case 'guard':
+      return 'Safety guard';
+    case 'rule':
+      return 'Built-in rule';
+    case 'user':
+      return 'Your rule';
+    case 'model':
+      return 'Local model';
+    case 'unruled':
+      return 'No rule';
+  }
+}
+
+export interface LabelReadiness {
+  /** "Label folders" can be pressed. */
+  ready: boolean;
+  /** Why it cannot be, as one plain sentence. */
+  reason?: string;
+}
+
+/** What stands between the user and "Label folders" in a finished scan. */
+export function labelReadiness(input: {
+  status: AdvisorStatusDto | undefined;
+  enabled: boolean;
+  outdated: boolean;
+  labels: AdvisorLabelsDto | undefined;
+}): LabelReadiness {
+  const { status, enabled, outdated, labels } = input;
+  const no = (reason: string): LabelReadiness => ({ ready: false, reason });
+
+  if (!status) {
+    return no('Checking the model…');
+  }
+
+  if (status.state === 'unavailable') {
+    return no('The local model is not available in this build.');
+  }
+
+  if (status.state === 'notDownloaded' || status.state === 'downloading') {
+    return no('Download the model first.');
+  }
+
+  if (!enabled) {
+    return no(SWITCHED_OFF_HINT);
+  }
+
+  if (status.state === 'loading') {
+    return no('The model is loading.');
+  }
+
+  if (outdated) {
+    return no('Rescan first: a cleanup changed the disk.');
+  }
+
+  if (labels && labels.candidates === 0) {
+    return no('No folder is left for the model: the rules cover the rest.');
+  }
+
+  return { ready: true };
+}
+
+/** "3 of 50 folders". */
+export function progressText(done: number, total: number): string {
+  return `${done} of ${total} folders`;
+}
+
+/** What the question box is not ready for, as one plain sentence; `ready` when a question can be asked. */
+export interface AskReadiness {
+  ready: boolean;
+  reason?: string;
+}
+
+/**
+ * What stands between the user and a free question. The backend reads the question with the model, so the model must
+ * be there and switched on, and it is busy while it labels. The page is about a finished scan.
+ */
+export function askReadiness(input: {
+  hasScan: boolean;
+  scanning: boolean;
+  status: AdvisorStatusDto | undefined;
+  enabled: boolean;
+}): AskReadiness {
+  const { hasScan, scanning, status, enabled } = input;
+  const no = (reason: string): AskReadiness => ({ ready: false, reason });
+
+  if (!hasScan) {
+    return no(noScanText(scanning));
+  }
+
+  if (!status) {
+    return no('Checking the model…');
+  }
+
+  if (status.state === 'unavailable') {
+    return no('The local model is not available in this build.');
+  }
+
+  if (status.state === 'notDownloaded' || status.state === 'downloading') {
+    return no('Download the model first.');
+  }
+
+  if (!enabled) {
+    return no(SWITCHED_OFF_HINT);
+  }
+
+  if (status.state === 'loading') {
+    return no('The model is loading.');
+  }
+
+  if (status.labelling) {
+    return no('The model is labelling folders; ask again when it is done.');
+  }
+
+  return { ready: true };
+}
+
+/** What a folder tag in an answer says of its verdict, for the name a screen reader reads ("no verdict" when none). */
+export function verdictWords(verdict: Verdict | undefined): string {
+  switch (verdict) {
+    case 'safe':
+      return 'safe to clean';
+    case 'review':
+      return 'needs review';
+    case 'keep':
+      return 'kept';
+    case undefined:
+      return 'no verdict';
+  }
+}

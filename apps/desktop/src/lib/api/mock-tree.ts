@@ -46,6 +46,11 @@ export interface MockTree {
   /** Scan time in unix seconds; `byAge` buckets are relative to it. */
   now: number;
   rootPath: string;
+  /**
+   * What this machine calls its personal folders, by their English name, where that is another name below the home
+   * folder (`{ Downloads: 'Pobrane' }`; the XDG `user-dirs.dirs` of the backend). Left out: the English names.
+   */
+  userDirs?: Readonly<Record<string, string>>;
 }
 
 export interface TreeOptions {

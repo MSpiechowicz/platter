@@ -1,4 +1,8 @@
 import type {
+  AdvisorAnswerDto,
+  AdvisorLabelsDto,
+  AdvisorOptionsDto,
+  AdvisorStatusDto,
   ApiError,
   ApiErrorCode,
   ChildrenPage,
@@ -6,18 +10,23 @@ import type {
   CleanupId,
   CleanupPlanDto,
   ExternalLink,
+  FolderMatchDto,
   LodNode,
   NodeDto,
   NodeId,
   PathDto,
   PlanId,
+  ScanAnswerDto,
   ScanEvent,
   ScanId,
   ScanOptions,
+  SizeUnits,
   SortKey,
   SuggestionsDto,
   SummaryDto,
   UndoDto,
+  UserRulesDto,
+  UserVerdict,
   VolumeDto,
 } from './types';
 
@@ -60,12 +69,17 @@ export interface Api {
   getLod(scan: ScanId, node: NodeId, maxNodes: number, maxDepth: number): Promise<LodNode>;
   getPath(scan: ScanId, node: NodeId): Promise<PathDto>;
   getSummary(scan: ScanId, node: NodeId): Promise<SummaryDto>;
-  /** What the cleanup rules would label in a finished scan. Read-only: nothing is changed. */
+  /**
+   * What the cleanup rules would label in a finished scan. Read-only: nothing is changed. The `advisor` suggestion
+   * (made from the local model's labels) is listed only while the advisor is switched on.
+   */
   getSuggestions(scan: ScanId): Promise<SuggestionsDto>;
 
   /**
    * Plans the cleanup of the given suggestions (rule ids from `getSuggestions`) of a finished scan. Nothing is
-   * changed. `invalid`: no ids, an unknown id, or an outdated scan (a cleanup already ran on it).
+   * changed. `invalid`: no ids, an unknown id, or an outdated scan (a cleanup already ran on it); for `advisor`
+   * also the advisor switched off, or no labelled folder that can be cleaned. The labels of a scan are dropped when
+   * the disk changes (a cleanup or an undo).
    */
   planCleanup(scan: ScanId, suggestionIds: string[]): Promise<CleanupPlanDto>;
   /**
@@ -88,6 +102,120 @@ export interface Api {
   cancelCleanup(cleanup: CleanupId): Promise<void>;
   /** Puts back what a finished cleanup moved to the trash, once; `notFound` the second time. */
   undoCleanup(cleanup: CleanupId): Promise<UndoDto[]>;
+
+  /** The local model's state, options and memory use. */
+  advisorStatus(): Promise<AdvisorStatusDto>;
+  /**
+   * The one status channel of the advisor: the backend pushes the current status at once, then on every change
+   * (options, load, unload, idle unload, download progress, labelling progress as `labelling`). A new subscription replaces the old one.
+   */
+  watchAdvisor(onEvent: (status: AdvisorStatusDto) => void): Promise<void>;
+  /**
+   * Tells the backend the advisor options (called at start, before anything is loaded, and when the setting
+   * changes); until then the backend treats the model as switched off. Switching the model off unloads it. Options
+   * the backend cannot read (an unknown `unloadAfter`, extra fields) are refused before the command runs, so the
+   * error is not `invalid`; the mock answers `invalid`.
+   */
+  configureAdvisor(options: AdvisorOptionsDto): Promise<AdvisorStatusDto>;
+  /**
+   * Deletes the local question log (`advisor-questions.jsonl` in Platter's data folder). The web view never reads
+   * the file. No log is not an error. `io`: a link or a folder is at the log's path, or it cannot be removed.
+   */
+  clearQuestionLog(): Promise<void>;
+  /**
+   * Starts the opt-in model download, or resumes one that was cancelled; progress arrives through `watchAdvisor`.
+   * `invalid` unless the model is `notDownloaded`. The backend asks the user in a native dialog first; when it is
+   * declined this rejects with `cancelled` and the model stays `notDownloaded`.
+   */
+  startModelDownload(): Promise<void>;
+  /** Stops a running download and keeps what was received for a later resume. Nothing running is not an error. */
+  cancelModelDownload(): Promise<void>;
+  /**
+   * Checks and loads the downloaded model. A loaded model answers with its status; `invalid` before the download,
+   * while downloading or loading, and while the model is switched off. A failed check or load is not an error: the
+   * answer is `onDisk` or `notDownloaded` with a `problem`.
+   */
+  loadModel(): Promise<AdvisorStatusDto>;
+  /** Frees the model's memory. A model not in memory answers with its status; `invalid` while downloading or loading. */
+  unloadModel(): Promise<AdvisorStatusDto>;
+  /**
+   * Has the model label the largest folders that no rule covers (at most 50, each of at least 256 MiB) in a finished
+   * scan. Resolves as soon as the job is taken; progress arrives through `watchAdvisor` as `labelling`
+   * (`done` of `total`), and the labels through `getAdvisorLabels`, which shows them when the run ends. A model on
+   * disk is loaded first, and a failure after the job was taken (the model fails to load or verify) is not an error
+   * of this call: the status shows it, `labelling` disappears and `problem` is set. A run that stops (cancelled,
+   * time budget) or fails with no label keeps the labels of the earlier run; a run that ends normally with none
+   * replaces them. A scan with no candidate gets an empty run at once. `notFound`:
+   * unknown scan. `invalid`: the scan is still running or outdated (a cleanup ran on it), another model job runs
+   * (download, load, labelling or a question), the model is switched off in the options, or no model file is on disk.
+   */
+  labelFolders(scan: ScanId): Promise<void>;
+  /** Stops a running labelling after the folder in progress and keeps the labels made so far. Nothing running is not an error. */
+  cancelLabelling(): Promise<void>;
+  /**
+   * The labels of a scan with the counts for "How a verdict is made": folders and bytes the rules matched, the model
+   * labelled and the guard refused or left for the user. Also before any labelling (no labels, `candidates` set).
+   * `notFound`: unknown scan.
+   */
+  getAdvisorLabels(scan: ScanId): Promise<AdvisorLabelsDto>;
+  /**
+   * What Platter says about one folder (a node id of a scan), from its rules alone: no model call, no model wording,
+   * so it works with the model switched off, not downloaded, busy or labelling, and is instant. The answer comes in
+   * this order: the guard (the scan root, a protected place, an unreadable folder: source `guard`), then a rule
+   * covering the folder or one above it (`rule`; `user` for the user's own rule), then a label made earlier in this
+   * scan (`model`: the verdict is the model's label, the text is Platter's), else `unruled` (verdict `review`).
+   * `units` is how the size in `detail` is written (`'GB'` when left out). `notFound`: unknown or running scan, or
+   * unknown node. `invalid`: not a folder, or the user's rules file is broken.
+   */
+  askAdvisor(scan: ScanId, node: NodeId, units?: SizeUnits): Promise<AdvisorAnswerDto>;
+  /**
+   * Answers a free question about a finished scan. The question is text only (never a path, never stored; 1 to 500
+   * characters after trimming) and `units` is how sizes are written in the answer text. The backend works out what
+   * is asked, finds the folders in the scan's tree and the rules; the model only reads the question (it never
+   * sees the facts), and Platter writes the answer from the scan: a direct first sentence, then the rest of the facts.
+   * The rows, sizes and verdicts are computed. A question that is not about the scan gets no rows and a fixed text. A scope the scan does not hold gives no rows and a note. A scan a
+   * cleanup ran on answers with a note that it is outdated. The model is loaded first if needed. Errors, in order:
+   * `invalid` for a blank or too long question; `notFound` for an unknown or running scan; `invalid` for a broken
+   * rules file, while folders are being labelled or another model job runs, and when the model is switched off, not
+   * on disk or unavailable.
+   *
+   * A question whose words name what it is about is answered at once, without the model. One that could mean more
+   * than one thing (a name that fits two folders, a word that fits two tools) comes back as `clarify`: the prompt and
+   * the choices, no rows. Asking the same question again with `pick` set to the `id` of a choice answers about that
+   * choice; the web view sends only the text and that id, never a path. A `pick` that fits no choice (any more) is
+   * `invalid`: "that choice is no longer available; ask again".
+   */
+  askScan(scan: ScanId, question: string, units: SizeUnits, pick?: number): Promise<ScanAnswerDto>;
+  /**
+   * Looks for folders of a finished scan by name, for a folder picker; it only reads the scan's tree. An exact path
+   * (`~/...` or `/...`) comes first, then folders whose name starts with the text, then folders whose name contains
+   * it (case ignored), largest first within each group. Files are never listed, and the scan root matches only by
+   * its exact path. `query` is at most 1024 bytes (`invalid` otherwise); a blank one (only spaces) finds nothing, and
+   * any other is matched as typed, spaces included. `limit` is clamped to 1..20. `notFound`: unknown scan.
+   */
+  findFolders(scan: ScanId, query: string, limit: number): Promise<FolderMatchDto[]>;
+
+  /**
+   * The user's own rules, in the order they were made. Each of the four rule commands answers with the whole list.
+   * While the rules file is broken the answer has no rules and a `problem`.
+   */
+  listUserRules(): Promise<UserRulesDto>;
+  /**
+   * Says `keep` (always keep) or `safe` (safe to clean) about a folder of a finished scan, named by its node id; the
+   * backend works out the exact path itself. A folder that already has a rule gets the new verdict. `notFound`:
+   * unknown scan or node (also a scan that has not finished). `invalid`: not a folder, a name that is not valid
+   * text, `/`, a full list (256 rules), a broken rules file, and for `safe` also the home folder, the scan root and
+   * a protected place (the text says which). Changing a rule drops the cleanup plans that were waiting.
+   */
+  addUserRule(scan: ScanId, node: NodeId, verdict: UserVerdict): Promise<UserRulesDto>;
+  /** Removes a rule by its id. An id that is not there changes nothing. `invalid` while the rules file is broken. */
+  removeUserRule(id: number): Promise<UserRulesDto>;
+  /**
+   * Moves a broken rules file aside and starts with no rules. `invalid` when the file is not broken. While it is
+   * broken, every cleanup plan (`planCleanup`, `planMarkedCleanup`) is `invalid`; `getSuggestions` still works with
+   * the built-in rules.
+   */
+  resetUserRules(): Promise<UserRulesDto>;
 
   openInFileManager(scan: ScanId, node: NodeId): Promise<void>;
 

@@ -51,11 +51,11 @@ describe('DetailsCard buttons', () => {
       (button) => button.textContent?.trim() || button.getAttribute('aria-label'),
     );
 
-  it('always has "Open folder", "Mark for cleanup" and the file manager, whether or not they can be used', () => {
+  it('always has "Go into folder", "Mark for cleanup" and the file manager, whether or not they can be used', () => {
     render(DetailsCard, { props: props({ node: undefined, selected: false, canOpen: false }) });
 
-    expect(names()).toEqual(['Open folder', 'Mark for cleanup', 'Show in file manager']);
-    expect((screen.getByRole('button', { name: 'Open folder' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(names()).toEqual(['Go into folder', 'Mark for cleanup', 'Show in file manager']);
+    expect((screen.getByRole('button', { name: 'Go into folder' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Mark for cleanup' }) as HTMLButtonElement).disabled).toBe(
       true,
     );

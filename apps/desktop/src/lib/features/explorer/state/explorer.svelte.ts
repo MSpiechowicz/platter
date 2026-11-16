@@ -549,7 +549,7 @@ export class ExplorerStore {
   }
 
   /**
-   * The folder the selection stands for, which is the one "Open folder" opens and "Show in file manager" shows: for
+   * The folder the selection stands for, which is the one "Go into folder" opens and "Show in file manager" shows: for
    * a chain tile ("home / sam") the last folder of the chain, otherwise the selected child itself. The details of
    * the selection come from this one node, so that its path, size and actions never describe two folders.
    */
@@ -779,7 +779,7 @@ export class ExplorerStore {
     }
   }
 
-  /** "Open folder" for the selected child: a chain tile opens its last folder. */
+  /** "Go into folder" for the selected child: a chain tile opens its last folder. */
   openSelected(): void {
     if (this.selected !== null) {
       this.open(this.selected);
@@ -893,7 +893,7 @@ export class ExplorerStore {
     }
   }
 
-  /** Shows the selected child (a chain tile: its last folder, which "Open folder" opens), or else the open folder. */
+  /** Shows the selected child (a chain tile: its last folder, which "Go into folder" opens), or else the open folder. */
   async reveal(): Promise<void> {
     const id = (this.groupSelected ? undefined : this.selectedTarget?.id) ?? this.shown?.focus;
 

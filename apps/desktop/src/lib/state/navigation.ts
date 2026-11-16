@@ -1,7 +1,7 @@
 import type { ReadyScan, RunningScan, ScanState } from './scan.svelte';
 import type { Page } from './ui.svelte';
 
-/** Why Overview, Explorer and Cleanup cannot be opened yet. */
+/** Why Overview, Explorer, Cleanup and Advisor cannot be opened yet. */
 export const SCAN_FIRST_HINT = 'Scan a disk or folder first';
 
 /** What the main area shows. The scan the screen is about travels with it. */
@@ -12,6 +12,9 @@ export type Screen =
   | { id: 'explorer'; scan: ReadyScan }
   /** The Cleanup view also shows its first step, the scan itself, so it takes a running scan too. */
   | { id: 'cleanup'; scan: ReadyScan | RunningScan }
+  /** The Advisor view is about a scan (owner decision 2026-11-16): it opens once one is ready. The model download
+   *  is reachable without a scan through the first-launch prompt and Settings. */
+  | { id: 'advisor'; scan: ReadyScan }
   | { id: 'settings' };
 
 /**
@@ -21,8 +24,8 @@ export type Screen =
  * - A running scan always shows its progress, whichever item was chosen, except in Cleanup, whose first step is the
  *   scan: it shows that step.
  * - "Scan" shows the start screen, even when a result is ready (the result stays until a new scan starts).
- * - Overview, Explorer and Cleanup show their page once a scan is ready; before that they fall back to the start
- *   screen.
+ * - Overview, Explorer, Cleanup and Advisor show their page once a scan is ready; before that they fall back to the
+ *   start screen.
  */
 export function resolveScreen(state: ScanState, page: Page): Screen {
   if (page === 'settings') {
@@ -45,6 +48,10 @@ export function resolveScreen(state: ScanState, page: Page): Screen {
     return { id: 'cleanup', scan: state };
   }
 
+  if (state.status === 'ready' && page === 'advisor') {
+    return { id: 'advisor', scan: state };
+  }
+
   return { id: 'start' };
 }
 
@@ -59,9 +66,9 @@ export function highlightedPage(screen: Screen): Page {
   }
 }
 
-/** Overview, Explorer and Cleanup have nothing to show until a scan is ready. */
+/** Overview, Explorer, Cleanup and Advisor have nothing to show until a scan is ready. */
 export function isPageAvailable(page: Page, status: ScanState['status']): boolean {
-  if (page === 'overview' || page === 'explorer' || page === 'cleanup') {
+  if (page === 'overview' || page === 'explorer' || page === 'cleanup' || page === 'advisor') {
     return status === 'ready';
   }
 
@@ -69,9 +76,9 @@ export function isPageAvailable(page: Page, status: ScanState['status']): boolea
 }
 
 /**
- * A finished scan takes the user to its Overview, unless they are in Settings, or in Cleanup, where "Scan again" is
- * meant to come back to the review of the new scan.
+ * A finished scan takes the user to its Overview, unless they are in Settings or the Advisor view (they are not
+ * waiting for the scan), or in Cleanup, where "Scan again" is meant to come back to the review of the new scan.
  */
 export function pageAfterScan(page: Page): Page {
-  return page === 'settings' || page === 'cleanup' ? page : 'overview';
+  return page === 'settings' || page === 'cleanup' || page === 'advisor' ? page : 'overview';
 }

@@ -32,6 +32,8 @@
     ontoggle?: () => void;
     /** The volume that was scanned. Nothing is shown at the bottom when there is none. */
     volume?: VolumeDto;
+    /** Memory the advisor model holds, while it is loaded; the row is hidden otherwise. */
+    advisorBytes?: number;
     update?: UpdateInfo | null;
     updatePhase?: UpdatePhase;
     updateProgress?: number;
@@ -45,6 +47,7 @@
     collapsed,
     ontoggle,
     volume,
+    advisorBytes,
     update = null,
     updatePhase = 'available',
     updateProgress = 0,
@@ -141,9 +144,9 @@
       />
     {/if}
 
-    {#if volume}
+    {#if volume || (advisorBytes !== undefined && !collapsed)}
       <div class="foot">
-        {#if collapsed}
+        {#if volume && collapsed}
           <div
             class="rail"
             title="{baseName(volume.device)}: {fmt.size(used)} of {fmt.size(volume.total)} used"
@@ -151,10 +154,17 @@
             <b class="num">{Math.round(share * 100)}%</b>
             <Bar value={share} label="Disk used" />
           </div>
-        {:else}
+        {:else if volume}
           <div class="kvr"><b>{baseName(volume.device)}</b><span>{volume.fsType}</span></div>
           <div class="usage"><Bar value={share} label="Disk used" /></div>
           <div class="kvr"><span>{fmt.size(used)} of {fmt.size(volume.total)}</span></div>
+        {/if}
+
+        {#if advisorBytes !== undefined && !collapsed}
+          <div class="kvr model" title="Memory the advisor model holds">
+            <span>Advisor model</span>
+            <span class="num">{fmt.size(advisorBytes)}</span>
+          </div>
         {/if}
       </div>
     {/if}
@@ -291,6 +301,14 @@
 
   .usage {
     margin: 7px 0 5px;
+  }
+
+  .model {
+    margin-top: 10px;
+  }
+
+  .foot > .model:first-child {
+    margin-top: 0;
   }
 
   .rail :global(.bar) {

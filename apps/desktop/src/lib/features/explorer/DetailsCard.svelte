@@ -80,7 +80,7 @@
   </div>
   <p class="meta">{meta}</p>
   <div class="actions">
-    <Button disabled={!canOpen} onclick={onopen}>Open folder</Button>
+    <Button disabled={!canOpen} onclick={onopen}>Go into folder</Button>
     <Button
       variant={marked ? 'default' : 'primary'}
       disabled={off !== undefined}
@@ -155,7 +155,7 @@
     gap: 8px;
   }
 
-  /* "Open folder" and "Mark for cleanup" share the card's width; the file manager has a small button of its own. */
+  /* "Go into folder" and "Mark for cleanup" share the card's width; the file manager has a small button of its own. */
   .actions :global(.btn) {
     flex: 1 1 auto;
     min-width: 0;

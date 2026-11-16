@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Api } from '../../api/client';
 import { createMockApi } from '../../api/mock';
@@ -10,6 +11,7 @@ import type {
   SuggestionsDto,
   Verdict,
 } from '../../api/types';
+import { advisor } from '../../state/advisor.svelte';
 import { CleanupStore } from '../../state/cleanup.svelte';
 import { ScanStore } from '../../state/scan.svelte';
 import { settings } from '../../state/settings.svelte';
@@ -153,7 +155,45 @@ describe('AdvisorCard', () => {
 
   afterEach(() => {
     settings.reduceMotion = false;
+    advisor.status = undefined;
     vi.useRealTimers();
+  });
+
+  it('says LOCAL MODEL only while the model is loaded, and RULES whenever it is not', async () => {
+    const tag = (): string => screen.getByRole('heading', { name: /^Advisor/ }).textContent ?? '';
+    const hint = (state: 'loaded' | 'onDisk' | 'loading' | 'notDownloaded' | 'downloading') => ({
+      state,
+      model: {
+        name: 'Qwen3.5-4B',
+        format: 'GGUF · Q4_K_M',
+        bytes: 1,
+        host: 'huggingface.co',
+      },
+      options: { enabled: true, unloadAfter: 'fiveMinutes' as const, logQuestions: true },
+      ramTotal: 1,
+    });
+
+    advisor.status = hint('loaded');
+    show(context);
+    expect(tag()).toContain('LOCAL MODEL');
+    expect(tag()).not.toContain('RULES');
+
+    advisor.status = hint('onDisk');
+    await tick();
+    expect(tag()).toContain('RULES');
+    expect(tag()).not.toContain('LOCAL MODEL');
+
+    for (const state of ['loading', 'notDownloaded', 'downloading'] as const) {
+      advisor.status = hint(state);
+      await tick();
+      expect(tag(), state).toContain('RULES');
+    }
+
+    advisor.status = hint('loaded');
+    await tick();
+    advisor.status = undefined;
+    await tick();
+    expect(tag()).toContain('RULES');
   });
 
   it('says it works by rules and counts what is selected of what can be cleaned', () => {
@@ -419,6 +459,46 @@ describe('AdvisorCard', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
 
     expect(onretry).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AdvisorCard and the rules of the user', () => {
+  const USER: SuggestionsDto = {
+    suggestions: [
+      { ...suggestion('user-safe', 'safe', 30, [21]), title: 'Folders you marked safe', source: 'user' },
+      suggestion('target', 'safe', 88, [11]),
+      { ...suggestion('user-keep', 'keep', 12, [22]), title: 'Folders you keep', source: 'user' },
+    ],
+    totals: { safe: 118 * GB, review: 0, keep: 12 * GB },
+  };
+
+  beforeEach(() => {
+    settings.reduceMotion = true;
+  });
+
+  afterEach(() => {
+    settings.reduceMotion = false;
+  });
+
+  it('lists them like any other suggestion: a safe one is ticked and cleanable, a kept one is shown and has no checkbox', async () => {
+    const context = await fixture(safePlan);
+
+    show(context, { suggestions: USER });
+
+    expect(checkbox('Folders you marked safe').checked).toBe(true);
+    expect(screen.queryByRole('checkbox', { name: 'Folders you keep' })).toBeNull();
+    expect(within(screen.getByRole('region', { name: 'Kept' })).getByText('Folders you keep')).toBeTruthy();
+    expect(screen.getByText('2 of 2 selected')).toBeTruthy();
+  });
+
+  it('plans a safe folder of the user by its rule id with the other ticked rows', async () => {
+    const context = await fixture(safePlan);
+
+    show(context, { suggestions: USER });
+    await fireEvent.click(button(/^Clean selected/));
+
+    await waitFor(() => expect(context.api.planCleanup).toHaveBeenCalledOnce());
+    expect(context.api.planCleanup).toHaveBeenCalledWith(context.scanId, ['user-safe', 'target']);
   });
 });
 

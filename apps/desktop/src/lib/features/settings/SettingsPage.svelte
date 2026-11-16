@@ -8,6 +8,7 @@
   import { settings } from '../../state/settings.svelte';
   import { ui } from '../../state/ui.svelte';
   import AboutCard from './AboutCard.svelte';
+  import AdvisorSettingsCard from './AdvisorSettingsCard.svelte';
 
   const UNIT_OPTIONS: { value: SizeUnits; label: string }[] = [
     { value: 'GB', label: 'GB' },
@@ -41,6 +42,8 @@
         {/snippet}
       </Field>
     </Card>
+
+    <AdvisorSettingsCard />
 
     <Card title="Appearance" grow>
       <div>

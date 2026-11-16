@@ -24,6 +24,17 @@ describe('SettingsStore', () => {
     expect(settings.explorerView).toBe('flat');
   });
 
+  it('keeps the advisor off until the model is downloaded', () => {
+    const settings = new SettingsStore(new MemoryStorage());
+
+    expect(settings.advisorEnabled).toBe(false);
+    expect(settings.advisorUnloadAfter).toBe('fiveMinutes');
+  });
+
+  it('keeps the question log on by default', () => {
+    expect(new SettingsStore(new MemoryStorage()).advisorLogQuestions).toBe(true);
+  });
+
   it('saves a change and restores it in a new store', () => {
     const storage = new MemoryStorage();
     const first = new SettingsStore(storage);
@@ -33,6 +44,9 @@ describe('SettingsStore', () => {
     first.set('oneFileSystem', false);
     first.set('sidebarCollapsed', true);
     first.set('explorerView', '3d');
+    first.set('advisorEnabled', true);
+    first.set('advisorUnloadAfter', 'windowClose');
+    first.set('advisorLogQuestions', false);
 
     const second = new SettingsStore(storage);
 
@@ -41,6 +55,9 @@ describe('SettingsStore', () => {
     expect(second.oneFileSystem).toBe(false);
     expect(second.sidebarCollapsed).toBe(true);
     expect(second.explorerView).toBe('3d');
+    expect(second.advisorEnabled).toBe(true);
+    expect(second.advisorUnloadAfter).toBe('windowClose');
+    expect(second.advisorLogQuestions).toBe(false);
   });
 
   it('ignores values of the wrong type and keeps the defaults for them', () => {
@@ -53,6 +70,9 @@ describe('SettingsStore', () => {
         reduceMotion: 'yes',
         oneFileSystem: false,
         explorerView: 'cube',
+        advisorEnabled: 'yes',
+        advisorUnloadAfter: 'never',
+        advisorLogQuestions: 'no',
         extra: 1,
       }),
     );
@@ -63,6 +83,47 @@ describe('SettingsStore', () => {
     expect(settings.reduceMotion).toBe(false);
     expect(settings.oneFileSystem).toBe(false);
     expect(settings.explorerView).toBe('flat');
+    expect(settings.advisorEnabled).toBe(false);
+    expect(settings.advisorUnloadAfter).toBe('fiveMinutes');
+    expect(settings.advisorLogQuestions).toBe(true);
+  });
+
+  it('ignores the model choice an older version saved, and does not write it back', () => {
+    const storage = new MemoryStorage();
+
+    storage.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({
+        units: 'GiB',
+        advisorEnabled: true,
+        advisorModel: 'qwen3.5-2b',
+      }),
+    );
+
+    const settings = new SettingsStore(storage);
+
+    expect(settings.units).toBe('GiB');
+    expect(settings.advisorEnabled).toBe(true);
+    expect(settings).not.toHaveProperty('advisorModel');
+
+    settings.set('reduceMotion', true);
+
+    expect(storage.getItem(SETTINGS_KEY)).not.toContain('advisorModel');
+  });
+
+  it('ignores the download offer flag an older version saved, and does not write it back', () => {
+    const storage = new MemoryStorage();
+
+    storage.setItem(SETTINGS_KEY, JSON.stringify({ units: 'GiB', advisorOfferSeen: true }));
+
+    const settings = new SettingsStore(storage);
+
+    expect(settings.units).toBe('GiB');
+    expect(settings).not.toHaveProperty('advisorOfferSeen');
+
+    settings.set('reduceMotion', true);
+
+    expect(storage.getItem(SETTINGS_KEY)).not.toContain('advisorOfferSeen');
   });
 
   it('survives a corrupt save', () => {
