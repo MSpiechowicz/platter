@@ -290,8 +290,17 @@ describe('AdvisorCard', () => {
     await fireEvent.click(screen.getByText('Reason of snapshots.'));
     expect(checkbox('Title of snapshots').checked).toBe(false);
 
+    expect(checkbox('Title of target').checked).toBe(true);
+  });
+
+  it('opens the Explorer from the path line, which leaves the checkbox alone', async () => {
+    const onopen = vi.fn();
+    show(context, { onopen });
+
     await fireEvent.click(screen.getByText('~/target'));
-    expect(checkbox('Title of target').checked).toBe(false);
+
+    expect(onopen).toHaveBeenCalledOnce();
+    expect(checkbox('Title of target').checked).toBe(true);
   });
 
   it('does nothing when the text of a kept row is clicked: it has no checkbox and does not open the Explorer', async () => {

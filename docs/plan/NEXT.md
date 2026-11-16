@@ -10,15 +10,16 @@ Other documents:
 
 ## 1. State today
 
-Built and working (milestone 1 plus read-only suggestions):
+Built and working (milestone 1, suggestions, and cleanup C1–C7):
 
 | Area | What exists |
 |---|---|
 | Scanner | Parallel walker, hardlink dedupe, "same disk" mount rule (btrfs subvolumes included), memory budget, cancel, warnings. Matches `du -s -B1` exactly on real folders. |
 | Queries | Children (paged, sorted), level-of-detail tree, path, summary (file types, age, largest folders), node flags `unreadable` and `skipped`. |
-| Rules | `platter-rules`: read-only suggestions with verdict safe / review / keep. No code that deletes anything; a lint and a test enforce that. |
-| Desktop app | Scan screen, scan progress, Overview (three columns as in the mockup, Advisor list without controls), Explorer (flat map, 3D columns, list with search), Settings (three working settings). |
-| CLI | `platter-cli volumes`, `scan`, `suggest`, `export-fixture`. |
+| Rules | `platter-rules`: read-only suggestions with verdict safe / review / keep. Rules never delete; deleting lives only in `platter-cleanup`. |
+| Cleanup | `platter-cleanup`: plan, guard, guarded delete and trash, owning tools with `pkexec`, undo from the trash. Desktop: Overview controls, Cleanup view (flow chart), marking in the Explorer, native confirmation. |
+| Desktop app | Scan screen, scan progress, Overview (three columns as in the mockup, Advisor list with cleanup controls), Cleanup view, Explorer (flat map, 3D columns, list with search, marking), Settings (three working settings). |
+| CLI | `platter-cli volumes`, `scan`, `suggest`, `clean --dry-run / --yes`, `export-fixture`. |
 | CI | `.github/workflows/ci.yml`: Rust, web, dependency audit. Never run on GitHub yet. |
 
 Screens as built (mock data):
@@ -31,7 +32,7 @@ Screens as built (mock data):
 |---|---|
 | ![Explorer flat](screens/built-explorer-flat.png) | ![Explorer 3D](screens/built-explorer-3d.png) |
 
-Checks at hand-over, all passing: 384 Rust tests, 540 frontend tests, clippy, rustfmt, eslint, prettier, svelte-check, cargo-deny.
+Checks on 2026-11-16, all passing: 514 Rust tests, 919 frontend tests, clippy, rustfmt, eslint, prettier, svelte-check, cargo-deny.
 
 ### Known gaps (do these before or alongside new features)
 
@@ -89,9 +90,9 @@ These come from the owner's feedback during design and the first build. Breaking
 
 ## 3. Order
 
-1. R1 (reviews), F1–F4 (small fixes).
-2. Cleanup: C1–C7. This is the point of the app.
-3. Advisor model: A1–A4.
+1. ~~R1 (reviews), F1–F4 (small fixes).~~ Done.
+2. ~~Cleanup: C1–C7. This is the point of the app.~~ Done 2026-11-16 (owner checks in WebKitGTK ongoing).
+3. **Next:** Advisor model: A1–A4.
 4. History: H1–H2.
 5. Distribution and updates: D1–D4. Needs the owner's signing keys.
 6. Settings completion: S1.
@@ -204,7 +205,11 @@ Design decisions already made with the owner:
 - Add the "Already freed" row to the Reclaimable card.
 - Pixel rules from the mockup: checkbox, title, path and reason start on one vertical line; the segmented "Select" control is not clipped on the right; the status text is vertically centred against the total.
 - Compare against `screens/target-overview.png` and `target-overview-confirm.png`.
-- **Status (2026-11-16):** built. `state/cleanup.svelte.ts` (selection, plan, review dialog, run with events, cancel, undo, rescan, session total freed), `features/overview/{AdvisorCard,ReviewDialog,ReclaimableCard}.svelte`, `cleanupText.ts`, `display.ts` (control and bidi characters shown as `\u{…}`, paths shortened in the middle), `components/ui/Checkbox.svelte`, `Segmented` `size="sm"`. Measured in headless Chrome against the targets: one left edge for title, path and reason, one right edge, no layout shift between idle, running and done. Deviations: the row text still opens the Explorer (the checkbox ticks); the footer status area is 60 px; each dialog row says what its action does. Not checked in WebKitGTK; the native confirmation not yet seen by the owner.
+- **Status (2026-11-16):** built. `state/cleanup.svelte.ts` (selection, plan, review dialog, run with events, cancel, undo, rescan, session total freed), `features/overview/{AdvisorCard,ReviewDialog,ReclaimableCard}.svelte`, `cleanupText.ts`, `display.ts` (control and bidi characters shown as `\u{…}`, paths shortened in the middle), `components/ui/Checkbox.svelte`, `Segmented` `size="sm"`. Measured in headless Chrome against the targets: one left edge for title, path and reason, one right edge, no layout shift between idle, running and done. Deviations (later settled by the owner, see below): the row text opened the Explorer; the footer status area is 60 px; each dialog row says what its action does. Not checked in WebKitGTK; the native confirmation not yet seen by the owner.
+
+#### C5 follow-ups from the owner's check (2026-11-16)
+
+- Done in the WebKitGTK window: the checkbox tick is an SVG (a rotated border was blurry); the dialog shows its title once and focuses Cancel; no extra "Cancel" link while the native dialog is open; Largest folders lost the default button padding; the Scanned card shows ON DISK and the share of the disk. Advisor rows: clicking the title or reason ticks the row; the path line is the Explorer link (folder glyph plus path, centred on one 18 px line, equal side padding, accent on hover), placed away from the list's scroll bar; the checkbox is centred on the title's first line; title and size lines are 20 px, the path 16 px, so all engines line up.
 
 #### C6. Cleanup view
 
@@ -213,7 +218,7 @@ Design decisions already made with the owner:
 - Review step: hero numbers ("Selected to free", "Disk after cleanup"), the flow chart drawn at the card's pixel size, the right panel from C5.
 - Clean step: ribbons turn solid one by one; then a result panel with before/after bars, Undo and "Scan again".
 - Port the flow layout from `docs/mockups/c-orb.html` (`drawFlow`) into a pure module with tests; thin groups get a minimum height so they can be read and clicked.
-- **Status (2026-11-16):** built. `features/cleanup/` (`flow.ts` ported from `drawFlow` with 30 tests; `FlowChart`, `ChartCard`, `StepBar`, `ScanStep`, `ResultPanel`, `CleanupPage`), `features/overview/AdvisorList.svelte` shared by the Overview and the Cleanup view (one store, so a run started in either shows in both), nav item "Cleanup". Measured in headless Chrome: the step bar is as wide as the right panel, card bottoms aligned, the chart fills its card; the Overview is pixel-identical apart from the new nav item. Deviations: "Will be freed" and the done steps use the accent colour, not green (green means safe only); the right-hand bars keep ribbon thickness. Open questions for the owner: green or accent for "Will be freed"; whether a finished run ticks all three steps. Not checked in WebKitGTK. Hooks: `view=cleanup`, `view=scanning&cleanup`.
+- **Status (2026-11-16):** built. `features/cleanup/` (`flow.ts` ported from `drawFlow` with 30 tests; `FlowChart`, `ChartCard`, `StepBar`, `ScanStep`, `ResultPanel`, `CleanupPage`), `features/overview/AdvisorList.svelte` shared by the Overview and the Cleanup view (one store, so a run started in either shows in both), nav item "Cleanup". Measured in headless Chrome: the step bar is as wide as the right panel, card bottoms aligned, the chart fills its card; the Overview is pixel-identical apart from the new nav item. Deviations: "Will be freed" and the done steps use the accent colour, not green (green means safe only); the right-hand bars keep ribbon thickness. Owner decisions applied: "Will be freed" and the result's After bar are green; a finished run ticks all three steps; figures from the scan before a cleanup are greyed until a rescan; the `?clean=` hooks are removed; a marked run is counted in the chart. Not checked in WebKitGTK. Hooks: `view=cleanup`, `view=scanning&cleanup`.
 
 - **Owner decisions (2026-11-16), applied:** "Will be freed" (bar, caption, freed part of the result bars) is green: it is the space the safe and chosen items free, and green reads as "freed" at a glance; a finished run ticks all three steps (kept as built); clicking an Advisor row's text ticks it, as in the mockup, and opening the Explorer moves to its own small control; after a cleanup the Reclaimable figures and the Advisor sums are greyed out until a rescan (no guessed subtraction); the `?clean=` URL hook is removed.
 

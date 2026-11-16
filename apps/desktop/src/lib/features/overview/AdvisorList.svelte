@@ -142,7 +142,18 @@
 
               <span class="text">
                 <span class="t">{title}</span>
-                <span class="p">{visibleText(suggestion.path)}</span>
+                <!-- The path is the button that opens it in the Explorer: a folder glyph and the path, on one line. -->
+                <button
+                  type="button"
+                  class="pline"
+                  disabled={locked || suggestion.nodes.length === 0}
+                  aria-label="Open {title} in the Explorer"
+                  title="{visibleText(suggestion.path)}: open in the Explorer"
+                  onclick={() => open(suggestion)}
+                >
+                  <Icon name="explorer" size={12} />
+                  <span class="p">{visibleText(suggestion.path)}</span>
+                </button>
                 <span class="why">{visibleText(reasonOf(suggestion))}</span>
               </span>
 
@@ -152,17 +163,6 @@
                   class:stale={store.outdated && !done}
                   title={store.outdated && !done ? STALE_TEXT : undefined}>{fmt.size(suggestion.allocated)}</b
                 >
-
-                <button
-                  type="button"
-                  class="go"
-                  disabled={locked || suggestion.nodes.length === 0}
-                  aria-label="Open {title} in the Explorer"
-                  title="{visibleText(suggestion.path)}: open in the Explorer"
-                  onclick={() => open(suggestion)}
-                >
-                  <Icon name="explorer" size={14} />
-                </button>
               </span>
             </svelte:element>
           {/each}
@@ -312,8 +312,10 @@
   }
 
   /* The box lines up with the first line of the title. */
-  .sug > :global(.chk) {
+  /* Centred on the title's first line, whatever line height the engine gives it (fallback: the measured 3px). */
+  .sug > :global(.chk-wrap) {
     margin-top: 3px;
+    margin-top: calc((1lh - 14px) / 2);
   }
 
   /* A kept row has no checkbox; its column stays so that every row starts at the same edge. */
@@ -351,52 +353,73 @@
     display: block;
   }
 
+  /* Fixed line heights, so the checkbox, the size and the Explorer button line up in every engine. */
   .t {
+    line-height: 20px;
     transition: color 0.15s;
   }
 
   /*
-   * The size, and under it the button that opens the Explorer: one column that is as wide as the size, so the text
-   * never gets narrower, and both end at the row's right edge. The button's glyph is the square the edge is measured
-   * on; its click target is larger and takes no room.
+   * The size, at the row's right edge, on the title's line.
    */
   .end {
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 6px;
   }
 
-  .go {
-    position: relative;
-    display: block;
-    width: 14px;
-    height: 14px;
+  /* The size on the title's line, the button centred on the path's line. */
+  .end > :global(.num) {
+    line-height: 20px;
+  }
+
+  /*
+   * The path line opens the path in the Explorer. Glyph and text share one line box and are centred in it; the glyph
+   * starts on the row's left edge (the padding is taken back by the margin), and the highlight reaches past both.
+   */
+  .text > .pline {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: fit-content;
+    max-width: calc(100% + 6px);
+    min-width: 0;
+    height: 18px;
+    margin: 0 0 1px -6px;
+    padding: 0 6px;
+    border-radius: 4px;
     color: var(--dim);
+    transition:
+      color 0.15s,
+      background 0.15s;
+  }
+
+  .pline :global(svg) {
+    display: block;
+    flex: none;
+    color: var(--muted);
     transition: color 0.15s;
   }
 
-  .go::before {
-    content: '';
-    position: absolute;
-    inset: -6px;
-  }
-
-  .go :global(svg) {
-    display: block;
-  }
-
-  .go:hover:not(:disabled) {
+  .pline:hover:not(:disabled) :global(svg),
+  .pline:focus-visible :global(svg) {
     color: var(--accent);
   }
 
-  .go:disabled {
-    opacity: 0.4;
+  .pline:hover:not(:disabled),
+  .pline:focus-visible {
+    color: var(--accent);
+    background: #ffffff0d;
+  }
+
+  .pline:disabled {
+    cursor: default;
   }
 
   .p {
     font-size: 11px;
-    color: var(--dim);
+    line-height: 16px;
+    color: inherit;
     font-family: var(--mono);
     overflow: hidden;
     text-overflow: ellipsis;
