@@ -3,10 +3,10 @@
  * They never change what the app does for a user who does not type them, and they are ignored
  * inside the Tauri window, where nobody can type a URL anyway.
  */
-export type HookView = 'start' | 'scanning' | 'overview' | 'explorer' | 'settings';
+export type HookView = 'start' | 'scanning' | 'overview' | 'explorer' | 'cleanup' | 'settings';
 
 export interface TestHooks {
-  /** Jump to a view; `overview`, `scanning` and `explorer` start a scan on the mock first. */
+  /** Jump to a view; `overview`, `scanning`, `explorer` and `cleanup` start a scan on the mock first. */
   view: HookView | null;
   /** Start with the sidebar collapsed (not saved). */
   mini: boolean;
@@ -33,13 +33,15 @@ export interface TestHooks {
   /** The mock scan finishes with a warning (the mount table could not be read). */
   warn: boolean;
   /**
-   * Overview, for screenshots: `review` selects every suggestion and opens the review dialog; `run` cleans the safe
-   * ones on the mock. Only the mock can ever run it (the hooks are off inside the Tauri window).
+   * Overview and Cleanup, for screenshots: `review` selects every suggestion and opens the review dialog; `run`
+   * cleans the safe ones on the mock. Only the mock can ever run it (the hooks are off inside the Tauri window).
    */
   clean: 'review' | 'run' | null;
+  /** With `view=scanning`: show the Cleanup view's Scan step instead of the plain progress screen. */
+  cleanup: boolean;
 }
 
-const VIEWS: readonly string[] = ['start', 'scanning', 'overview', 'explorer', 'settings'];
+const VIEWS: readonly string[] = ['start', 'scanning', 'overview', 'explorer', 'cleanup', 'settings'];
 
 const NO_HOOKS: TestHooks = {
   view: null,
@@ -56,6 +58,7 @@ const NO_HOOKS: TestHooks = {
   dominant: false,
   warn: false,
   clean: null,
+  cleanup: false,
 };
 
 function isInsideTauri(): boolean {
@@ -95,6 +98,7 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
     dominant: params.has('dominant'),
     warn: params.has('warn'),
     clean: clean === 'review' || clean === 'run' ? clean : null,
+    cleanup: params.has('cleanup'),
   };
 }
 

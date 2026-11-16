@@ -6,6 +6,7 @@
   import ToastHost from './lib/components/ui/ToastHost.svelte';
   import TooltipHost from './lib/components/ui/TooltipHost.svelte';
   import { bootstrap } from './lib/bootstrap';
+  import CleanupPage from './lib/features/cleanup/CleanupPage.svelte';
   import Explorer from './lib/features/explorer/Explorer.svelte';
   import OverviewPage from './lib/features/overview/OverviewPage.svelte';
   import ScanProgress from './lib/features/scan/ScanProgress.svelte';
@@ -29,6 +30,7 @@
     { id: 'scan', label: 'Scan', icon: 'scan' },
     { id: 'overview', label: 'Overview', icon: 'overview' },
     { id: 'explorer', label: 'Explorer', icon: 'explorer' },
+    { id: 'cleanup', label: 'Cleanup', icon: 'cleanup' },
     { id: 'settings', label: 'Settings', icon: 'settings' },
   ];
 
@@ -45,7 +47,8 @@
 
   const items = $derived(
     NAV.map((item) => {
-      const available = isPageAvailable(item.id, state.status);
+      // The item whose page is on screen is never dimmed: Cleanup shows its own first step while a scan runs.
+      const available = isPageAvailable(item.id, state.status) || item.id === highlightedPage(screen);
 
       return { ...item, disabled: !available, hint: available ? undefined : SCAN_FIRST_HINT };
     }),
@@ -114,6 +117,8 @@
     <PageBoundary><ScanProgress running={screen.scan} /></PageBoundary>
   {:else if screen.id === 'explorer'}
     <PageBoundary><Explorer /></PageBoundary>
+  {:else if screen.id === 'cleanup'}
+    <PageBoundary><CleanupPage scan={screen.scan} /></PageBoundary>
   {:else if screen.id === 'overview'}
     <PageBoundary><OverviewPage ready={screen.scan} /></PageBoundary>
   {:else}

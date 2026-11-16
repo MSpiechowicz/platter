@@ -213,6 +213,7 @@ Design decisions already made with the owner:
 - Review step: hero numbers ("Selected to free", "Disk after cleanup"), the flow chart drawn at the card's pixel size, the right panel from C5.
 - Clean step: ribbons turn solid one by one; then a result panel with before/after bars, Undo and "Scan again".
 - Port the flow layout from `docs/mockups/c-orb.html` (`drawFlow`) into a pure module with tests; thin groups get a minimum height so they can be read and clicked.
+- **Status (2026-11-16):** built. `features/cleanup/` (`flow.ts` ported from `drawFlow` with 30 tests; `FlowChart`, `ChartCard`, `StepBar`, `ScanStep`, `ResultPanel`, `CleanupPage`), `features/overview/AdvisorList.svelte` shared by the Overview and the Cleanup view (one store, so a run started in either shows in both), nav item "Cleanup". Measured in headless Chrome: the step bar is as wide as the right panel, card bottoms aligned, the chart fills its card; the Overview is pixel-identical apart from the new nav item. Deviations: "Will be freed" and the done steps use the accent colour, not green (green means safe only); the right-hand bars keep ribbon thickness. Open questions for the owner: green or accent for "Will be freed"; whether a finished run ticks all three steps. Not checked in WebKitGTK. Hooks: `view=cleanup`, `view=scanning&cleanup`.
 
 #### C7. Mark for cleanup in the Explorer
 

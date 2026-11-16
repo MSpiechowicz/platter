@@ -57,6 +57,16 @@ describe('resolveScreen', () => {
     }
   });
 
+  it('shows Cleanup for a ready scan, and its first step, the scan, for a running one', () => {
+    expect(screenIds('cleanup')).toEqual({
+      idle: 'start',
+      scanning: 'cleanup',
+      ready: 'cleanup',
+      cancelled: 'start',
+      failed: 'start',
+    });
+  });
+
   it('shows Settings in every state, even while a scan is running', () => {
     expect(Object.values(screenIds('settings'))).toEqual(Array(5).fill('settings'));
   });
@@ -64,6 +74,8 @@ describe('resolveScreen', () => {
   it('hands the scan to the screens that are about it', () => {
     expect(resolveScreen(running, 'scan')).toEqual({ id: 'progress', scan: running });
     expect(resolveScreen(ready, 'explorer')).toEqual({ id: 'explorer', scan: ready });
+    expect(resolveScreen(running, 'cleanup')).toEqual({ id: 'cleanup', scan: running });
+    expect(resolveScreen(ready, 'cleanup')).toEqual({ id: 'cleanup', scan: ready });
   });
 });
 
@@ -74,15 +86,18 @@ describe('highlightedPage', () => {
     expect(highlightedPage(resolveScreen(ready, 'scan'))).toBe('scan');
     expect(highlightedPage(resolveScreen(ready, 'overview'))).toBe('overview');
     expect(highlightedPage(resolveScreen(ready, 'explorer'))).toBe('explorer');
+    expect(highlightedPage(resolveScreen(ready, 'cleanup'))).toBe('cleanup');
+    expect(highlightedPage(resolveScreen(running, 'cleanup'))).toBe('cleanup');
     expect(highlightedPage(resolveScreen(running, 'settings'))).toBe('settings');
   });
 });
 
 describe('isPageAvailable', () => {
-  it('opens Overview and Explorer only for a ready scan', () => {
+  it('opens Overview, Explorer and Cleanup only for a ready scan', () => {
     for (const [name, state] of Object.entries(states)) {
       expect(isPageAvailable('overview', state.status), name).toBe(name === 'ready');
       expect(isPageAvailable('explorer', state.status), name).toBe(name === 'ready');
+      expect(isPageAvailable('cleanup', state.status), name).toBe(name === 'ready');
     }
   });
 
@@ -95,10 +110,11 @@ describe('isPageAvailable', () => {
 });
 
 describe('pageAfterScan', () => {
-  it('goes to Overview, but leaves Settings alone', () => {
+  it('goes to Overview, but leaves Settings and Cleanup alone', () => {
     expect(pageAfterScan('scan')).toBe('overview');
     expect(pageAfterScan('overview')).toBe('overview');
     expect(pageAfterScan('explorer')).toBe('overview');
     expect(pageAfterScan('settings')).toBe('settings');
+    expect(pageAfterScan('cleanup')).toBe('cleanup');
   });
 });

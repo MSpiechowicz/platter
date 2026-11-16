@@ -1,4 +1,4 @@
-import { SvelteSet } from 'svelte/reactivity';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { api as defaultApi } from '../api';
 import { describeError, isApiError, type Api } from '../api/client';
 import type {
@@ -76,6 +76,9 @@ export type CleanupPhase =
 
 export type Action = 'cancel' | 'undo' | 'rescan';
 
+/** Where a rule of the running (or last) cleanup stands: not reached yet, finished cleanly, or finished with problems. */
+export type GroupState = 'queued' | 'done' | 'problem';
+
 const MAX_PROBLEMS = 20;
 const BAD_OUTCOMES: readonly OutcomeKind[] = ['skipped', 'failed'];
 
@@ -110,6 +113,11 @@ export class CleanupStore {
   readonly selected = new SvelteSet<string>();
   /** Rules a cleanup finished without problems: their rows are done. */
   readonly cleaned = new SvelteSet<string>();
+  /**
+   * The rules of the running or last cleanup, each with the state of its group as the backend's events report it.
+   * It is what a view shows while a cleanup runs, whatever the selection says by then.
+   */
+  readonly groups = new SvelteMap<string, GroupState>();
 
   readonly #api: Api;
   readonly #scan: ScanHost;
@@ -214,6 +222,7 @@ export class CleanupStore {
 
     if (newScan) {
       this.cleaned.clear();
+      this.groups.clear();
 
       if (this.phase.kind !== 'running') {
         // A plan or an answer for another scan means nothing here.
@@ -222,6 +231,12 @@ export class CleanupStore {
         this.notice = undefined;
         this.plan = undefined;
       }
+    }
+
+    // The same scan again while a cleanup runs (a page that was left and opened again): the selection is the
+    // user's, and the cleanup's own groups say what is going on.
+    if (!newScan && this.phase.kind === 'running') {
+      return;
     }
 
     this.selected.clear();
@@ -420,6 +435,12 @@ export class CleanupStore {
 
     this.#run = run;
     this.notice = undefined;
+    this.groups.clear();
+
+    for (const group of plan.groups) {
+      this.groups.set(group.ruleId, 'queued');
+    }
+
     this.phase = {
       kind: 'running',
       progress: {
@@ -499,8 +520,12 @@ export class CleanupStore {
         break;
       }
 
-      case 'groupFinished':
+      case 'groupFinished': {
+        const tally = run.tally.get(event.ruleId);
+
+        this.groups.set(event.ruleId, tally && tally.ok > 0 && tally.bad === 0 ? 'done' : 'problem');
         break;
+      }
 
       case 'finished':
         this.#end(run, {
@@ -547,6 +572,13 @@ export class CleanupStore {
 
     if (result.freed !== undefined) {
       this.freedTotal += result.freed;
+    }
+
+    // A cancelled run never reached the groups still queued: they are not part of what was cleaned.
+    for (const [ruleId, state] of [...this.groups]) {
+      if (state === 'queued') {
+        this.groups.delete(ruleId);
+      }
     }
 
     for (const [ruleId, tally] of run.tally) {

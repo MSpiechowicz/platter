@@ -25,15 +25,25 @@ export async function bootstrap(): Promise<void> {
 
   await scan.loadVolumes();
 
-  if (hooks.view === 'overview' || hooks.view === 'scanning' || hooks.view === 'explorer') {
+  if (
+    hooks.view === 'overview' ||
+    hooks.view === 'scanning' ||
+    hooks.view === 'explorer' ||
+    hooks.view === 'cleanup'
+  ) {
     const root = hooks.root ?? scan.volumes[0]?.mountPoint ?? '/';
+
+    // The Cleanup view's Scan step is on screen while the scan runs, so its page is chosen before it starts.
+    if (hooks.view === 'scanning' && hooks.cleanup) {
+      ui.go('cleanup');
+    }
 
     await scan.start({ root, oneFileSystem: settings.oneFileSystem });
 
     // A finished scan opens its Overview, so the page is chosen after it.
-    if (hooks.view === 'explorer') {
+    if (hooks.view === 'explorer' || hooks.view === 'cleanup') {
       await untilScanEnds();
-      ui.go('explorer');
+      ui.go(hooks.view);
     }
   }
 

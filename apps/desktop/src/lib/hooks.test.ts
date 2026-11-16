@@ -16,6 +16,7 @@ const ALL_OFF = {
   dominant: false,
   warn: false,
   clean: null,
+  cleanup: false,
 };
 
 describe('parseHooks', () => {
@@ -49,6 +50,12 @@ describe('parseHooks', () => {
   it('reads the dominant disk hook, outside Tauri only', () => {
     expect(parseHooks('?view=overview&dominant', false).dominant).toBe(true);
     expect(parseHooks('?view=overview&dominant', true).dominant).toBe(false);
+  });
+
+  it('reads the Cleanup view and its Scan step, outside Tauri only', () => {
+    expect(parseHooks('?view=cleanup&clean=run', false)).toMatchObject({ view: 'cleanup', clean: 'run' });
+    expect(parseHooks('?view=scanning&cleanup', false)).toMatchObject({ view: 'scanning', cleanup: true });
+    expect(parseHooks('?view=scanning&cleanup', true)).toEqual(ALL_OFF);
   });
 
   it('ignores an unknown view', () => {

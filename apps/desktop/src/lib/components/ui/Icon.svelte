@@ -3,6 +3,7 @@
     | 'scan'
     | 'overview'
     | 'explorer'
+    | 'cleanup'
     | 'settings'
     | 'collapse'
     | 'download'
@@ -52,6 +53,8 @@
     <rect x="9" y="9" width="5" height="5" rx="1" />
   {:else if name === 'explorer'}
     <path d="M2 4.5h4l1.5 1.5H14v6.5H2z" />
+  {:else if name === 'cleanup'}
+    <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" />
   {:else if name === 'settings'}
     <path d="M2 5h7M12 5h2M2 11h2M7 11h7" />
     <circle cx="10.5" cy="5" r="1.5" />

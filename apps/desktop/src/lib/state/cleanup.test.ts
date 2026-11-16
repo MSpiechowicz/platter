@@ -696,4 +696,98 @@ describe('events', () => {
 
     expect(store.freedTotal).toBe(0);
   });
+
+  describe('the groups of a run', () => {
+    const removed = { kind: 'removed', problems: 0 } as const;
+
+    it('lists every planned rule as queued, then turns each one as its group finishes', async () => {
+      const { store, send } = await held();
+      const [first, second] = store.plan?.groups ?? [];
+
+      expect(second).toBeDefined();
+      expect([...store.groups]).toEqual((store.plan?.groups ?? []).map((group) => [group.ruleId, 'queued']));
+
+      send({ type: 'groupStarted', ruleId: first?.ruleId ?? '', targets: 1 });
+      send({ type: 'targetDone', ruleId: first?.ruleId ?? '', path: '/a', allocated: 1, outcome: removed });
+      expect(store.groups.get(first?.ruleId ?? '')).toBe('queued');
+
+      send({ type: 'groupFinished', ruleId: first?.ruleId ?? '' });
+      expect(store.groups.get(first?.ruleId ?? '')).toBe('done');
+      expect(store.groups.get(second?.ruleId ?? '')).toBe('queued');
+    });
+
+    it('marks a group that had a problem, and a group that did nothing, as a problem', async () => {
+      const { store, send } = await held();
+      const [first, second] = store.plan?.groups ?? [];
+
+      send({
+        type: 'targetDone',
+        ruleId: first?.ruleId ?? '',
+        path: '/a',
+        allocated: 1,
+        outcome: { kind: 'failed', detail: 'busy', problems: 0 },
+      });
+      send({ type: 'groupFinished', ruleId: first?.ruleId ?? '' });
+      send({ type: 'groupFinished', ruleId: second?.ruleId ?? '' });
+
+      expect(store.groups.get(first?.ruleId ?? '')).toBe('problem');
+      expect(store.groups.get(second?.ruleId ?? '')).toBe('problem');
+    });
+
+    it('drops the groups a cancelled run never reached, and keeps the finished ones', async () => {
+      const { store, send, scanId } = await held();
+      const [first, second] = store.plan?.groups ?? [];
+
+      send({ type: 'targetDone', ruleId: first?.ruleId ?? '', path: '/a', allocated: 1, outcome: removed });
+      send({ type: 'groupFinished', ruleId: first?.ruleId ?? '' });
+      send({
+        type: 'finished',
+        cleanupId: 7,
+        outdatedScan: scanId,
+        cleaned: 1,
+        withProblems: 0,
+        freed: 1,
+        cancelled: true,
+        toolsNotRun: [],
+        canUndo: false,
+      });
+
+      expect(store.groups.get(first?.ruleId ?? '')).toBe('done');
+      expect(store.groups.has(second?.ruleId ?? '')).toBe(false);
+    });
+
+    it('stays after the run for a result to show, and a new scan forgets it', async () => {
+      const { store, send, scanId, data } = await held();
+      const first = store.plan?.groups[0];
+
+      send({ type: 'targetDone', ruleId: first?.ruleId ?? '', path: '/a', allocated: 1, outcome: removed });
+      send({ type: 'groupFinished', ruleId: first?.ruleId ?? '' });
+      send({
+        type: 'finished',
+        cleanupId: 7,
+        outdatedScan: scanId,
+        cleaned: 1,
+        withProblems: 0,
+        freed: 1,
+        cancelled: false,
+        toolsNotRun: [],
+        canUndo: false,
+      });
+      expect(store.groups.get(first?.ruleId ?? '')).toBe('done');
+
+      store.load(scanId + 1, data);
+      expect(store.groups.size).toBe(0);
+    });
+
+    it('keeps the selection when the same scan is loaded again while a cleanup runs', async () => {
+      const { store, scanId, data } = await held();
+
+      // Something the reset to "safe only" would take away.
+      store.selected.add(REVIEW_RULE);
+      store.load(scanId, { ...data });
+
+      expect(store.selected.has(REVIEW_RULE)).toBe(true);
+      expect(store.phase.kind).toBe('running');
+    });
+  });
 });
