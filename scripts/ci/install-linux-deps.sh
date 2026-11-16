@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Installs the system packages needed to build the Tauri 2 desktop crate on Debian/Ubuntu.
 # Mirrors the "Linux (Debian)" prerequisites of https://v2.tauri.app/start/prerequisites/ plus patchelf,
-# which the AppImage bundler needs. Meant for CI runners; it uses sudo and apt-get.
+# which the AppImage bundler needs, and cmake, clang and libclang for the advisor model runtime
+# (llama.cpp is built from source and its bindings are generated with bindgen). Meant for CI runners;
+# it uses sudo and apt-get.
 set -euo pipefail
 
 packages=(
   build-essential
+  clang
+  cmake
   curl
   file
   libayatana-appindicator3-dev
+  libclang-dev
   libgtk-3-dev
   librsvg2-dev
   libssl-dev
