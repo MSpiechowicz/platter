@@ -1,0 +1,485 @@
+{
+  "note": "Natural questions with the reading they must come to: intent, kind and subject (none, path:<path>, role:<name>, rule:<tool>, name:<folder name>). `tune` is what the words were tuned on; `heldout` was written before the reading was and is only scored, never tuned on. The same file drives the real-model score (real.rs).",
+  "questions": [
+    {
+      "id": "t01",
+      "set": "tune",
+      "question": "which folder does take the biggest amount of data?",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "t02",
+      "set": "tune",
+      "question": "can i safely delete the docker images",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "rule:docker"
+    },
+    {
+      "id": "t03",
+      "set": "tune",
+      "question": "what's eating my disk",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "t04",
+      "set": "tune",
+      "question": "what can I clean up?",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "t05",
+      "set": "tune",
+      "question": "can I delete node_modules?",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "rule:node"
+    },
+    {
+      "id": "t06",
+      "set": "tune",
+      "question": "is it safe to remove the Steam shader cache",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "rule:steam"
+    },
+    {
+      "id": "t07",
+      "set": "tune",
+      "question": "why is ~/.cache so big?",
+      "intent": "explain",
+      "kind": "any",
+      "subject": "path:~/.cache"
+    },
+    {
+      "id": "t08",
+      "set": "tune",
+      "question": "where are my rust build folders?",
+      "intent": "find",
+      "kind": "any",
+      "subject": "rule:rust"
+    },
+    {
+      "id": "t09",
+      "set": "tune",
+      "question": "how much do my videos take?",
+      "intent": "largest",
+      "kind": "media",
+      "subject": "none"
+    },
+    {
+      "id": "t10",
+      "set": "tune",
+      "question": "what did the model label?",
+      "intent": "labelled",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "t11",
+      "set": "tune",
+      "question": "can I delete my Downloads?",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "role:downloads"
+    },
+    {
+      "id": "t12",
+      "set": "tune",
+      "question": "is ~/Documents safe to delete?",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "path:~/Documents"
+    },
+    {
+      "id": "t13",
+      "set": "tune",
+      "question": "what are my biggest caches?",
+      "intent": "largest",
+      "kind": "cache",
+      "subject": "none"
+    },
+    {
+      "id": "t14",
+      "set": "tune",
+      "question": "clean everything",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "t15",
+      "set": "tune",
+      "question": "co zajmuje najwięcej miejsca?",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "t16",
+      "set": "tune",
+      "question": "co mogę usunąć?",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "t17",
+      "set": "tune",
+      "question": "czy mogę usunąć obrazy dockera?",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "rule:docker"
+    },
+    {
+      "id": "t18",
+      "set": "tune",
+      "question": "write me a poem",
+      "intent": "offtopic",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "t19",
+      "set": "tune",
+      "question": "how big is my docker data?",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "rule:docker"
+    },
+    {
+      "id": "t20",
+      "set": "tune",
+      "question": "where is docker?",
+      "intent": "find",
+      "kind": "any",
+      "subject": "rule:docker"
+    },
+    {
+      "id": "t21",
+      "set": "tune",
+      "question": "how much space does steam use?",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "rule:steam"
+    },
+    {
+      "id": "t22",
+      "set": "tune",
+      "question": "what's in ~/.cache?",
+      "intent": "explain",
+      "kind": "any",
+      "subject": "path:~/.cache"
+    },
+    {
+      "id": "t23",
+      "set": "tune",
+      "question": "can I delete ~/Pobrane?",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "path:~/Pobrane"
+    },
+    {
+      "id": "t24",
+      "set": "tune",
+      "question": "jakie foldery są największe?",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "t25",
+      "set": "tune",
+      "question": "ile miejsca zajmują filmy?",
+      "intent": "largest",
+      "kind": "media",
+      "subject": "none"
+    },
+    {
+      "id": "t26",
+      "set": "tune",
+      "question": "show me the 3 biggest folders in ~/Projekty",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "path:~/Projekty"
+    },
+    {
+      "id": "t27",
+      "set": "tune",
+      "question": "how much space is the trash using?",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "rule:trash"
+    },
+    {
+      "id": "t28",
+      "set": "tune",
+      "question": "wyczyść kosz",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "rule:trash"
+    },
+    {
+      "id": "t29",
+      "set": "tune",
+      "question": "can I get rid of the pip stuff",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "rule:python"
+    },
+    {
+      "id": "t30",
+      "set": "tune",
+      "question": "why is my home folder so big?",
+      "intent": "explain",
+      "kind": "any",
+      "subject": "path:~"
+    },
+    {
+      "id": "t31",
+      "set": "tune",
+      "question": "where is node_modules?",
+      "intent": "find",
+      "kind": "any",
+      "subject": "rule:node"
+    },
+    {
+      "id": "t32",
+      "set": "tune",
+      "question": "dlaczego .cache jest taki duży?",
+      "intent": "explain",
+      "kind": "any",
+      "subject": "name:.cache"
+    },
+    {
+      "id": "t33",
+      "set": "tune",
+      "question": "gdzie jest docker?",
+      "intent": "find",
+      "kind": "any",
+      "subject": "rule:docker"
+    },
+    {
+      "id": "t34",
+      "set": "tune",
+      "question": "what are the biggest build folders?",
+      "intent": "largest",
+      "kind": "build",
+      "subject": "none"
+    },
+    {
+      "id": "t35",
+      "set": "tune",
+      "question": "how much does my music take up?",
+      "intent": "largest",
+      "kind": "media",
+      "subject": "none"
+    },
+    {
+      "id": "t36",
+      "set": "tune",
+      "question": "can I delete my old downloads?",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "role:downloads"
+    },
+    {
+      "id": "t37",
+      "set": "tune",
+      "question": "what is in my Documents folder?",
+      "intent": "explain",
+      "kind": "any",
+      "subject": "role:documents"
+    },
+    {
+      "id": "t38",
+      "set": "tune",
+      "question": "biggest folders in Projekty",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "name:Projekty"
+    },
+    {
+      "id": "t39",
+      "set": "tune",
+      "question": "tell me something about this disk",
+      "intent": "general",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "t40",
+      "set": "tune",
+      "question": "what is the capital of France?",
+      "intent": "offtopic",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "h01",
+      "set": "heldout",
+      "question": "which directory is hogging the most storage?",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "h02",
+      "set": "heldout",
+      "question": "is it okay to wipe the docker containers?",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "rule:docker"
+    },
+    {
+      "id": "h03",
+      "set": "heldout",
+      "question": "biggest folders in /var",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "path:/var"
+    },
+    {
+      "id": "h04",
+      "set": "heldout",
+      "question": "czy mogę skasować pliki w ~/Pobrane?",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "path:~/Pobrane"
+    },
+    {
+      "id": "h05",
+      "set": "heldout",
+      "question": "why does ~/.local take so much space?",
+      "intent": "explain",
+      "kind": "any",
+      "subject": "path:~/.local"
+    },
+    {
+      "id": "h06",
+      "set": "heldout",
+      "question": "where is my steam library?",
+      "intent": "find",
+      "kind": "any",
+      "subject": "rule:steam"
+    },
+    {
+      "id": "h07",
+      "set": "heldout",
+      "question": "how large are my photos?",
+      "intent": "largest",
+      "kind": "media",
+      "subject": "none"
+    },
+    {
+      "id": "h08",
+      "set": "heldout",
+      "question": "gdzie są moje foldery node_modules?",
+      "intent": "find",
+      "kind": "any",
+      "subject": "rule:node"
+    },
+    {
+      "id": "h09",
+      "set": "heldout",
+      "question": "what caches can I remove?",
+      "intent": "cleanable",
+      "kind": "cache",
+      "subject": "none"
+    },
+    {
+      "id": "h10",
+      "set": "heldout",
+      "question": "how much space would I free by emptying the trash",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "rule:trash"
+    },
+    {
+      "id": "h11",
+      "set": "heldout",
+      "question": "show me what the model labelled in ~/Projekty",
+      "intent": "labelled",
+      "kind": "any",
+      "subject": "path:~/Projekty"
+    },
+    {
+      "id": "h12",
+      "set": "heldout",
+      "question": "what is inside ~/Pobrane?",
+      "intent": "explain",
+      "kind": "any",
+      "subject": "path:~/Pobrane"
+    },
+    {
+      "id": "h13",
+      "set": "heldout",
+      "question": "dlaczego folder docker jest taki duży?",
+      "intent": "explain",
+      "kind": "any",
+      "subject": "rule:docker"
+    },
+    {
+      "id": "h14",
+      "set": "heldout",
+      "question": "what takes space inside the Faugus folder",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "name:Faugus"
+    },
+    {
+      "id": "h15",
+      "set": "heldout",
+      "question": "can you tell me a joke",
+      "intent": "offtopic",
+      "kind": "any",
+      "subject": "none"
+    },
+    {
+      "id": "h16",
+      "set": "heldout",
+      "question": "czy bezpiecznie usunąć cache cargo?",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "rule:cargo"
+    },
+    {
+      "id": "h17",
+      "set": "heldout",
+      "question": "anything big in my Downloads?",
+      "intent": "largest",
+      "kind": "any",
+      "subject": "role:downloads"
+    },
+    {
+      "id": "h18",
+      "set": "heldout",
+      "question": "where's my pycache",
+      "intent": "find",
+      "kind": "any",
+      "subject": "rule:python"
+    },
+    {
+      "id": "h19",
+      "set": "heldout",
+      "question": "whats the biggest cache",
+      "intent": "largest",
+      "kind": "cache",
+      "subject": "none"
+    },
+    {
+      "id": "h20",
+      "set": "heldout",
+      "question": "what should I delete first?",
+      "intent": "cleanable",
+      "kind": "any",
+      "subject": "none"
+    }
+  ]
+}

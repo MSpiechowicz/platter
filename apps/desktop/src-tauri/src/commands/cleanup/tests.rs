@@ -3,10 +3,13 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::SystemTime;
 
+use platter_cleanup::plan_labelled;
 use platter_core::dto::{ApiErrorCode, ScanEvent, ScanOptions};
 
 use super::*;
+use crate::commands::advisor::{AdvisorOptionsDto, UnloadAfterDto};
 use crate::commands::scan;
+use crate::state::LabelSet;
 
 struct Approve;
 
@@ -104,7 +107,7 @@ fn until_finished(receiver: &mpsc::Receiver<CleanupEventDto>) -> Vec<CleanupEven
 
 #[test]
 fn a_plan_names_only_known_rules() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     let (_dir, root) = project();
     let scan = scanned(&state, &root);
 
@@ -120,7 +123,7 @@ fn a_plan_names_only_known_rules() {
 
 #[test]
 fn a_plan_is_described_and_kept_in_the_backend() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     let (_dir, root) = project();
     let scan = scanned(&state, &root);
 
@@ -144,7 +147,7 @@ fn a_plan_is_described_and_kept_in_the_backend() {
 
 #[test]
 fn a_declined_confirmation_deletes_nothing_and_uses_the_plan_up() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     let (_dir, root) = project();
     let scan = scanned(&state, &root);
     let plan = plan_of(&state, scan, &["rust-target"]).unwrap();
@@ -168,7 +171,7 @@ fn a_declined_confirmation_deletes_nothing_and_uses_the_plan_up() {
 
 #[test]
 fn an_approved_cleanup_runs_reports_and_outdates_the_scan() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     state.set_confirm(Arc::new(Approve));
     let (_dir, root) = project();
     let scan = scanned(&state, &root);
@@ -222,7 +225,7 @@ fn an_approved_cleanup_runs_reports_and_outdates_the_scan() {
 
 #[test]
 fn an_older_plan_of_an_outdated_scan_is_refused() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     state.set_confirm(Arc::new(Approve));
     let (_dir, root) = project();
     let scan = scanned(&state, &root);
@@ -309,7 +312,7 @@ impl Confirm for Panics {
 
 #[test]
 fn a_broken_dialog_counts_as_no_and_frees_the_slot() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     state.set_confirm(Arc::new(Panics));
     let (_dir, root) = project();
     let scan = scanned(&state, &root);
@@ -324,7 +327,7 @@ fn a_broken_dialog_counts_as_no_and_frees_the_slot() {
 
 #[test]
 fn an_empty_plan_cannot_be_started() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     state.set_confirm(Arc::new(Approve));
     let (_dir, root) = project();
     let scan = scanned(&state, &root);
@@ -340,7 +343,7 @@ fn an_empty_plan_cannot_be_started() {
 
 #[test]
 fn a_plan_whose_scan_is_gone_is_refused() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     state.set_confirm(Arc::new(Approve));
     let (_dir, root) = project();
     let scan = scanned(&state, &root);
@@ -383,7 +386,7 @@ fn every_plan_with_something_to_do_is_asked_about_and_the_question_is_safe_to_sh
         now: NOW,
         os: Os::Linux,
     };
-    let make = |ids: &[&str]| make_plan(&tree, &env, &RuleSet::builtin(), ids, &fs);
+    let make = |ids: &[&str]| platter_cleanup::plan_cleanup(&tree, &env, &RuleSet::builtin(), ids, &fs);
 
     let trash_only = question(&make(&["old-downloads"])).expect("moving to the trash is asked about too");
     assert!(trash_only.text.contains("can be put back"), "{}", trash_only.text);
@@ -433,7 +436,7 @@ fn every_plan_with_something_to_do_is_asked_about_and_the_question_is_safe_to_sh
 
 #[test]
 fn undo_waits_for_a_running_cleanup_and_quitting_does_not_wait_for_an_unanswered_dialog() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     let plan = state.cleanups.store(1, CleanupPlan::default());
     let reservation = state.cleanups.take_and_reserve(plan).unwrap();
 
@@ -452,7 +455,7 @@ fn undo_waits_for_a_running_cleanup_and_quitting_does_not_wait_for_an_unanswered
 
 #[test]
 fn marked_items_are_planned_as_review_items_for_the_trash() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     let (_dir, root) = project();
     let scan = scanned(&state, &root);
     let tree = state.scans.tree(scan).unwrap();
@@ -474,7 +477,7 @@ fn marked_items_are_planned_as_review_items_for_the_trash() {
 
 #[test]
 fn a_marked_plan_takes_known_node_ids_only() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     let (_dir, root) = project();
     let scan = scanned(&state, &root);
     let marked = |nodes: Vec<NodeId>| tauri::async_runtime::block_on(plan_marked_nodes(&state, scan, nodes));
@@ -488,4 +491,467 @@ fn a_marked_plan_takes_known_node_ids_only() {
         marked(vec![NodeId(999_999)]).unwrap_err().code(),
         ApiErrorCode::NotFound
     );
+}
+
+// ---- The advisor group ----
+
+/// The project of [`project`] and a folder of the user's own next to it.
+fn project_and_stuff() -> (tempfile::TempDir, PathBuf) {
+    let (dir, root) = project();
+    fs::create_dir_all(root.join("q/stuff")).unwrap();
+    fs::create_dir_all(root.join("q/photos")).unwrap();
+    fs::write(root.join("q/stuff/data"), vec![1u8; 20_000]).unwrap();
+    fs::write(root.join("q/photos/img"), vec![2u8; 20_000]).unwrap();
+
+    (dir, root)
+}
+
+fn switch(state: &AppState, enabled: bool) {
+    state
+        .advisor
+        .configure(AdvisorOptionsDto {
+            enabled,
+            unload_after: UnloadAfterDto::FiveMinutes,
+            log_questions: true,
+        })
+        .unwrap();
+}
+
+fn node_in(state: &AppState, scan: ScanId, path: &str) -> NodeId {
+    let tree = state.scans.tree(scan).unwrap();
+    let mut current = tree.root();
+
+    for part in path.split('/') {
+        current = tree
+            .children(current)
+            .find(|&child| tree.name(child) == part.as_bytes())
+            .unwrap_or_else(|| panic!("{path} is in the scan"));
+    }
+
+    current
+}
+
+/// Stores the labels a run would have made.
+fn label(state: &AppState, scan: ScanId, labels: &[(&str, ModelVerdict)]) {
+    let labels = labels
+        .iter()
+        .map(|(path, verdict)| ModelLabel {
+            node: node_in(state, scan, path),
+            verdict: *verdict,
+            reason: "because".to_owned(),
+        })
+        .collect();
+
+    assert!(state.scans.set_labels(
+        scan,
+        LabelSet {
+            labels,
+            model_ms: 1,
+            stopped: None,
+        }
+    ));
+}
+
+#[test]
+fn the_advisor_group_is_planned_from_the_review_labels_as_review_items_for_the_trash() {
+    let state = AppState::for_test();
+    switch(&state, true);
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    label(
+        &state,
+        scan,
+        &[
+            ("q/stuff", ModelVerdict::Review),
+            ("q/photos", ModelVerdict::Keep),
+        ],
+    );
+
+    let plan = plan_of(&state, scan, &["advisor"]).unwrap();
+
+    assert_eq!(plan.groups.len(), 1);
+    let group = &plan.groups[0];
+    assert_eq!(group.rule_id, "advisor");
+    assert_eq!(group.title, "Labelled by the local model");
+    assert_eq!((group.verdict, group.action), (Verdict::Review, ActionDto::Trash));
+    assert_eq!(group.items, 1, "the keep label is not planned");
+    assert_eq!(group.sample_paths, [root.join("q/stuff").to_string_lossy()]);
+    assert!(plan.refused.is_empty() && plan.not_found.is_empty());
+    assert!(plan.needs_confirmation, "it is confirmed like every plan");
+
+    let wire = serde_json::to_value(&plan).unwrap();
+    assert_eq!(wire["groups"][0]["action"], "trash");
+    assert_eq!(wire["groups"][0]["verdict"], "review");
+}
+
+#[test]
+fn the_advisor_group_is_refused_without_review_labels_and_while_the_advisor_is_off() {
+    let state = AppState::for_test();
+    switch(&state, true);
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+
+    assert_eq!(
+        plan_of(&state, scan, &["advisor"]).unwrap_err().code(),
+        ApiErrorCode::Invalid,
+        "no labels"
+    );
+
+    label(&state, scan, &[("q/photos", ModelVerdict::Keep)]);
+    assert_eq!(
+        plan_of(&state, scan, &["advisor"]).unwrap_err().code(),
+        ApiErrorCode::Invalid,
+        "only keep labels"
+    );
+
+    label(&state, scan, &[("q/stuff", ModelVerdict::Review)]);
+    assert!(plan_of(&state, scan, &["advisor"]).is_ok());
+    switch(&state, false);
+    assert_eq!(
+        plan_of(&state, scan, &["advisor"]).unwrap_err().code(),
+        ApiErrorCode::Invalid,
+        "the suggestion is not listed while the advisor is off"
+    );
+    assert_eq!(
+        plan_of(&state, scan, &["rust-target"]).map(|plan| plan.groups.len()),
+        Ok(1),
+        "the rules do not need the advisor"
+    );
+}
+
+#[test]
+fn a_label_a_rule_covers_is_left_to_the_rule_and_never_planned_twice() {
+    let state = AppState::for_test();
+    switch(&state, true);
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    label(
+        &state,
+        scan,
+        &[
+            ("p/target", ModelVerdict::Review),
+            ("p/target/debug", ModelVerdict::Review),
+            ("p", ModelVerdict::Review),
+            ("q/stuff", ModelVerdict::Review),
+        ],
+    );
+
+    let plan = plan_of(&state, scan, &["rust-target", "advisor"]).unwrap();
+
+    let groups: Vec<_> = plan
+        .groups
+        .iter()
+        .map(|group| (group.rule_id.as_str(), group.items, group.sample_paths.clone()))
+        .collect();
+    assert_eq!(
+        groups,
+        [
+            (
+                "rust-target",
+                1,
+                vec![root.join("p/target").to_string_lossy().into_owned()]
+            ),
+            (
+                "advisor",
+                1,
+                vec![root.join("q/stuff").to_string_lossy().into_owned()]
+            ),
+        ],
+        "the label on the matched folder, the one inside it and the one holding it are not planned"
+    );
+    assert!(plan.refused.is_empty(), "{:?}", plan.refused);
+}
+
+#[test]
+fn when_every_label_is_one_a_rule_speaks_for_there_is_nothing_to_plan() {
+    let state = AppState::for_test();
+    switch(&state, true);
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    label(
+        &state,
+        scan,
+        &[("p/target", ModelVerdict::Review), ("p", ModelVerdict::Review)],
+    );
+
+    assert_eq!(
+        plan_of(&state, scan, &["advisor"]).unwrap_err().code(),
+        ApiErrorCode::Invalid
+    );
+}
+
+#[test]
+fn the_labels_do_not_outlive_the_disk_they_describe() {
+    let state = AppState::for_test();
+    switch(&state, true);
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    label(&state, scan, &[("q/stuff", ModelVerdict::Review)]);
+    let plan = plan_of(&state, scan, &["advisor"]).unwrap();
+
+    state.scans.disk_changed();
+
+    assert_eq!(state.scans.labels(scan).unwrap(), None);
+    assert_eq!(
+        plan_of(&state, scan, &["advisor"]).unwrap_err().code(),
+        ApiErrorCode::Invalid
+    );
+    let (started, _) = start_of(&state, plan.plan_id);
+    assert_eq!(
+        started.unwrap_err().code(),
+        ApiErrorCode::Invalid,
+        "a plan made before is refused too"
+    );
+}
+
+#[test]
+fn the_advisor_group_is_confirmed_in_words_that_name_the_model_and_the_trash() {
+    let state = AppState::for_test();
+    switch(&state, true);
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    label(&state, scan, &[("q/stuff", ModelVerdict::Review)]);
+    let tree = state.scans.tree(scan).unwrap();
+    let env = state.platform.environment_for(tree.root_path());
+    let labelled = [ModelLabel {
+        node: node_in(&state, scan, "q/stuff"),
+        verdict: ModelVerdict::Review,
+        reason: "because".to_owned(),
+    }];
+    let plan = plan_labelled(
+        &tree,
+        &env,
+        &RuleSet::builtin(),
+        &labelled,
+        &state.platform.entry_probe,
+    );
+
+    let asked = question(&plan).expect("a plan with a group is asked about");
+
+    assert!(
+        asked
+            .text
+            .contains("• Move to the trash: Labelled by the local model, 1 items"),
+        "{}",
+        asked.text
+    );
+    assert!(asked.text.contains("can be put back"), "{}", asked.text);
+}
+
+// ---- The user's rules ----
+
+/// A state whose rules file is in a temp folder (and the advisor switched on).
+fn state_with_rules() -> (AppState, tempfile::TempDir, PathBuf) {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("platter/rules.json");
+    let state = AppState::with_parts(
+        crate::commands::advisor::AdvisorService::production(),
+        crate::user_rules::UserRulesStore::new(Some(path.clone())),
+    );
+    switch(&state, true);
+
+    (state, home, path)
+}
+
+fn say(state: &AppState, scan: ScanId, path: &str, verdict: crate::commands::rules::UserVerdictDto) {
+    let node = node_in(state, scan, path);
+
+    tauri::async_runtime::block_on(crate::commands::rules::add(state, scan, node, verdict))
+        .unwrap_or_else(|error| panic!("the rule on {path} is added: {error:?}"));
+}
+
+use crate::commands::rules::UserVerdictDto::{Keep as KeepIt, Safe as SafeIt};
+
+#[test]
+fn a_user_keep_stops_a_rule_from_planning_the_folder_it_keeps_or_holds() {
+    let (state, _home, _) = state_with_rules();
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    assert_eq!(
+        plan_of(&state, scan, &["rust-target"]).unwrap().groups.len(),
+        1,
+        "control"
+    );
+
+    say(&state, scan, "p/target", KeepIt);
+    let kept = plan_of(&state, scan, &["rust-target"]).unwrap();
+
+    assert!(kept.groups.is_empty(), "{kept:?}");
+    assert_eq!(kept.not_found, ["rust-target"]);
+
+    // The same when the kept folder is the outer one.
+    let (state, _home, _) = state_with_rules();
+    let scan = scanned(&state, &root);
+    say(&state, scan, "p", KeepIt);
+
+    assert!(plan_of(&state, scan, &["rust-target"]).unwrap().groups.is_empty());
+}
+
+#[test]
+fn a_user_keep_inside_a_cleaned_folder_stops_that_folder_being_planned() {
+    let (state, _home, _) = state_with_rules();
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    say(&state, scan, "p/target/debug", KeepIt);
+
+    let plan = plan_of(&state, scan, &["rust-target"]).unwrap();
+
+    assert!(
+        plan.groups.is_empty(),
+        "cleaning `target` would clean the kept folder: {plan:?}"
+    );
+}
+
+#[test]
+fn a_user_keep_refuses_marked_folders_inside_around_and_equal_to_it() {
+    let (state, _home, _) = state_with_rules();
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    say(&state, scan, "p/target", KeepIt);
+    let marked = ["p/target", "p/target/debug", "p"].map(|path| node_in(&state, scan, path));
+
+    let plan = tauri::async_runtime::block_on(plan_marked_nodes(&state, scan, marked.to_vec())).unwrap();
+
+    assert!(plan.groups.is_empty(), "{plan:?}");
+    assert_eq!(plan.refused.len(), 3, "{plan:?}");
+    assert!(
+        plan.refused
+            .iter()
+            .all(|refused| refused.reason == "kept on purpose")
+    );
+}
+
+#[test]
+fn a_user_keep_blocks_the_advisor_plan() {
+    let (state, _home, _) = state_with_rules();
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    label(&state, scan, &[("q/stuff", ModelVerdict::Review)]);
+    assert!(plan_of(&state, scan, &["advisor"]).is_ok(), "control");
+
+    say(&state, scan, "q/stuff", KeepIt);
+
+    assert_eq!(
+        plan_of(&state, scan, &["advisor"]).unwrap_err().code(),
+        ApiErrorCode::Invalid
+    );
+}
+
+#[test]
+fn a_user_safe_folder_is_planned_for_the_trash_and_a_keep_id_is_never_planned() {
+    let (state, _home, _) = state_with_rules();
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    say(&state, scan, "q/stuff", SafeIt);
+    say(&state, scan, "q/photos", KeepIt);
+
+    let plan = plan_of(&state, scan, &["user-safe", "user-keep"]).unwrap();
+
+    assert_eq!(plan.groups.len(), 1, "{plan:?}");
+    let group = &plan.groups[0];
+    assert_eq!(group.rule_id, "user-safe");
+    assert_eq!(group.title, "Folders you marked safe");
+    assert_eq!((group.verdict, group.action), (Verdict::Safe, ActionDto::Trash));
+    assert_eq!(group.sample_paths, [root.join("q/stuff").to_string_lossy()]);
+    assert!(plan.needs_confirmation);
+    assert!(
+        plan.refused
+            .iter()
+            .any(|refused| refused.rule_id == "user-keep" && refused.reason == "kept on purpose"),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn the_user_rule_ids_are_known_and_match_nothing_while_there_are_no_user_rules() {
+    let state = AppState::for_test();
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+
+    // The rule set always holds the two user entries, so the ids are known; with no rule they match nothing.
+    let plan = plan_of(&state, scan, &["user-safe"]).unwrap();
+
+    assert!(plan.groups.is_empty());
+    assert_eq!(plan.not_found, ["user-safe"]);
+}
+
+#[test]
+fn a_broken_rules_file_refuses_every_plan() {
+    let (state, _home, path) = state_with_rules();
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    label(&state, scan, &[("q/stuff", ModelVerdict::Review)]);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, b"not json").unwrap();
+    let node = node_in(&state, scan, "q/stuff");
+
+    for refused in [
+        plan_of(&state, scan, &["rust-target"]),
+        plan_of(&state, scan, &["advisor"]),
+        tauri::async_runtime::block_on(plan_marked_nodes(&state, scan, vec![node])),
+    ] {
+        let error = refused.unwrap_err();
+
+        assert_eq!(error.code(), ApiErrorCode::Invalid);
+        assert!(format!("{error:?}").contains("rules file"), "{error:?}");
+    }
+    assert_eq!(fs::read(&path).unwrap(), b"not json", "never overwritten");
+
+    tauri::async_runtime::block_on(crate::commands::rules::reset(&state)).unwrap();
+    assert!(
+        plan_of(&state, scan, &["rust-target"]).is_ok(),
+        "planning works again"
+    );
+}
+
+#[test]
+fn changing_a_rule_drops_the_plans_that_were_waiting() {
+    let (state, _home, _) = state_with_rules();
+    state.set_confirm(Arc::new(Approve));
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    let first = plan_of(&state, scan, &["rust-target"]).unwrap();
+    let second = plan_of(&state, scan, &["rust-target"]).unwrap();
+
+    say(&state, scan, "q/photos", KeepIt);
+
+    for plan in [first, second] {
+        let (started, _) = start_of(&state, plan.plan_id);
+        assert_eq!(started.unwrap_err().code(), ApiErrorCode::NotFound, "dropped");
+    }
+    assert!(root.join("p/target/debug/obj").exists(), "nothing was cleaned");
+
+    // Removing and starting over drop them too.
+    let again = plan_of(&state, scan, &["rust-target"]).unwrap();
+    let rule = tauri::async_runtime::block_on(crate::commands::rules::list(&state))
+        .unwrap()
+        .rules[0]
+        .id;
+    tauri::async_runtime::block_on(crate::commands::rules::remove(&state, rule)).unwrap();
+    let (started, _) = start_of(&state, again.plan_id);
+    assert_eq!(started.unwrap_err().code(), ApiErrorCode::NotFound);
+}
+
+#[test]
+fn a_plan_taken_before_the_rules_changed_by_hand_is_refused_at_start() {
+    let (state, _home, path) = state_with_rules();
+    state.set_confirm(Arc::new(Approve));
+    let (_dir, root) = project_and_stuff();
+    let scan = scanned(&state, &root);
+    let plan = plan_of(&state, scan, &["rust-target"]).unwrap();
+
+    // An edit outside the app drops no plan, but the plan was made from other rules.
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        format!(
+            r#"{{"version":1,"next_id":2,"rules":[{{"id":1,"verdict":"keep","folder":"{}"}}]}}"#,
+            root.join("p/target").display()
+        ),
+    )
+    .unwrap();
+    let (started, _) = start_of(&state, plan.plan_id);
+
+    assert_eq!(started.unwrap_err().code(), ApiErrorCode::Invalid);
+    assert!(root.join("p/target/debug/obj").exists(), "nothing was cleaned");
 }

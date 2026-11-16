@@ -16,19 +16,21 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use platter_cleanup::{
-    CleanupAction, CleanupEvent, CleanupPlan, CleanupReport, Disk, TargetOutcome, TargetResult, execute,
-    plan_cleanup as make_plan, plan_marked, undo,
+    ADVISOR, CleanupAction, CleanupEvent, CleanupPlan, CleanupReport, Disk, KeptFolders, TargetOutcome,
+    TargetResult, execute, plan_cleanup_with as make_plan, plan_labelled_with, plan_marked, undo,
 };
 use platter_core::dto::{ScanId, Verdict};
-use platter_core::{CancelToken, NodeId};
+use platter_core::{CancelToken, ModelLabel, ModelVerdict, NodeId};
 use platter_platform::environment::home_trash;
 use platter_rules::RuleSet;
 use serde::Serialize;
 use tauri::State;
 use tauri::ipc::Channel;
 
+use crate::commands::advisor::Review;
 use crate::error::{CommandError, CommandResult};
 use crate::state::AppState;
+use crate::user_rules;
 
 pub type PlanId = u64;
 pub type CleanupId = u64;
@@ -53,9 +55,12 @@ const QUESTION_CHARS: usize = 6000;
 const SAMPLE_PATHS: usize = 20;
 /// The largest integer a JavaScript number holds exactly; sizes are clamped to it on the wire.
 const MAX_SAFE: u64 = 9_007_199_254_740_991;
+/// The title of the group the model's labels make (the same as its suggestion's).
+const ADVISOR_TITLE: &str = "Labelled by the local model";
 
-/// Asks the user to approve a cleanup that cannot be undone. Shown by the backend, never by the web
-/// view, so a compromised page cannot approve on the user's behalf.
+/// Asks the user to approve what the web view cannot approve for them: a cleanup that cannot be undone,
+/// the model download. Shown by the backend, never by the web view, so a compromised page cannot approve
+/// on the user's behalf.
 pub trait Confirm: Send + Sync {
     fn confirm(&self, question: &Question) -> bool;
 }
@@ -65,6 +70,8 @@ pub trait Confirm: Send + Sync {
 pub struct Question {
     pub title: String,
     pub text: String,
+    /// The label of the button that approves ("Clean up", "Download"); the other is always "Cancel".
+    pub accept: &'static str,
 }
 
 /// Plans waiting to be started, the running cleanup, and finished runs that can be undone.
@@ -92,6 +99,8 @@ struct Stored {
     scan: ScanId,
     plan: Arc<CleanupPlan>,
     made: Instant,
+    /// The generation of the user's rules the plan was made from.
+    rules_generation: u64,
 }
 
 /// The single running slot, held from the moment a plan is taken until its run ends. Dropping it
@@ -103,6 +112,8 @@ pub struct Reservation {
     pub scan: ScanId,
     pub plan: Arc<CleanupPlan>,
     pub made: Instant,
+    /// The generation of the user's rules the plan was made from.
+    pub rules_generation: u64,
 }
 
 impl Drop for Reservation {
@@ -141,27 +152,75 @@ impl CleanupRegistry {
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Stores a plan made without user rules (generation 0).
+    #[cfg(test)]
     fn store(&self, scan: ScanId, plan: CleanupPlan) -> PlanId {
-        let mut inner = self.lock();
-        inner.last_plan += 1;
-        let id = inner.last_plan;
+        self.store_made_with(scan, plan, 0, |_| true)
+            .expect("an unconditional store succeeds")
+    }
 
-        inner
-            .plans
-            .retain(|_, stored| stored.made.elapsed() < PLAN_LIFETIME);
-        while inner.plans.len() >= MAX_PLANS {
-            let oldest = inner.plans.keys().copied().min().unwrap_or(id);
-            inner.plans.remove(&oldest);
+    /// Stores a plan made from the user's rules of generation `rules_generation`, unless `current` says
+    /// the rules changed meanwhile (`invalid`).
+    ///
+    /// `current` reads the rules file, so it is never asked while the registry is locked (cancelling a
+    /// cleanup and quitting take the same lock). It is asked before the plan is stored and again after.
+    /// A change of the rules moves the generation first and drops the stored plans after it (see
+    /// `drop_plans`): a change before the second question is seen by it and the plan is taken back out;
+    /// one after it drops the plan itself. So a plan made from old rules is never left stored.
+    pub(crate) fn store_made_with(
+        &self,
+        scan: ScanId,
+        plan: CleanupPlan,
+        rules_generation: u64,
+        current: impl Fn(u64) -> bool,
+    ) -> CommandResult<PlanId> {
+        let changed = || CommandError::invalid("your rules changed while the plan was made; make a new plan");
+        if !current(rules_generation) {
+            return Err(changed());
         }
-        inner.plans.insert(
-            id,
-            Stored {
-                scan,
-                plan: Arc::new(plan),
-                made: Instant::now(),
-            },
-        );
-        id
+
+        let id = {
+            let mut inner = self.lock();
+            inner.last_plan += 1;
+            let id = inner.last_plan;
+
+            inner
+                .plans
+                .retain(|_, stored| stored.made.elapsed() < PLAN_LIFETIME);
+            while inner.plans.len() >= MAX_PLANS {
+                let oldest = inner.plans.keys().copied().min().unwrap_or(id);
+                inner.plans.remove(&oldest);
+            }
+            inner.plans.insert(
+                id,
+                Stored {
+                    scan,
+                    plan: Arc::new(plan),
+                    made: Instant::now(),
+                    rules_generation,
+                },
+            );
+            id
+        };
+
+        if !current(rules_generation) {
+            self.lock().plans.remove(&id);
+            return Err(changed());
+        }
+
+        Ok(id)
+    }
+
+    /// Whether a plan is waiting to be started.
+    #[cfg(test)]
+    pub(crate) fn has_plan(&self, id: PlanId) -> bool {
+        self.lock().plans.contains_key(&id)
+    }
+
+    /// Forgets every plan waiting to be started: the user's rules changed, so none of them is still what
+    /// the rules would plan. A cleanup that is running is not touched.
+    pub fn drop_plans(&self) {
+        self.lock().plans.clear();
     }
 
     /// Takes a plan out (it can be started once) and reserves the single running slot for it. A busy
@@ -202,6 +261,7 @@ impl CleanupRegistry {
             scan: stored.scan,
             plan: stored.plan,
             made: stored.made,
+            rules_generation: stored.rules_generation,
         })
     }
 
@@ -509,7 +569,10 @@ pub async fn undo_run(state: &AppState, cleanup: CleanupId) -> CommandResult<Vec
 pub type Emit = Arc<dyn Fn(CleanupEventDto) + Send + Sync>;
 
 pub async fn plan(state: &AppState, scan: ScanId, suggestions: Vec<String>) -> CommandResult<CleanupPlanDto> {
-    let rules = RuleSet::builtin();
+    // A broken rules file refuses every plan: nothing then says which folders the user keeps.
+    let user = user_rules::current(&state.user_rules).await?;
+    user.usable()?;
+    let rules = user.rule_set();
     if suggestions.is_empty() || suggestions.len() > MAX_RULES {
         return Err(CommandError::invalid(format!(
             "choose between 1 and {MAX_RULES} suggestions"
@@ -517,7 +580,7 @@ pub async fn plan(state: &AppState, scan: ScanId, suggestions: Vec<String>) -> C
     }
     if let Some(unknown) = suggestions
         .iter()
-        .find(|id| !rules.rules().iter().any(|rule| rule.id == id.as_str()))
+        .find(|id| id.as_str() != ADVISOR && !rules.rules().iter().any(|rule| rule.id == id.as_str()))
     {
         return Err(CommandError::invalid(format!("{unknown} is not a rule")));
     }
@@ -528,22 +591,91 @@ pub async fn plan(state: &AppState, scan: ScanId, suggestions: Vec<String>) -> C
     }
 
     let tree = state.scans.tree(scan)?;
+    // The `advisor` suggestion exists while the advisor is on and the scan has labels: planning it
+    // asks for the same.
+    let labels = if suggestions.iter().any(|id| id == ADVISOR) {
+        review_labels(state, scan)?
+    } else {
+        Vec::new()
+    };
     let Some(_planning) = Planning::begin(&state.cleanups) else {
         return Err(CommandError::invalid(
             "a plan is being made; try again in a moment",
         ));
     };
     let platform = Arc::clone(&state.platform);
+    let generation = user.generation;
     let plan = tauri::async_runtime::spawn_blocking(move || {
         let env = platform.environment_for(tree.root_path());
-        let ids: Vec<&str> = suggestions.iter().map(String::as_str).collect();
-        make_plan(&tree, &env, &rules, &ids, &platform.entry_probe)
+        let ids: Vec<&str> = suggestions
+            .iter()
+            .map(String::as_str)
+            .filter(|id| *id != ADVISOR)
+            .collect();
+        // Learnt once for the request: one overall time limit, however many plans it makes.
+        let kept = KeptFolders::learn(&rules, &platform.entry_probe);
+        let mut plan = make_plan(&tree, &env, &rules, &ids, &platform.entry_probe, &kept);
+
+        if !labels.is_empty() {
+            // Exactly the labels the suggestion lists, no more: a label a rule already speaks for is
+            // the rule's to clean.
+            let listed = Review::new(&tree, &platform, user.rules.clone()).listed_labels(&labels);
+            if listed.is_empty() {
+                return Err(CommandError::invalid("no labelled folder can be cleaned"));
+            }
+            plan.absorb(plan_labelled_with(
+                &tree,
+                &env,
+                &rules,
+                &listed,
+                &platform.entry_probe,
+                &kept,
+            ));
+        }
+
+        Ok(plan)
     })
-    .await?;
+    .await??;
 
     let dto = describe(&plan, scan, 0);
-    let id = state.cleanups.store(scan, plan);
+    let id = store_plan(state, scan, plan, generation)?;
     Ok(CleanupPlanDto { plan_id: id, ..dto })
+}
+
+/// Stores a plan made from the user's rules of `generation`, refusing it when they changed since.
+fn store_plan(state: &AppState, scan: ScanId, plan: CleanupPlan, generation: u64) -> CommandResult<PlanId> {
+    state.cleanups.store_made_with(scan, plan, generation, |made| {
+        state.user_rules.generation() == made
+    })
+}
+
+/// The labels of `scan` that `advisor` may be planned from: the advisor must be on, and the scan must
+/// have `review` labels (`invalid` otherwise).
+fn review_labels(state: &AppState, scan: ScanId) -> CommandResult<Vec<ModelLabel>> {
+    if !state.advisor.enabled() {
+        return Err(CommandError::invalid(
+            "the local model is switched off in the settings",
+        ));
+    }
+
+    let labels: Vec<ModelLabel> = state
+        .scans
+        .labels(scan)?
+        .map(|set| {
+            set.labels
+                .iter()
+                .filter(|label| label.verdict == ModelVerdict::Review)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    if labels.is_empty() {
+        return Err(CommandError::invalid(
+            "the local model has not labelled any folder to clean in this scan",
+        ));
+    }
+
+    Ok(labels)
 }
 
 /// Plans moving the folders and files the user marked in the Explorer (`nodes`) to the trash.
@@ -552,6 +684,8 @@ pub async fn plan_marked_nodes(
     scan: ScanId,
     nodes: Vec<NodeId>,
 ) -> CommandResult<CleanupPlanDto> {
+    let user = user_rules::current(&state.user_rules).await?;
+    user.usable()?;
     if nodes.is_empty() || nodes.len() > MAX_MARKED {
         return Err(CommandError::invalid(format!(
             "mark between 1 and {MAX_MARKED} items"
@@ -573,14 +707,15 @@ pub async fn plan_marked_nodes(
         ));
     };
     let platform = Arc::clone(&state.platform);
+    let generation = user.generation;
     let plan = tauri::async_runtime::spawn_blocking(move || {
         let env = platform.environment_for(tree.root_path());
-        plan_marked(&tree, &env, &RuleSet::builtin(), &nodes, &platform.entry_probe)
+        plan_marked(&tree, &env, &user.rule_set(), &nodes, &platform.entry_probe)
     })
     .await?;
 
     let dto = describe(&plan, scan, 0);
-    let id = state.cleanups.store(scan, plan);
+    let id = store_plan(state, scan, plan, generation)?;
     Ok(CleanupPlanDto { plan_id: id, ..dto })
 }
 
@@ -681,6 +816,13 @@ fn still_current(state: &AppState, reservation: &Reservation) -> CommandResult<(
             "the disk changed since this plan was made; rescan first",
         ));
     }
+    // A plan stored before the user's rules changed is dropped with the change; this catches one that was
+    // already taken (waiting for its confirmation) and a rules file that was edited or broke by hand.
+    if state.user_rules.generation() != reservation.rules_generation {
+        return Err(CommandError::invalid(
+            "your rules changed since this plan was made; make a new plan",
+        ));
+    }
     Ok(())
 }
 
@@ -714,7 +856,11 @@ fn title_of(rule_id: &str) -> String {
     if rule_id == platter_cleanup::MARKED {
         return "Marked in the Explorer".to_owned();
     }
+    if rule_id == ADVISOR {
+        return ADVISOR_TITLE.to_owned();
+    }
     RuleSet::builtin()
+        .with_user(Vec::new())
         .rules()
         .iter()
         .find(|rule| rule.id == rule_id)
@@ -844,6 +990,7 @@ pub fn question(plan: &CleanupPlan) -> Option<Question> {
     Some(Question {
         title: "Clean up?".to_owned(),
         text,
+        accept: "Clean up",
     })
 }
 
@@ -990,7 +1137,7 @@ impl<R: tauri::Runtime> Confirm for NativeConfirm<R> {
             .title(question.title.clone())
             .kind(MessageDialogKind::Warning)
             .buttons(MessageDialogButtons::OkCancelCustom(
-                "Clean up".to_owned(),
+                question.accept.to_owned(),
                 "Cancel".to_owned(),
             ));
         // Attached to Platter's window, so it opens over the app rather than wherever the pointer is.
@@ -1002,7 +1149,7 @@ impl<R: tauri::Runtime> Confirm for NativeConfirm<R> {
 }
 
 /// The confirmation on Linux: a GTK message dialog over the app window. The window title is the app's
-/// name and the heading is the question, said once; Cancel is the default, so Enter does not clean;
+/// name and the heading is the question, said once; Cancel is the default, so Enter does not approve;
 /// the text is plain (never markup).
 #[cfg(target_os = "linux")]
 pub struct GtkConfirm<R: tauri::Runtime> {
@@ -1033,7 +1180,7 @@ impl<R: tauri::Runtime> Confirm for GtkConfirm<R> {
             dialog.set_secondary_use_markup(false);
             dialog.set_secondary_text(Some(&question.text));
             dialog.add_button("Cancel", gtk::ResponseType::Cancel);
-            dialog.add_button("Clean up", gtk::ResponseType::Accept);
+            dialog.add_button(question.accept, gtk::ResponseType::Accept);
             dialog.set_default_response(gtk::ResponseType::Cancel);
             if let Some(cancel) = dialog.widget_for_response(gtk::ResponseType::Cancel) {
                 cancel.grab_focus();

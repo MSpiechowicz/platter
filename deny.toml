@@ -1,3 +1,7 @@
+[graph]
+# Only the platforms we build for: webpki-root-certs (CDLA-Permissive-2.0) appears only under wasm32.
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"]
+
 [advisories]
 version = 2
 # "Unmaintained" notices for crates that only reach us through Tauri on Linux.

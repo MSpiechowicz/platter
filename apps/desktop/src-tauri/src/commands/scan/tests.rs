@@ -55,7 +55,7 @@ fn sample_dir() -> tempfile::TempDir {
 
 #[test]
 fn a_scan_reports_progress_then_exactly_one_finished_event() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     let dir = sample_dir();
 
     let (id, events) = run_to_the_end(&state, options(dir.path()));
@@ -76,7 +76,7 @@ fn a_scan_reports_progress_then_exactly_one_finished_event() {
 
 #[test]
 fn queries_work_on_the_scan_as_soon_as_finished_is_seen() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     let dir = sample_dir();
 
     let (id, events) = run_to_the_end(&state, options(dir.path()));
@@ -108,7 +108,7 @@ fn queries_work_on_the_scan_as_soon_as_finished_is_seen() {
 
 #[test]
 fn a_second_finished_scan_replaces_the_first() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     let dir = sample_dir();
 
     let (first, _) = run_to_the_end(&state, options(dir.path()));
@@ -180,7 +180,7 @@ fn a_scan_that_cannot_open_its_root_ends_with_failed() {
 
 #[test]
 fn the_root_is_validated_before_a_scan_is_registered() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     let dir = sample_dir();
     let file = dir.path().join("notes.txt");
     let emit: EmitFn = Arc::new(|_| {});
@@ -294,7 +294,7 @@ fn the_finished_event_carries_the_warnings_of_the_scan() {
 
 #[test]
 fn a_picked_folder_that_is_no_longer_the_same_folder_is_refused() {
-    let state = AppState::new();
+    let state = AppState::for_test();
     let dir = sample_dir();
     let emit: EmitFn = Arc::new(|_| {});
 

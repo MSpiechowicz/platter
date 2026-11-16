@@ -13,13 +13,17 @@ use crate::state::AppState;
 /// The commands that do not need a real window (the system ones take a concrete `AppHandle`).
 fn app() -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
     let app = mock_builder()
-        .manage(AppState::new())
+        .manage(AppState::for_test())
         .invoke_handler(tauri::generate_handler![
             commands::volumes::list_volumes,
             commands::scan::start_scan,
             commands::scan::cancel_scan,
             commands::scan::drop_scan,
             commands::suggestions::get_suggestions,
+            commands::rules::list_user_rules,
+            commands::rules::add_user_rule,
+            commands::rules::remove_user_rule,
+            commands::rules::reset_user_rules,
             commands::query::get_children,
             commands::cleanup::plan_cleanup,
             commands::cleanup::plan_marked_cleanup,
@@ -265,5 +269,34 @@ fn cleanup_commands_take_ids_only_and_refuse_what_they_do_not_know() {
     assert_eq!(
         invoke(&window, "cancel_cleanup", json!({ "cleanup": 41 })),
         Ok(Value::Null)
+    );
+}
+
+#[test]
+fn the_rules_commands_answer_over_ipc_and_take_ids_only() {
+    let (_app, window) = app();
+
+    assert_eq!(
+        invoke(&window, "list_user_rules", json!({})),
+        Ok(json!({ "rules": [] }))
+    );
+    // The web view names a folder by a node id of a scan; a path argument is not part of the command.
+    let refused = invoke(
+        &window,
+        "add_user_rule",
+        json!({ "scan": 4242, "node": 1, "verdict": "keep" }),
+    )
+    .unwrap_err();
+    assert_eq!(refused["code"], "notFound");
+    let bad_verdict = invoke(
+        &window,
+        "add_user_rule",
+        json!({ "scan": 4242, "node": 1, "verdict": "review" }),
+    );
+    assert!(bad_verdict.is_err(), "only keep and safe");
+    assert_eq!(
+        invoke(&window, "reset_user_rules", json!({})).unwrap_err()["code"],
+        "invalid",
+        "nothing to start over from"
     );
 }

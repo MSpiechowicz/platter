@@ -11,6 +11,12 @@ build = "build.rs"
 [lints]
 workspace = true
 
+[features]
+# The advisor model (llama.cpp, built from source: needs cmake and clang). Without it the advisor
+# reports itself as `unavailable` and nothing else changes.
+default = ["advisor"]
+advisor = ["platter-ai/llama"]
+
 [lib]
 name = "platter_desktop_lib"
 
@@ -26,7 +32,9 @@ platter-core.workspace = true
 platter-platform.workspace = true
 platter-rules.workspace = true
 platter-cleanup.workspace = true
+platter-ai.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tauri.workspace = true
 tauri-plugin-dialog.workspace = true
 tauri-plugin-opener.workspace = true
@@ -40,6 +48,6 @@ gtk = "0.18"
 [dev-dependencies]
 platter-core = { workspace = true, features = ["testing"] }
 platter-platform = { workspace = true, features = ["testing"] }
-serde_json.workspace = true
+platter-ai = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tauri = { workspace = true, features = ["test"] }

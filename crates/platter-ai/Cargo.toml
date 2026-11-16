@@ -1,0 +1,40 @@
+[package]
+name = "platter-ai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Platter advisor model: download, verification, runtime and the worker that owns them."
+
+[lints]
+workspace = true
+
+[features]
+# The model runtime (llama.cpp, built from source: needs cmake and clang). Without it the crate still
+# downloads and verifies, and the desktop app reports the advisor as unavailable.
+llama = ["dep:llama-cpp-2", "dep:llama-cpp-sys-2"]
+# `FakeFetch` and `FakeEngine`, so tests of this and other crates need neither the network nor a model.
+testing = []
+
+[dependencies]
+platter-core.workspace = true
+platter-platform.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ureq.workspace = true
+rustls.workspace = true
+llama-cpp-2 = { workspace = true, optional = true }
+# Not used by the code: a direct dependency only to pin the version that llama-cpp-2 builds.
+llama-cpp-sys-2 = { workspace = true, optional = true }
+
+[dev-dependencies]
+platter-ai = { workspace = true, features = ["testing"] }
+platter-core = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+
+[[example]]
+name = "advisor_smoke"
+required-features = ["llama"]
