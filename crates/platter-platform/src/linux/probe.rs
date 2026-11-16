@@ -69,6 +69,14 @@ impl EntryProbe for LinuxEntryProbe {
         let resolved = std::fs::canonicalize(std::ffi::OsStr::from_bytes(path))?;
         Ok(resolved.into_os_string().into_encoded_bytes())
     }
+
+    fn read_link(&self, path: &[u8]) -> io::Result<Vec<u8>> {
+        use std::os::unix::ffi::OsStrExt;
+
+        // `readlink(2)`: the link is read, never followed; `EINVAL` (not a link) is `InvalidInput`.
+        let target = std::fs::read_link(std::ffi::OsStr::from_bytes(path))?;
+        Ok(target.into_os_string().into_encoded_bytes())
+    }
 }
 
 /// How long one look at a path may take before it is given up.
@@ -121,6 +129,11 @@ impl EntryProbe for TimedEntryProbe {
     fn resolve(&self, path: &[u8]) -> io::Result<Vec<u8>> {
         let path = path.to_vec();
         self.timed(move || LinuxEntryProbe.resolve(&path))
+    }
+
+    fn read_link(&self, path: &[u8]) -> io::Result<Vec<u8>> {
+        let path = path.to_vec();
+        self.timed(move || LinuxEntryProbe.read_link(&path))
     }
 }
 
@@ -197,6 +210,30 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::NotADirectory);
+    }
+
+    #[test]
+    fn a_link_is_read_as_stored_and_never_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(root.join("real")).unwrap();
+        symlink("real/../real", root.join("relative")).unwrap();
+        symlink(root.join("gone"), root.join("dangling")).unwrap();
+
+        for probe in [&LinuxEntryProbe as &dyn EntryProbe, &TimedEntryProbe::default()] {
+            assert_eq!(
+                probe.read_link(&bytes(&root.join("relative"))).unwrap(),
+                b"real/../real"
+            );
+            assert_eq!(
+                probe.read_link(&bytes(&root.join("dangling"))).unwrap(),
+                bytes(&root.join("gone"))
+            );
+            let plain = probe.read_link(&bytes(&root.join("real"))).unwrap_err();
+            assert_eq!(plain.kind(), io::ErrorKind::InvalidInput);
+            let missing = probe.read_link(&bytes(&root.join("nope"))).unwrap_err();
+            assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        }
     }
 
     #[test]

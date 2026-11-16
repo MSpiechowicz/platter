@@ -22,20 +22,69 @@ pub fn memory_budget_for(available_bytes: u64) -> u64 {
     available_bytes / 2
 }
 
+/// Memory the system can give to a program now without swapping (`MemAvailable`). `None` where it
+/// cannot be read.
 #[cfg(target_os = "linux")]
-fn available_memory_bytes() -> Option<u64> {
+pub fn available_memory_bytes() -> Option<u64> {
     parse_mem_available(&std::fs::read_to_string("/proc/meminfo").ok()?)
 }
 
+/// Memory the system can give to a program now without swapping. `None` on this system.
 #[cfg(not(target_os = "linux"))]
-fn available_memory_bytes() -> Option<u64> {
+pub fn available_memory_bytes() -> Option<u64> {
+    None
+}
+
+/// All memory of the machine (`MemTotal`). `None` where it cannot be read.
+#[cfg(target_os = "linux")]
+pub fn total_memory_bytes() -> Option<u64> {
+    parse_mem_total(&std::fs::read_to_string("/proc/meminfo").ok()?)
+}
+
+/// All memory of the machine. `None` on this system.
+#[cfg(not(target_os = "linux"))]
+pub fn total_memory_bytes() -> Option<u64> {
+    None
+}
+
+/// Memory this process holds in RAM right now (resident set, from `/proc/self/statm`). `None` where it
+/// cannot be read.
+#[cfg(target_os = "linux")]
+pub fn resident_bytes() -> Option<u64> {
+    let page = rustix::param::page_size() as u64;
+
+    parse_resident(&std::fs::read_to_string("/proc/self/statm").ok()?, page)
+}
+
+/// Memory this process holds in RAM right now. `None` on this system.
+#[cfg(not(target_os = "linux"))]
+pub fn resident_bytes() -> Option<u64> {
     None
 }
 
 /// The `MemAvailable` line of `/proc/meminfo` (`MemAvailable:   12345678 kB`) in bytes.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_mem_available(meminfo: &str) -> Option<u64> {
-    let line = meminfo.lines().find(|line| line.starts_with("MemAvailable:"))?;
+    parse_meminfo_line(meminfo, "MemAvailable:")
+}
+
+/// The `MemTotal` line of `/proc/meminfo` in bytes.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_mem_total(meminfo: &str) -> Option<u64> {
+    parse_meminfo_line(meminfo, "MemTotal:")
+}
+
+/// The second field of `/proc/self/statm` (resident pages) in bytes, for pages of `page_bytes`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_resident(statm: &str, page_bytes: u64) -> Option<u64> {
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+
+    pages.checked_mul(page_bytes)
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_meminfo_line(meminfo: &str, key: &str) -> Option<u64> {
+    let line = meminfo.lines().find(|line| line.starts_with(key))?;
 
     let mut fields = line.split_whitespace().skip(1);
     let amount: u64 = fields.next()?.parse().ok()?;
@@ -84,6 +133,39 @@ mod tests {
         assert_eq!(parse_mem_available("MemAvailable: lots kB\n"), None);
         assert_eq!(parse_mem_available("MemAvailable: 5 MB\n"), None);
         assert_eq!(parse_mem_available(""), None);
+    }
+
+    #[test]
+    fn the_resident_size_is_the_second_field_of_statm_in_pages() {
+        assert_eq!(
+            parse_resident("5000 1200 300 10 0 900 0\n", 4096),
+            Some(1200 * 4096)
+        );
+        assert_eq!(parse_resident("5000", 4096), None);
+        assert_eq!(parse_resident("5000 many", 4096), None);
+        assert_eq!(
+            parse_resident("1 18446744073709551615", 4096),
+            None,
+            "no overflow"
+        );
+    }
+
+    #[test]
+    fn the_total_is_read_apart_from_what_is_available() {
+        let meminfo = "MemTotal:       32768000 kB\nMemAvailable:   16384000 kB\n";
+
+        assert_eq!(parse_mem_total(meminfo), Some(32_768_000 * 1024));
+        assert_eq!(parse_mem_total("MemAvailable: 1 kB\n"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn this_process_and_machine_report_memory() {
+        let resident = resident_bytes().unwrap();
+        let total = total_memory_bytes().unwrap();
+
+        assert!(resident > 0 && resident < total);
+        assert!(available_memory_bytes().unwrap() <= total);
     }
 
     #[cfg(target_os = "linux")]

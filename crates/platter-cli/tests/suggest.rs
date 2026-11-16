@@ -13,6 +13,7 @@ fn suggest(home: &Path, args: &[&str]) -> Output {
         .arg(home)
         .args(args)
         .env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
         .output()
         .expect("binary runs")
 }

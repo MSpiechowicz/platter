@@ -1,9 +1,12 @@
 //! The single pass: walks the tree top-down once and hands every rule the nodes it matched.
 
-use platter_core::dto::{SuggestionDto, SuggestionsDto, Verdict, VerdictTotals};
-use platter_core::{Environment, NodeId, NodeKind, Tree};
+use std::collections::HashSet;
+
+use platter_core::dto::{SuggestionDto, SuggestionSource, SuggestionsDto, Verdict, VerdictTotals};
+use platter_core::{Environment, ModelLabel, ModelVerdict, NodeId, NodeKind, Tree};
 
 use crate::display::{join, shorten_home};
+use crate::explain::Explainer;
 use crate::found::Found;
 use crate::plan::{Plan, Role, kept_root, named_of};
 use crate::reason::{Facts, render};
@@ -17,7 +20,8 @@ pub type Suggestions = SuggestionsDto;
 ///
 /// One top-down pass. A node that matches a rule is recorded and not entered, so the outermost match
 /// wins, nothing inside it is matched again and no byte is counted twice. Unreadable folders, skipped
-/// mounts and empty nodes never match, and a folder with an unreadable part inside, whose size and age
+/// mounts and empty nodes never match (except a `keep` rule's own folder, which is kept whatever node
+/// it is: a skipped mount, say, is a match with nothing to show), and a folder with an unreadable part inside, whose size and age
 /// are not really known, is never `safe`. When two rules match the same folder, a `keep` rule wins, then the
 /// earlier rule. A `keep` folder is never entered, and a scan that starts inside one gets no suggestions.
 ///
@@ -26,6 +30,24 @@ pub type Suggestions = SuggestionsDto;
 ///
 /// Suggestions come safe first, then review, then keep, largest first within each verdict.
 pub fn evaluate(tree: &Tree, env: &Environment, rules: &RuleSet) -> Suggestions {
+    evaluate_with(tree, env, rules, &[])
+}
+
+/// The id of the suggestion that lists the local model's labels.
+pub const ADVISOR_ID: &str = "advisor";
+
+const ADVISOR_TITLE: &str = "Labelled by the local model";
+
+const ADVISOR_REASON: &str = "The local model thinks these folders hold data that can be made again or is only \
+     temporary. It can be wrong, so look at each folder before cleaning it.";
+
+/// [`evaluate`], plus one more suggestion for what the local model labelled: id `advisor`, source `model`,
+/// verdict `review`. Only `review` labels are listed (`keep` labels never are), and a label whose folder is
+/// covered by a rule match, holds one, or lies inside a kept folder is left out, so the model never
+/// speaks where a rule already has. A label inside another listed label is left to the outer one, and the
+/// scan root, unreadable and empty folders are not listed. A scan that starts inside a kept folder gets no
+/// suggestions at all. With no labels this is exactly [`evaluate`].
+pub fn evaluate_with(tree: &Tree, env: &Environment, rules: &RuleSet, labels: &[ModelLabel]) -> Suggestions {
     let Some((verdicts, found)) = run(tree, env, rules) else {
         return Suggestions {
             suggestions: Vec::new(),
@@ -33,7 +55,57 @@ pub fn evaluate(tree: &Tree, env: &Environment, rules: &RuleSet) -> Suggestions 
         };
     };
 
-    assemble(tree, env, rules.rules(), &verdicts, found)
+    let advisor = advisor_found(tree, rules.rules(), &verdicts, &found, labels);
+    assemble(tree, env, rules.rules(), &verdicts, found, advisor)
+}
+
+/// What the model's `review` labels cover, after the folders the rules have an opinion on are left out.
+fn advisor_found(
+    tree: &Tree,
+    rules: &[Rule],
+    verdicts: &[Verdict],
+    found: &[Found],
+    labels: &[ModelLabel],
+) -> Found {
+    let mut advisor = Found::default();
+    if labels.is_empty() {
+        return advisor;
+    }
+
+    let explainer = Explainer::from_found(tree, rules, verdicts, found);
+    let mut nodes: Vec<NodeId> = labels
+        .iter()
+        .filter(|label| label.verdict == ModelVerdict::Review)
+        .map(|label| label.node)
+        .filter(|&node| listable(tree, &explainer, node))
+        .collect();
+    nodes.sort_unstable();
+    nodes.dedup();
+
+    let listed: HashSet<NodeId> = nodes.iter().copied().collect();
+    for node in nodes {
+        let ancestry = tree.ancestry(node);
+        let inside_another = ancestry[..ancestry.len() - 1]
+            .iter()
+            .any(|above| listed.contains(above));
+
+        if !inside_another {
+            advisor.add(tree, node, None);
+        }
+    }
+
+    advisor
+}
+
+/// Whether a label on `node` may be listed: a readable, non-empty folder below the scan root that no rule
+/// covers or holds something of.
+fn listable(tree: &Tree, explainer: &Explainer, node: NodeId) -> bool {
+    tree.contains(node)
+        && tree.kind(node) == NodeKind::Dir
+        && tree.parent(node).is_some()
+        && tree.allocated(node) > 0
+        && !tree.is_unreadable(node)
+        && !explainer.touches(node)
 }
 
 /// Every node one rule matched, with the verdict the rule has on this machine.
@@ -69,16 +141,16 @@ pub fn matches(tree: &Tree, env: &Environment, rules: &RuleSet) -> Vec<RuleMatch
 
 /// Whether the scan starts inside a folder a `keep` rule protects: then nothing in it may be cleaned.
 pub fn scan_is_kept(tree: &Tree, env: &Environment, rules: &RuleSet) -> bool {
-    kept_root(tree, env, rules.rules()).is_some()
+    kept_root(tree, env, rules).is_some()
 }
 
 /// The single pass. `None` when the scan starts inside a kept folder, so nothing may be suggested.
-fn run(tree: &Tree, env: &Environment, rules: &RuleSet) -> Option<(Vec<Verdict>, Vec<Found>)> {
-    if kept_root(tree, env, rules.rules()).is_some() {
+pub(crate) fn run(tree: &Tree, env: &Environment, rules: &RuleSet) -> Option<(Vec<Verdict>, Vec<Found>)> {
+    if kept_root(tree, env, rules).is_some() {
         return None;
     }
 
-    let plan = Plan::new(tree, env, rules.rules());
+    let plan = Plan::new(tree, env, rules);
     let verdicts: Vec<Verdict> = rules
         .rules()
         .iter()
@@ -168,15 +240,22 @@ impl Walker<'_> {
         match self.tree.kind(node) {
             NodeKind::Dir => {
                 if let Some((rule, name)) = self.matching_rule(node) {
-                    // A kept folder is never entered, whatever is in it.
+                    // A kept folder is never entered, whatever is in it, and it is kept whatever its size: a
+                    // folder of empty files or of hard links charged elsewhere has no bytes of its own (nor
+                    // has any folder where the filesystem gives a directory no blocks). Only a folder with
+                    // bytes is shown as a suggestion.
                     if self.rules[rule].verdict == Verdict::Keep {
                         if self.tree.allocated(node) > 0 {
                             self.found[rule].add(self.tree, node, name);
+                        } else {
+                            self.found[rule].add_unlisted(node);
                         }
                         return None;
                     }
 
-                    if self.is_suggestible(node, self.verdicts[rule]) {
+                    // A folder with a kept folder inside is entered, not claimed: acting on it would act on
+                    // what is kept.
+                    if !self.plan.holds_keep(node) && self.is_suggestible(node, self.verdicts[rule]) {
                         self.found[rule].add(self.tree, node, name);
                         return None;
                     }
@@ -184,11 +263,31 @@ impl Walker<'_> {
 
                 Some(self.with_regions(node, set))
             }
+            // Not entered, but a kept one (a skipped mount, a link, a file) is still kept: a match with
+            // nothing to show, which every question of "is this kept?" sees.
+            _ if self.plan.is_anchor(node) => {
+                self.note_kept(node);
+                None
+            }
             NodeKind::File => {
                 self.match_file(node, set);
                 None
             }
             _ => None,
+        }
+    }
+
+    /// Records the `keep` rule anchored at a node that is not a directory.
+    fn note_kept(&mut self, node: NodeId) {
+        let rule = self
+            .plan
+            .anchors_at(node)
+            .iter()
+            .find(|anchor| anchor.role == Role::Claim && self.rules[anchor.rule].verdict == Verdict::Keep)
+            .map(|anchor| anchor.rule);
+
+        if let Some(rule) = rule {
+            self.found[rule].add_unlisted(node);
         }
     }
 
@@ -346,19 +445,21 @@ impl Walker<'_> {
     }
 }
 
-/// Turns the matches into suggestions: rendered text, display paths, ordering and totals.
+/// Turns the matches into suggestions: rendered text, display paths, ordering and totals. `advisor` is
+/// what the model's labels cover; it becomes one more review suggestion after all the rules.
 fn assemble(
     tree: &Tree,
     env: &Environment,
     rules: &[Rule],
     verdicts: &[Verdict],
     found: Vec<Found>,
+    advisor: Found,
 ) -> Suggestions {
     let mut totals = VerdictTotals::default();
     let mut ranked: Vec<(usize, SuggestionDto)> = Vec::new();
 
     for (index, (rule, found)) in rules.iter().zip(&found).enumerate() {
-        if found.is_empty() {
+        if !found.is_listed() {
             continue;
         }
 
@@ -380,6 +481,7 @@ fn assemble(
             SuggestionDto {
                 id: rule.id.to_owned(),
                 title: rule.title.to_owned(),
+                source: source_of(rule),
                 path: display_path(tree, env, rule, found),
                 verdict,
                 reason: render(rule.reason, &facts),
@@ -391,11 +493,44 @@ fn assemble(
         ));
     }
 
+    if !advisor.is_empty() {
+        totals.review = totals.review.saturating_add(advisor.allocated);
+        ranked.push((rules.len(), advisor_suggestion(tree, env, &advisor)));
+    }
+
     ranked.sort_by_key(|(index, dto)| (dto.verdict, std::cmp::Reverse(dto.allocated), *index));
 
     Suggestions {
         suggestions: ranked.into_iter().map(|(_, dto)| dto).collect(),
         totals,
+    }
+}
+
+/// Who decided a rule: the user for the rules made of their own, otherwise the built-in table.
+pub(crate) fn source_of(rule: &Rule) -> SuggestionSource {
+    match rule.matcher {
+        Matcher::User(_) => SuggestionSource::User,
+        _ => SuggestionSource::Rule,
+    }
+}
+
+fn advisor_suggestion(tree: &Tree, env: &Environment, advisor: &Found) -> SuggestionDto {
+    let path = match advisor.single() {
+        Some(node) => shorten_home(&tree.path_of(node), env.home.as_deref()),
+        None => glob_below(tree, env, advisor, "**"),
+    };
+
+    SuggestionDto {
+        id: ADVISOR_ID.to_owned(),
+        title: ADVISOR_TITLE.to_owned(),
+        source: SuggestionSource::Model,
+        path,
+        verdict: Verdict::Review,
+        reason: ADVISOR_REASON.to_owned(),
+        allocated: advisor.allocated,
+        items: advisor.items,
+        shared_files: advisor.shared_files,
+        nodes: advisor.largest_nodes(),
     }
 }
 
@@ -427,6 +562,11 @@ fn display_path(tree: &Tree, env: &Environment, rule: &Rule, found: &Found) -> S
 
             glob_below(tree, env, found, "**")
         }
+        // Exact folders, so a pattern would claim more than the user chose.
+        Matcher::User(_) => match found.single() {
+            Some(node) => shorten_home(&tree.path_of(node), home),
+            None => format!("{} folders you chose", found.items),
+        },
     }
 }
 

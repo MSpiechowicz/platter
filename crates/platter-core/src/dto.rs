@@ -249,6 +249,19 @@ pub enum Verdict {
     Keep,
 }
 
+/// Who made a suggestion's verdict. Wire names are lowercase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SuggestionSource {
+    /// The built-in rule table.
+    #[default]
+    Rule,
+    /// A rule the user added.
+    User,
+    /// The local model's labels.
+    Model,
+}
+
 /// One rule's findings over a scan (read-only: nothing is changed or deleted).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -256,6 +269,9 @@ pub struct SuggestionDto {
     /// Stable rule id, e.g. `pacman-cache`.
     pub id: String,
     pub title: String,
+    /// Who made the verdict. A suggestion without this field counts as `rule`.
+    #[serde(default)]
+    pub source: SuggestionSource,
     /// Display path or pattern: `/var/cache/pacman/pkg`, `~/.cache`, `~/Projekty/**/target`. A home
     /// directory is always shown as `~`.
     pub path: String,
@@ -335,7 +351,11 @@ impl From<&ScanError> for ApiError {
 
 impl From<QueryError> for ApiError {
     fn from(error: QueryError) -> Self {
-        ApiError::new(ApiErrorCode::NotFound, error.to_string())
+        let code = match error {
+            QueryError::NotFound(_) => ApiErrorCode::NotFound,
+            QueryError::QueryTooLong(_) => ApiErrorCode::Invalid,
+        };
+        ApiError::new(code, error.to_string())
     }
 }
 

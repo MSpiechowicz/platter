@@ -3,10 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use platter_core::dto::Verdict;
-use platter_core::{Environment, NodeId, NodeKind, Tree};
+use platter_core::{Environment, NodeId, NodeKind, Tree, UserRule};
 
 use crate::resolve::locate;
-use crate::rule::{Matcher, Named, Rule};
+use crate::rule::{Matcher, Named, Rule, RuleSet};
 
 /// What a rule does at a node it is anchored to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,29 +30,33 @@ pub(crate) struct Plan {
     anchors: Vec<Anchor>,
     /// One bit per node: does an anchor sit here? Keeps the per-node cost to a single bit test.
     marked: Vec<u64>,
+    /// One bit per node: does a `keep` anchor sit strictly below it? Such a folder is never claimed by
+    /// another rule, because acting on it would act on the kept folder inside. A `keep` anchor can sit on
+    /// any kind of node (a skipped mount, say), so this sees a kept mount too.
+    holds_keep: Vec<u64>,
     /// Name rules (rule indexes, in table order).
     pub named: Vec<usize>,
 }
 
 impl Plan {
-    pub fn new(tree: &Tree, env: &Environment, rules: &[Rule]) -> Self {
+    pub fn new(tree: &Tree, env: &Environment, set: &RuleSet) -> Self {
         let mut anchors = Vec::new();
         let mut named = Vec::new();
 
-        for (index, rule) in rules.iter().enumerate() {
+        for (index, rule) in set.rules().iter().enumerate() {
             if rule.os.is_some_and(|os| os != env.os) {
                 continue;
             }
 
             match &rule.matcher {
-                Matcher::Fixed(_) | Matcher::Home(_) | Matcher::UserDir(_) => {
-                    if let Some(path) = claimed_path(rule, env) {
-                        push_anchor(&mut anchors, tree, &path, index, Role::Claim);
+                Matcher::Fixed(_) | Matcher::Home(_) | Matcher::UserDir(_) | Matcher::User(_) => {
+                    for path in claimed_paths(rule, env, set.user()) {
+                        push_anchor(&mut anchors, tree, &path, index, rule.verdict, Role::Claim);
                     }
                 }
                 Matcher::Files(files) => {
                     if let Some(path) = under_home(env, files.home_relative) {
-                        push_anchor(&mut anchors, tree, &path, index, Role::Region);
+                        push_anchor(&mut anchors, tree, &path, index, rule.verdict, Role::Region);
                     }
                 }
                 Matcher::Named(_) => named.push(index),
@@ -66,11 +70,30 @@ impl Plan {
             marked[anchor.node as usize / 64] |= 1 << (anchor.node % 64);
         }
 
+        let mut holds_keep = vec![0u64; tree.len().div_ceil(64)];
+        for anchor in &anchors {
+            if set.rules()[anchor.rule].verdict != Verdict::Keep {
+                continue;
+            }
+
+            let mut above = tree.parent(NodeId(anchor.node));
+            while let Some(node) = above {
+                holds_keep[node.0 as usize / 64] |= 1 << (node.0 % 64);
+                above = tree.parent(node);
+            }
+        }
+
         Self {
             anchors,
             marked,
+            holds_keep,
             named,
         }
+    }
+
+    /// Whether a `keep` anchor sits somewhere below `node`.
+    pub fn holds_keep(&self, node: NodeId) -> bool {
+        self.holds_keep[node.0 as usize / 64] & (1 << (node.0 % 64)) != 0
     }
 
     pub fn is_anchor(&self, node: NodeId) -> bool {
@@ -93,39 +116,59 @@ fn under_home(env: &Environment, relative: &str) -> Option<PathBuf> {
     env.home.as_ref().map(|home| home.join(relative))
 }
 
-/// The folder a path rule (fixed, home or personal folder) is about, when it is known.
-pub(crate) fn claimed_path(rule: &Rule, env: &Environment) -> Option<PathBuf> {
+/// The folders a path rule (fixed, home or personal folder, or the user's own) is about, when known.
+fn claimed_paths(rule: &Rule, env: &Environment, user: &[UserRule]) -> Vec<PathBuf> {
+    let one = |path: Option<PathBuf>| path.into_iter().collect();
+
     match &rule.matcher {
-        Matcher::Fixed(path) => Some(PathBuf::from(path)),
-        Matcher::Home(relative) => under_home(env, relative),
-        Matcher::UserDir(dir) => env.user_dir(*dir),
-        Matcher::Named(_) | Matcher::Files(_) => None,
+        Matcher::Fixed(path) => vec![PathBuf::from(path)],
+        Matcher::Home(relative) => one(under_home(env, relative)),
+        Matcher::UserDir(dir) => one(env.user_dir(*dir)),
+        Matcher::User(verdict) => user
+            .iter()
+            .filter(|rule| rule.verdict == *verdict)
+            .map(|rule| rule.folder.clone())
+            .collect(),
+        Matcher::Named(_) | Matcher::Files(_) => Vec::new(),
     }
 }
 
 /// The `keep` rule whose folder holds the whole scan, when the scan starts inside one. A scan of the
 /// kept folder itself is not "inside": the root is then matched like any other node.
-pub(crate) fn kept_root(tree: &Tree, env: &Environment, rules: &[Rule]) -> Option<usize> {
+pub(crate) fn kept_root(tree: &Tree, env: &Environment, set: &RuleSet) -> Option<usize> {
     let root = tree.root_path();
 
-    rules.iter().enumerate().find_map(|(index, rule)| {
+    set.rules().iter().enumerate().find_map(|(index, rule)| {
         if rule.verdict != Verdict::Keep || rule.os.is_some_and(|os| os != env.os) {
             return None;
         }
 
-        let kept = claimed_path(rule, env)?;
-        (root != kept && root.starts_with(&kept)).then_some(index)
+        claimed_paths(rule, env, set.user())
+            .iter()
+            .any(|kept| root != kept && root.starts_with(kept))
+            .then_some(index)
     })
 }
 
-/// Anchors `rule` at the directory at `path`, when the scan contains one.
-fn push_anchor(anchors: &mut Vec<Anchor>, tree: &Tree, path: &Path, rule: usize, role: Role) {
+/// Anchors `rule` at the node at `path`, when the scan contains one.
+///
+/// Only a directory is a place to suggest or look into. A `keep` claim is anchored at whatever node it
+/// finds, though: a kept folder that is a mount the scan did not enter (`one_file_system`), a link or a
+/// file in the tree is still kept, and everything around it must see that. Such a node is never entered.
+fn push_anchor(
+    anchors: &mut Vec<Anchor>,
+    tree: &Tree,
+    path: &Path,
+    rule: usize,
+    verdict: Verdict,
+    role: Role,
+) {
     let Some(node) = locate(tree, path) else {
         return;
     };
 
-    // A file, a link or a skipped mount is never suggested, and a mount has nothing to look into.
-    if tree.kind(node) == NodeKind::Dir {
+    let keeps = verdict == Verdict::Keep && role == Role::Claim;
+    if tree.kind(node) == NodeKind::Dir || keeps {
         anchors.push(Anchor {
             node: node.0,
             rule,

@@ -1,7 +1,7 @@
 //! What a rule is: plain data. Adding a rule is one entry in `table.rs`; nothing here does anything.
 
 use platter_core::dto::Verdict;
-use platter_core::{Category, Os, UserDir};
+use platter_core::{Category, Os, UserDir, UserRule, UserVerdict};
 
 const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -150,6 +150,8 @@ pub enum Matcher {
     Named(Named),
     /// Files by age, category and size below a home folder.
     Files(Files),
+    /// The folders of the user's own rules with this verdict, matched by exact path and never by name.
+    User(UserVerdict),
 }
 
 impl Matcher {
@@ -158,7 +160,7 @@ impl Matcher {
         let age = match self {
             Matcher::Named(named) => named.age,
             Matcher::Files(files) => files.age,
-            Matcher::Fixed(_) | Matcher::Home(_) | Matcher::UserDir(_) => None,
+            Matcher::Fixed(_) | Matcher::Home(_) | Matcher::UserDir(_) | Matcher::User(_) => None,
         };
 
         match age {
@@ -218,16 +220,21 @@ impl Rule {
     }
 }
 
-/// An ordered collection of rules. When two rules match the same folder, the earlier one wins.
+/// An ordered collection of rules, and the user's own rules they are matched against. When two rules match
+/// the same folder, the earlier one wins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleSet {
     rules: Vec<Rule>,
+    user: Vec<UserRule>,
 }
 
 impl RuleSet {
-    /// A custom set of rules.
+    /// A custom set of rules, with no user rules.
     pub fn new(rules: Vec<Rule>) -> Self {
-        Self { rules }
+        Self {
+            rules,
+            user: Vec::new(),
+        }
     }
 
     /// The rules Platter ships with.
@@ -235,7 +242,26 @@ impl RuleSet {
         Self::new(crate::table::RULES.to_vec())
     }
 
+    /// This set with the user's own rules: two more entries, `user-keep` before every other rule and
+    /// `user-safe` after them, each matching exactly the folders of the user rules with that verdict. So a
+    /// `keep` of any source wins, then the built-in rules, then the user's `safe`. A set that already had
+    /// user rules gets these ones instead.
+    pub fn with_user(mut self, user: Vec<UserRule>) -> Self {
+        self.rules
+            .retain(|rule| !matches!(rule.matcher, Matcher::User(_)));
+        self.rules.insert(0, crate::table::USER_KEEP);
+        self.rules.push(crate::table::USER_SAFE);
+        self.user = user;
+
+        self
+    }
+
     pub fn rules(&self) -> &[Rule] {
         &self.rules
+    }
+
+    /// The user's own rules this set was given.
+    pub fn user(&self) -> &[UserRule] {
+        &self.user
     }
 }

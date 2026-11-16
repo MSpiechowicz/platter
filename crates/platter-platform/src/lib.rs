@@ -1,5 +1,7 @@
 //! OS adapters for Platter: implementations of the `platter-core` ports.
 //!
+//! - [`app_dirs`]: the app's config and data folders, and private files in them.
+//! - [`cpu`]: physical cores, for sizing a thread pool.
 //! - [`environment`]: the home directory, clock and OS that a finished scan is judged against.
 //! - [`generic`]: `DirSource` on plain `std::fs`; works everywhere.
 //! - `linux` (Linux only): the fast `DirSource` plus default exclusions.
@@ -7,6 +9,7 @@
 //! - [`localtime`]: the local time zone's UTC offset, from the system's TZif files.
 //! - [`memory`]: a scan memory budget that fits the memory the machine has.
 //! - [`paths`]: the exact OS path of a scanned node, including names that are not valid UTF-8.
+//! - [`user_rules`]: reading and writing the user's rules file, which is never overwritten when broken.
 //! - [`root`]: resolving the folder a scan starts from, with the identity to pin it to.
 //! - `testing` (feature `testing`): helpers for other crates' tests that need OS-specific code.
 //!
@@ -14,6 +17,8 @@
 //! `DirSource` module here and pointing [`DefaultDirSource`] at it; `platter-core`, the CLI and the IPC
 //! layer do not change.
 
+pub mod app_dirs;
+pub mod cpu;
 pub mod environment;
 pub mod generic;
 #[cfg(target_os = "linux")]
@@ -25,11 +30,14 @@ mod pseudo;
 pub mod root;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod user_rules;
 pub mod volumes;
 
+pub use app_dirs::{config_dir, create_private_dir, data_dir, free_space, lock_exclusive, open_private_file};
+pub use cpu::physical_cores;
 pub use environment::current_environment;
 pub use generic::GenericDirSource;
-pub use memory::suggested_memory_budget;
+pub use memory::{available_memory_bytes, resident_bytes, suggested_memory_budget, total_memory_bytes};
 pub use volumes::SystemVolumes;
 
 /// Raises the soft limit on open file descriptors to the hard limit, so deep scans on many threads do
@@ -43,6 +51,40 @@ pub fn raise_fd_limit() -> std::io::Result<Option<u64>> {
     #[cfg(not(target_os = "linux"))]
     {
         Ok(None)
+    }
+}
+
+/// Whether this OS can hold a model file open and hand it to a library by path (what the advisor needs
+/// to load only what it has checked). Only Linux can for now.
+pub const fn model_runtime_supported() -> bool {
+    cfg!(target_os = "linux")
+}
+
+/// Opens `path` for reading, never following a link at the path, as a regular file (a model file that
+/// is checked and then handed to a library). Fails with `Unsupported` where this cannot be done safely.
+pub fn open_nofollow(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::pinned::open_nofollow(path)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+    }
+}
+
+/// A path that names the file `file` holds open, however its name changes afterwards. `None` where the
+/// system has no such path.
+pub fn pinned_path(file: &std::fs::File) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        Some(linux::pinned::pinned_path(file))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        None
     }
 }
 

@@ -142,6 +142,16 @@ pub trait EntryProbe: Send + Sync {
     fn resolve(&self, _path: &[u8]) -> io::Result<Vec<u8>> {
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
+
+    /// Where the symbolic link at `path` points, as stored (the text of the link, relative or absolute),
+    /// read without following the link and without looking at what it points to. `path` is absolute and
+    /// exact; the caller passes one whose own components are known not to be links, because the system
+    /// follows those. `InvalidInput` when `path` is not a link, `NotFound` when there is nothing there,
+    /// `Unsupported` where a source cannot tell. Used only to learn where a kept folder really is, by
+    /// text, without touching the disk the link leads to; never for a target.
+    fn read_link(&self, _path: &[u8]) -> io::Result<Vec<u8>> {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
+    }
 }
 
 /// What a target has to be when it is acted on: what the plan saw.

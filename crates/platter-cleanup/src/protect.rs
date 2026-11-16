@@ -1,8 +1,15 @@
 //! Places cleanup never touches, whatever a rule says.
 
+use std::time::Duration;
+
 use platter_core::{EntryProbe, Environment, UserDir};
 
-use crate::path::{is_within, owned};
+use crate::look::{Looked, join_parts, look_up};
+use crate::path::{components, display, is_within, owned};
+
+/// How long looking the protected places up on the disk may take in all, for one plan request: the
+/// places share it as the kept folders share [`KEPT_LEARNING_BUDGET`](crate::KEPT_LEARNING_BUDGET).
+pub const PROTECTED_LEARNING_BUDGET: Duration = Duration::from_secs(3);
 
 /// System folders that may be neither a target nor have a target above them.
 const SYSTEM_FOLDERS: &[&str] = &[
@@ -129,52 +136,59 @@ impl Protected {
         })
     }
 
+    /// [`Protected::for_environment`] with every place also looked up on the disk, so that another path to
+    /// one (a bind mount of the home) is recognised by identity: see [`Protected::refuses_on_disk`]. The
+    /// looking up takes [`PROTECTED_LEARNING_BUDGET`] at most.
+    pub fn on_disk(env: &Environment, probe: &impl EntryProbe) -> Option<Self> {
+        Self::on_disk_within(env, probe, PROTECTED_LEARNING_BUDGET)
+    }
+
+    /// [`Protected::on_disk`] with an explicit time limit.
+    pub fn on_disk_within(env: &Environment, probe: &impl EntryProbe, budget: Duration) -> Option<Self> {
+        let mut protected = Self::for_environment(env)?;
+        protected.learn_identities(probe, budget);
+
+        Some(protected)
+    }
+
     /// Looks every protected place up on the disk, so it is also recognised by identity. A place that
     /// does not exist is skipped.
     ///
     /// A place reached through a link (`~/.config -> dotfiles/config`) is protected where it really is:
     /// its resolved path joins the lists, and the identity recorded is that of the folder, not the link.
-    pub(crate) fn learn_identities(&mut self, probe: &impl EntryProbe) {
+    ///
+    /// All places share `budget` (see [`look_up`]: a few are looked at at a time, and none is started once
+    /// it has run out), so a mount that does not answer cannot hold planning for one probe limit per
+    /// place. A place not looked at in time is protected by its path alone.
+    pub(crate) fn learn_identities(&mut self, probe: &impl EntryProbe, budget: Duration) {
         let places: Vec<(Vec<Vec<u8>>, bool)> = self
             .not_inside
             .iter()
             .map(|place| (place.clone(), true))
             .chain(self.not_or_above.iter().map(|place| (place.clone(), false)))
+            .filter(|(place, _)| !place.is_empty())
             .collect();
+        let paths: Vec<Vec<u8>> = places.iter().map(|(place, _)| join_parts(place)).collect();
+
+        let looked = look_up(probe, &paths, budget);
 
         let mut identities = Vec::new();
-        for (place, inside) in places {
-            if place.is_empty() {
-                continue;
-            }
-            let path = join_parts(&place);
-            let resolved = probe
-                .resolve(&path)
-                .ok()
-                .filter(|resolved| *resolved != path)
-                .and_then(|resolved| owned(&resolved).filter(|parts| !parts.is_empty()));
+        for (((_, inside), path), looked) in places.iter().zip(&paths).zip(looked) {
+            let Looked { real, identity } = looked.unwrap_or_default();
 
-            if let Some(real) = &resolved {
-                if inside {
-                    self.not_inside.push(real.clone());
+            if let Some(real) = real {
+                if *inside {
+                    self.not_inside.push(real);
                 } else {
-                    self.not_or_above.push(real.clone());
+                    self.not_or_above.push(real);
                 }
             }
-
-            let looked_at = resolved
-                .as_ref()
-                .map_or_else(|| path.clone(), |real| join_parts(real));
-            if let Some(entry) = probe
-                .probe(&looked_at)
-                .ok()
-                .and_then(|found| found.last().copied())
-            {
+            if let Some((dev, ino)) = identity {
                 identities.push(Identity {
-                    dev: entry.meta.dev,
-                    ino: entry.meta.ino,
-                    place: String::from_utf8_lossy(&path).into_owned(),
-                    inside,
+                    dev,
+                    ino,
+                    place: String::from_utf8_lossy(path).into_owned(),
+                    inside: *inside,
                 });
             }
         }
@@ -198,6 +212,35 @@ impl Protected {
             .map(|known| known.place.clone())
     }
 
+    /// The protected place the exact path `path_bytes` is, holds or lies inside, as a readable path; `None`
+    /// when no protected place is hit. This looks at the path only; planning also compares identities.
+    /// A path that is not plainly absolute (relative, or with `.`, `..` or an empty part) is refused too.
+    pub fn refuses(&self, path_bytes: &[u8]) -> Option<String> {
+        match components(path_bytes) {
+            Some(parts) => self.hit(&parts),
+            None => Some(display(path_bytes)),
+        }
+    }
+
+    /// [`Protected::refuses`], and also the places the folder at `path_bytes` is, or lies inside, by
+    /// identity (device and inode, read through `probe` now): a second path to the home folder or to a
+    /// place inside it is refused like the first. Only meaningful for a value made by
+    /// [`Protected::on_disk`]. A path that cannot be looked up adds nothing to the answer of `refuses`.
+    pub fn refuses_on_disk(&self, probe: &impl EntryProbe, path_bytes: &[u8]) -> Option<String> {
+        if let Some(place) = self.refuses(path_bytes) {
+            return Some(place);
+        }
+
+        let way: Vec<(u64, u64)> = probe
+            .probe(path_bytes)
+            .ok()?
+            .iter()
+            .map(|entry| (entry.meta.dev, entry.meta.ino))
+            .collect();
+
+        self.hit_by_identity(&way)
+    }
+
     /// The protected place `target` hits, if any, as a readable path.
     pub(crate) fn hit<A: AsRef<[u8]>>(&self, target: &[A]) -> Option<String> {
         let above = self.not_or_above.iter().find(|place| is_within(place, target));
@@ -211,13 +254,4 @@ impl Protected {
             format!("/{}", names.join("/"))
         })
     }
-}
-
-fn join_parts(parts: &[Vec<u8>]) -> Vec<u8> {
-    let mut path = Vec::new();
-    for part in parts {
-        path.push(b'/');
-        path.extend_from_slice(part);
-    }
-    path
 }

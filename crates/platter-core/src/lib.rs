@@ -29,11 +29,14 @@ pub mod testing;
 pub use budget::{BudgetLimits, EntryBudget, Lease, LimitHit};
 pub use error::{QueryError, ScanError, ScanLimit};
 pub use model::{
-    Category, EntryKind, Environment, NodeId, NodeKind, Os, Progress, ScanWarning, SkipReason, Totals, Tree,
-    UserDir, Volume,
+    Category, EntryKind, Environment, MAX_RULE_PATH_BYTES, MAX_RULES_FILE_BYTES, MAX_USER_RULES, ModelLabel,
+    ModelVerdict, NodeId, NodeKind, Os, Progress, RULES_FILE_VERSION, RulesFileError, ScanWarning,
+    SkipReason, Totals, Tree, UserDir, UserRule, UserRulesFile, UserVerdict, Volume, check_folder,
+    parse_user_rules, render_user_rules,
 };
 pub use ports::{
     DirListing, DirSource, EntryMeta, EntryProbe, EntryRemover, ExpectedEntry, ProbedEntry, RawEntry,
     RemoveMode, Removed, RootInfo, SourceOptions, ToolCommand, ToolFailure, ToolRunner, VolumeProvider,
 };
+pub use query::{FolderMatch, find_folders};
 pub use scan::{CancelToken, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_MEMORY_BYTES, ProgressFn, ScanConfig, scan};

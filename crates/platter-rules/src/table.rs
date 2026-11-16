@@ -6,7 +6,7 @@
 //! package is still needed, for example, is not in the tree, so the text speaks about what the folder is.
 
 use platter_core::dto::Verdict::{Keep, Review, Safe};
-use platter_core::{Category, Os, UserDir};
+use platter_core::{Category, Os, UserDir, UserVerdict};
 
 use crate::rule::{Files, Matcher, Named, Rule};
 
@@ -45,6 +45,26 @@ const fn node_modules() -> Named {
         .not_inside(NODE_TOOL_DIRS)
         .not_below(SYSTEM_PREFIXES)
 }
+
+/// The user's `keep` rules as one rule: always the first of a set that has user rules, so it wins when
+/// another rule matches the same folder. Its folders come from the set's user rules.
+pub(crate) const USER_KEEP: Rule = Rule::new(
+    "user-keep",
+    "Folders you keep",
+    Keep,
+    Matcher::User(UserVerdict::Keep),
+    "Chosen by you: {n:folder} to always keep. Nothing inside is suggested or cleaned.",
+);
+
+/// The user's `safe` rules as one rule: always the last of a set that has user rules, so every built-in
+/// rule that matches the same folder wins over it.
+pub(crate) const USER_SAFE: Rule = Rule::new(
+    "user-safe",
+    "Folders you marked safe",
+    Safe,
+    Matcher::User(UserVerdict::Safe),
+    "Chosen by you: {n:folder} that can be cleaned. Cleaning only moves a folder to the trash, so it can be put back.",
+);
 
 #[rustfmt::skip]
 pub(crate) const RULES: &[Rule] = &[

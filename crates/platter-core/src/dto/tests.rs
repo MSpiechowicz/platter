@@ -410,6 +410,7 @@ fn suggestion(verdict: Verdict) -> SuggestionDto {
     SuggestionDto {
         id: "pacman-cache".into(),
         title: "Pacman package cache".into(),
+        source: SuggestionSource::Rule,
         path: "/var/cache/pacman/pkg".into(),
         verdict,
         reason: "Old package files.".into(),
@@ -450,13 +451,32 @@ fn suggestions() {
         &dto,
         json!({
             "suggestions": [{
-                "id": "pacman-cache", "title": "Pacman package cache", "path": "/var/cache/pacman/pkg",
+                "id": "pacman-cache", "title": "Pacman package cache", "source": "rule", "path": "/var/cache/pacman/pkg",
                 "verdict": "safe", "reason": "Old package files.", "allocated": 36, "items": 1,
                 "sharedFiles": 2, "nodes": [7, 3]
             }],
             "totals": { "safe": 36, "review": 0, "keep": 5 }
         }),
     );
+}
+
+#[test]
+fn suggestion_sources_are_lowercase_and_a_missing_source_counts_as_a_rule() {
+    for (source, name) in [
+        (SuggestionSource::Rule, "rule"),
+        (SuggestionSource::User, "user"),
+        (SuggestionSource::Model, "model"),
+    ] {
+        assert_wire(&source, json!(name));
+    }
+
+    let old: SuggestionDto = serde_json::from_value(json!({
+        "id": "pacman-cache", "title": "Pacman package cache", "path": "/var/cache/pacman/pkg",
+        "verdict": "safe", "reason": "Old package files.", "allocated": 36, "items": 1,
+        "sharedFiles": 2, "nodes": [7, 3]
+    }))
+    .unwrap();
+    assert_eq!(old, suggestion(Verdict::Safe));
 }
 
 #[test]

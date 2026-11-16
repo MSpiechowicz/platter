@@ -90,4 +90,8 @@ fn size_text(bytes: u64) -> String {
 pub enum QueryError {
     #[error("node {0} does not exist")]
     NotFound(NodeId),
+
+    /// A search text longer than the given number of bytes.
+    #[error("the search text is longer than {0} bytes")]
+    QueryTooLong(usize),
 }

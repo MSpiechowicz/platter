@@ -49,8 +49,20 @@ impl Found {
         }
     }
 
+    /// Records a matched node that has nothing to show (no bytes). It is still a match: `matches`, the
+    /// explainer and every question of "is this kept?" see it, but no suggestion counts or lists it.
+    pub fn add_unlisted(&mut self, node: NodeId) {
+        self.all.push(node);
+    }
+
+    /// Whether nothing at all was matched, however small.
     pub fn is_empty(&self) -> bool {
-        self.items == 0
+        self.all.is_empty()
+    }
+
+    /// Whether some match has something to show: a suggestion is made only then.
+    pub fn is_listed(&self) -> bool {
+        self.items > 0
     }
 
     /// The only matched node, when there is exactly one.

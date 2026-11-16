@@ -1,12 +1,12 @@
 use platter_cleanup::{
     CleanupAction, CleanupPlan, CleanupReport, Disk, TargetOutcome, execute, plan_cleanup,
 };
-use platter_core::CancelToken;
 use platter_core::dto::Verdict;
+use platter_core::{CancelToken, UserRule};
 use platter_platform::Platform;
 use platter_platform::environment::home_trash;
 
-use super::{CliResult, print_line, scan_path};
+use super::{CliResult, print_line, scan_path, user_rules};
 use crate::args::CleanArgs;
 use crate::format;
 
@@ -18,7 +18,9 @@ pub fn run(args: &CleanArgs) -> CliResult<()> {
         return Err("choose what to clean: --safe, or --rule ID (see `platter-cli suggest`)".into());
     }
 
-    let rules = platter_rules::RuleSet::builtin();
+    // With rules that cannot be read nothing says which folders the user keeps: plan nothing.
+    let user = usable_rules()?;
+    let rules = platter_rules::RuleSet::builtin().with_user(user.clone());
     let mut selected: Vec<&str> = args.rules.iter().map(String::as_str).collect();
     if args.safe {
         selected.extend(
@@ -33,6 +35,9 @@ pub fn run(args: &CleanArgs) -> CliResult<()> {
     selected.dedup();
 
     let tree = scan_path(&args.path, args.one_file_system, args.max_entries)?;
+    // A scan can take long: the rules are read again, and the plan is made from the ones that were read
+    // first only when they are still what the file says.
+    unchanged_rules(&user, user_rules())?;
     let platform = Platform::current();
     let env = platform.environment_for(tree.root_path());
     let plan = plan_cleanup(&tree, &env, &rules, &selected, &platform.entry_probe);
@@ -73,6 +78,31 @@ pub fn run(args: &CleanArgs) -> CliResult<()> {
         return Err("some rules found nothing to clean (listed above)".into());
     }
     Ok(())
+}
+
+/// The rules of the file, or why nothing may be planned from it.
+fn usable_rules() -> CliResult<Vec<UserRule>> {
+    user_rules().map_err(|why| unusable(&why).into())
+}
+
+fn unusable(why: &str) -> String {
+    format!(
+        "your rules file cannot be used, so nothing is planned: {} Fix the file, or move it away \
+         (the app's Advisor view does that with \"Start over\").",
+        format::display(why)
+    )
+}
+
+/// Refuses when the rules file broke, or says something else, since `before` was read.
+fn unchanged_rules(before: &[UserRule], now: Result<Vec<UserRule>, String>) -> CliResult<()> {
+    match now {
+        Err(why) => Err(unusable(&why).into()),
+        Ok(now) if now != before => Err(
+            "your rules file changed while the folder was scanned, so nothing is planned; run the command again"
+                .into(),
+        ),
+        Ok(_) => Ok(()),
+    }
 }
 
 fn is_clean(outcome: &TargetOutcome) -> bool {
@@ -249,5 +279,45 @@ fn action_name(action: &CleanupAction) -> String {
             };
             format!("run {} {}{elevated}", tool.program(), tool.args().join(" "))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use platter_core::UserVerdict;
+
+    use super::*;
+
+    fn rule(id: u32, verdict: UserVerdict, folder: &str) -> UserRule {
+        UserRule {
+            id,
+            verdict,
+            folder: folder.into(),
+        }
+    }
+
+    #[test]
+    fn rules_that_changed_or_broke_while_scanning_plan_nothing() {
+        let before = vec![rule(1, UserVerdict::Safe, "/home/u/a")];
+
+        assert!(unchanged_rules(&before, Ok(before.clone())).is_ok());
+
+        let kept_now = vec![rule(1, UserVerdict::Keep, "/home/u/a")];
+        let changed = unchanged_rules(&before, Ok(kept_now)).unwrap_err().to_string();
+        assert!(
+            changed.contains("changed while the folder was scanned"),
+            "{changed}"
+        );
+
+        let removed = unchanged_rules(&before, Ok(Vec::new()));
+        assert!(removed.is_err());
+
+        let broken = unchanged_rules(&before, Err("The rules file is not valid.".to_owned()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            broken.contains("cannot be used") && broken.contains("not valid"),
+            "{broken}"
+        );
     }
 }

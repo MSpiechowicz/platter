@@ -1,13 +1,13 @@
 //! A cleanup plan: what would be cleaned, how, and what was refused.
 
 use platter_core::dto::Verdict;
-use platter_core::{EntryProbe, Environment, Tree};
+use platter_core::{EntryProbe, Environment, ModelLabel, ModelVerdict, NodeId, Tree};
 use platter_rules::{RuleSet, matches, scan_is_kept};
 
 use crate::action::{CleanupAction, action_for};
 use crate::guard::{Guard, Refusal, VerifiedTarget};
+use crate::kept::KeptFolders;
 use crate::path::{components, display, is_within, owned};
-use crate::protect::Protected;
 
 /// The verified targets of one selected rule and how they are cleaned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,17 +78,64 @@ impl CleanupPlan {
     pub fn targets(&self) -> impl Iterator<Item = &VerifiedTarget> {
         self.groups.iter().flat_map(|group| group.targets.iter())
     }
+
+    /// Adds the groups, refusals and unknown ids of `other`, a plan of the same scan, to this plan. A
+    /// target that now lies inside (or is the same as) another target of the merged plan is refused as
+    /// nested, so acting on the merged plan never acts twice on one place; the totals are worked out
+    /// again. The scan root stays this plan's own, unless this plan has none yet.
+    pub fn absorb(&mut self, other: CleanupPlan) {
+        if self.scan_root.as_os_str().is_empty() {
+            self.scan_root = other.scan_root;
+            self.root_depth = other.root_depth;
+        }
+
+        self.groups.extend(other.groups);
+        self.refused.extend(other.refused);
+        for id in other.not_found {
+            if !self.not_found.contains(&id) {
+                self.not_found.push(id);
+            }
+        }
+
+        self.finish();
+    }
+
+    /// Refuses nested targets and adds the groups up.
+    fn finish(&mut self) {
+        drop_nested(self);
+        self.allocated = self
+            .groups
+            .iter()
+            .fold(0u64, |sum, group| sum.saturating_add(group.allocated));
+    }
 }
 
 /// Plans the cleanup of the rules in `selected` over a finished scan. The rules run again, so every
 /// match is planned (a suggestion lists only the largest few), and each match goes through the guard,
 /// which looks at the disk through `probe`. Nothing is changed.
+///
+/// The kept folders are learned for this plan alone: see [`KeptFolders::learn`]. A caller that makes more
+/// than one plan for one request learns them once and uses [`plan_cleanup_with`].
 pub fn plan_cleanup(
     tree: &Tree,
     env: &Environment,
     rules: &RuleSet,
     selected: &[&str],
     probe: &impl EntryProbe,
+) -> CleanupPlan {
+    let kept = KeptFolders::learn(rules, probe);
+
+    plan_cleanup_with(tree, env, rules, selected, probe, &kept)
+}
+
+/// [`plan_cleanup`] with the kept folders already learned (see [`KeptFolders::learn`]).
+pub fn plan_cleanup_with(
+    tree: &Tree,
+    env: &Environment,
+    rules: &RuleSet,
+    selected: &[&str],
+    probe: &impl EntryProbe,
+    kept: &KeptFolders,
 ) -> CleanupPlan {
     let mut plan = CleanupPlan {
         scan_root: tree.root_path().to_path_buf(),
@@ -105,10 +152,7 @@ pub fn plan_cleanup(
     }
 
     let chosen: Vec<_> = found.iter().filter(|rule| selected.contains(&rule.id)).collect();
-    let protected = Protected::for_environment(env).map(|mut protected| {
-        protected.learn_identities(probe);
-        protected
-    });
+    let protected = kept.protected_places(env, probe);
     let root = owned(tree.root_path().as_os_str().as_encoded_bytes());
 
     let (Some(protected), Some(root)) = (protected, root.clone()) else {
@@ -129,10 +173,34 @@ pub fn plan_cleanup(
         return plan;
     };
 
+    // Where a keep link leads is left out when that would hold every plan (`/`, the home folder or
+    // above); otherwise a scan that starts in it is a scan of a kept folder.
+    let kept = kept.anchored(env.home.as_deref());
+    let reason = if kept.unresolved() {
+        Some(Refusal::KeptUnresolved)
+    } else if kept.holds_scan(tree.root_path()) {
+        Some(Refusal::Kept)
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        for rule in chosen {
+            for &node in &rule.nodes {
+                plan.refused.push(Refused {
+                    rule_id: rule.id,
+                    path: display(&tree.path_bytes(node)),
+                    reason: reason.clone(),
+                });
+            }
+        }
+        return plan;
+    }
+
     let guard = Guard {
         tree,
         root,
         protected: &protected,
+        kept: &kept,
         probe,
     };
 
@@ -204,11 +272,7 @@ pub fn plan_cleanup(
         }
     }
 
-    drop_nested(&mut plan);
-    plan.allocated = plan
-        .groups
-        .iter()
-        .fold(0u64, |sum, group| sum.saturating_add(group.allocated));
+    plan.finish();
     plan
 }
 
@@ -227,21 +291,77 @@ pub fn plan_marked(
     marked: &[platter_core::NodeId],
     probe: &impl EntryProbe,
 ) -> CleanupPlan {
+    let kept = KeptFolders::learn(rules, probe);
+
+    plan_by_hand(tree, env, rules, marked, probe, &kept, MARKED)
+}
+
+/// The rule id of what the local model labelled `review`.
+pub const ADVISOR: &str = "advisor";
+
+/// Plans the cleanup of the folders the local model labelled `review` (`keep` labels are ignored). Like
+/// [`plan_marked`]: no rule vouches for them, so each is `review` and goes to the trash, never deleted
+/// directly; each goes through the same guard (protected places, links, mounts, freshness) and is refused
+/// when a `keep` rule protects it, a folder inside it, or a folder around it. The group is
+/// [`ADVISOR`]. Nothing is changed.
+///
+/// The kept folders are learned for this plan alone; a caller that also makes [`plan_cleanup`] for one
+/// request learns them once and uses [`plan_labelled_with`].
+pub fn plan_labelled(
+    tree: &Tree,
+    env: &Environment,
+    rules: &RuleSet,
+    labels: &[ModelLabel],
+    probe: &impl EntryProbe,
+) -> CleanupPlan {
+    let kept = KeptFolders::learn(rules, probe);
+
+    plan_labelled_with(tree, env, rules, labels, probe, &kept)
+}
+
+/// [`plan_labelled`] with the kept folders already learned (see [`KeptFolders::learn`]).
+pub fn plan_labelled_with(
+    tree: &Tree,
+    env: &Environment,
+    rules: &RuleSet,
+    labels: &[ModelLabel],
+    probe: &impl EntryProbe,
+    kept: &KeptFolders,
+) -> CleanupPlan {
+    let nodes: Vec<NodeId> = labels
+        .iter()
+        .filter(|label| label.verdict == ModelVerdict::Review)
+        .map(|label| label.node)
+        .collect();
+
+    plan_by_hand(tree, env, rules, &nodes, probe, kept, ADVISOR)
+}
+
+/// The plan for folders chosen by hand or by the model, as the one group `group`.
+fn plan_by_hand(
+    tree: &Tree,
+    env: &Environment,
+    rules: &RuleSet,
+    chosen: &[NodeId],
+    probe: &impl EntryProbe,
+    kept_folders: &KeptFolders,
+    group: &'static str,
+) -> CleanupPlan {
     let mut plan = CleanupPlan {
         scan_root: tree.root_path().to_path_buf(),
         root_depth: components(tree.root_path().as_os_str().as_encoded_bytes())
             .map_or(0, |parts| parts.len()),
         ..CleanupPlan::default()
     };
-    let refuse = |plan: &mut CleanupPlan, node: platter_core::NodeId, reason: Refusal| {
+    let refuse = |plan: &mut CleanupPlan, node: NodeId, reason: Refusal| {
         plan.refused.push(Refused {
-            rule_id: MARKED,
+            rule_id: group,
             path: display(&tree.path_bytes(node)),
             reason,
         });
     };
 
-    let mut nodes: Vec<platter_core::NodeId> = marked
+    let mut nodes: Vec<NodeId> = chosen
         .iter()
         .copied()
         .filter(|&node| tree.contains(node))
@@ -249,10 +369,7 @@ pub fn plan_marked(
     nodes.sort_unstable();
     nodes.dedup();
 
-    let protected = Protected::for_environment(env).map(|mut protected| {
-        protected.learn_identities(probe);
-        protected
-    });
+    let protected = kept_folders.protected_places(env, probe);
     let root = owned(tree.root_path().as_os_str().as_encoded_bytes());
     let (Some(protected), Some(root)) = (protected, root.clone()) else {
         let reason = if root.is_none() {
@@ -266,15 +383,25 @@ pub fn plan_marked(
         return plan;
     };
 
-    if scan_is_kept(tree, env, rules) {
+    // Where a keep link leads is left out when that would hold every plan (`/`, the home folder or
+    // above); otherwise a scan that starts in it is a scan of a kept folder.
+    let kept_folders = kept_folders.anchored(env.home.as_deref());
+    let reason = if kept_folders.unresolved() {
+        Some(Refusal::KeptUnresolved)
+    } else if scan_is_kept(tree, env, rules) || kept_folders.holds_scan(tree.root_path()) {
+        Some(Refusal::Kept)
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
         for node in nodes {
-            refuse(&mut plan, node, Refusal::Kept);
+            refuse(&mut plan, node, reason.clone());
         }
         return plan;
     }
 
     // Everything a keep rule protects, as chains of ancestors, to compare with each marked entry.
-    let kept: Vec<Vec<platter_core::NodeId>> = matches(tree, env, rules)
+    let kept: Vec<Vec<NodeId>> = matches(tree, env, rules)
         .into_iter()
         .filter(|rule| rule.verdict == Verdict::Keep)
         .flat_map(|rule| rule.nodes)
@@ -285,10 +412,11 @@ pub fn plan_marked(
         tree,
         root,
         protected: &protected,
+        kept: &kept_folders,
         probe,
     };
     let mut group = PlanGroup {
-        rule_id: MARKED,
+        rule_id: group,
         verdict: Verdict::Review,
         action: CleanupAction::Trash,
         targets: Vec::new(),
@@ -317,11 +445,7 @@ pub fn plan_marked(
     if !group.targets.is_empty() {
         plan.groups.push(group);
     }
-    drop_nested(&mut plan);
-    plan.allocated = plan
-        .groups
-        .iter()
-        .fold(0u64, |sum, group| sum.saturating_add(group.allocated));
+    plan.finish();
     plan
 }
 

@@ -8,8 +8,9 @@ use std::error::Error;
 use std::io::{self, Write};
 use std::path::Path;
 
-use platter_core::{CancelToken, ScanConfig, Tree, scan as run_scan};
+use platter_core::{CancelToken, ScanConfig, Tree, UserRule, scan as run_scan};
 use platter_platform::Platform;
+use platter_platform::user_rules::{Loaded, load, rules_path};
 
 use crate::format;
 use crate::progress;
@@ -75,4 +76,17 @@ pub fn scan_path(path: &Path, one_file_system: bool, max_entries: Option<u64>) -
         );
     }
     Ok(tree)
+}
+
+/// What the user's rules file says (`$XDG_CONFIG_HOME/platter/rules.json`, the file the app writes): the
+/// rules, none when there is no file, and the reason when the file cannot be used. The file is only read.
+pub fn user_rules() -> Result<Vec<UserRule>, String> {
+    let Some(path) = rules_path() else {
+        return Ok(Vec::new());
+    };
+
+    match load(&path) {
+        Loaded::Rules(file) => Ok(file.rules),
+        Loaded::Broken(why) => Err(why),
+    }
 }

@@ -19,7 +19,7 @@ platter-core.workspace = true
 sysinfo.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["process", "param"] }
 
 [dev-dependencies]
 # The integration tests use the crate's own `testing` helpers; this turns the feature on for them.

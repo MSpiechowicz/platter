@@ -35,6 +35,7 @@ mod stat;
 
 mod budget;
 mod open;
+pub mod pinned;
 pub mod probe;
 pub mod remove;
 #[cfg(test)]

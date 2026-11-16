@@ -1,12 +1,13 @@
 use std::io::{self, Write};
 use std::time::Instant;
 
+use platter_cleanup::with_real_keeps;
 use platter_core::dto::{SuggestionsDto, Verdict};
 use platter_platform::Platform;
 use platter_platform::root::resolve_root;
 use platter_rules::{RuleSet, evaluate};
 
-use super::{CliResult, print_line, scan_path};
+use super::{CliResult, print_line, scan_path, user_rules};
 use crate::args::SuggestArgs;
 use crate::format;
 
@@ -17,12 +18,28 @@ pub fn run(args: &SuggestArgs) -> CliResult<()> {
 
     let tree = scan_path(&root, args.one_file_system, args.max_entries)?;
 
-    let started = Instant::now();
-    let suggestions = evaluate(
-        &tree,
-        &Platform::current().environment_for(tree.root_path()),
-        &RuleSet::builtin(),
+    // A rules file that cannot be used is reported, and the suggestions are the built-in ones; `clean`
+    // refuses to plan anything until the file is dealt with.
+    let user = user_rules().unwrap_or_else(|why| {
+        let _ = writeln!(
+            io::stderr(),
+            "platter-cli: warning: your rules file cannot be used, so your rules are left out: {}",
+            format::display(&why)
+        );
+        Vec::new()
+    });
+
+    let platform = Platform::current();
+    let env = platform.environment_for(tree.root_path());
+    // A folder kept through a link is kept where it really is too, as the plan sees it.
+    let rules = with_real_keeps(
+        RuleSet::builtin().with_user(user),
+        env.home.as_deref(),
+        &platform.entry_probe,
     );
+
+    let started = Instant::now();
+    let suggestions = evaluate(&tree, &env, &rules);
     let evaluated = started.elapsed();
 
     if args.stats {

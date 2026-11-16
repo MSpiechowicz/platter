@@ -6,6 +6,7 @@ use std::io;
 use platter_core::dto::Verdict;
 use platter_core::{EntryKind, EntryProbe, NodeId, NodeKind, Tree};
 
+use crate::kept::KeptFolders;
 use crate::path::{components, display};
 use crate::protect::Protected;
 
@@ -16,6 +17,10 @@ pub enum Refusal {
     HomeUnknown,
     /// The rule labels it `keep`.
     Kept,
+    /// A folder the user keeps could not be looked up in time (a link whose destination could not be
+    /// followed, or the limit ran out before it was reached), so what is kept is not known and nothing
+    /// is planned.
+    KeptUnresolved,
     /// Platter does not clean what this rule finds.
     NotCleaned,
     /// It is the folder the scan started from.
@@ -45,6 +50,10 @@ impl fmt::Display for Refusal {
         match self {
             Refusal::HomeUnknown => write!(f, "the home folder is not known, so nothing is cleaned"),
             Refusal::Kept => write!(f, "kept on purpose"),
+            Refusal::KeptUnresolved => write!(
+                f,
+                "a folder you keep could not be looked up in time (a disk may not be answering); nothing is planned. Try again."
+            ),
             Refusal::NotCleaned => write!(f, "Platter does not clean this"),
             Refusal::ScanRoot => write!(f, "it is the scanned folder itself"),
             Refusal::OutsideScan => write!(f, "it is outside the scanned folder"),
@@ -122,6 +131,8 @@ pub(crate) struct Guard<'a, P: EntryProbe> {
     pub tree: &'a Tree,
     pub root: Vec<Vec<u8>>,
     pub protected: &'a Protected,
+    /// The folders the user keeps, by path and identity.
+    pub kept: &'a KeptFolders,
     pub probe: &'a P,
 }
 
@@ -165,6 +176,13 @@ impl<P: EntryProbe> Guard<'_, P> {
             return Err(Refusal::Protected(place));
         }
 
+        // A folder the user keeps, by path: the target is it, holds it or lies in it. The scan's own
+        // view is not trusted for this, because a kept folder it did not enter (a skipped mount) is not
+        // a folder node, and one below such a mount is not in the tree at all.
+        if self.kept.touches(&parts) {
+            return Err(Refusal::Kept);
+        }
+
         let found = self.probe.probe(&path).map_err(|error| changed(&error))?;
         if found.len() != parts.len() {
             return Err(Refusal::Changed("the path leads somewhere else".to_owned()));
@@ -177,6 +195,12 @@ impl<P: EntryProbe> Guard<'_, P> {
             .collect();
         if let Some(place) = self.protected.hit_by_identity(&way) {
             return Err(Refusal::Protected(place));
+        }
+
+        // A folder the user keeps, reached by another path (a bind mount): the rules matched it by its
+        // path, so only the identity tells. Nothing at or below it may be a target.
+        if way.iter().any(|identity| self.kept.has_identity(identity)) {
+            return Err(Refusal::Kept);
         }
 
         // Below the scan root nothing may start a mount: not the target, not a folder on the way.

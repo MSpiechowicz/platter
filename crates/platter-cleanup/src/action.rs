@@ -62,6 +62,8 @@ pub fn action_for(rule_id: &str) -> Option<CleanupAction> {
             needs_elevation: true,
         }),
         "old-downloads" | "disk-images" | "docker-desktop-vm" => Trash,
+        // A folder the user called safe is still the user's own: it goes to the trash, never straight away.
+        "user-safe" => Trash,
         "pacman-cache" => RunTool(Tool {
             program: "paccache",
             args: &["-rk2"],

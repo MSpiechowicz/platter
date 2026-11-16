@@ -7,6 +7,8 @@
 //!   code that acts on targets cannot be handed an unchecked path.
 //! - [`plan_cleanup`] (`plan.rs`): runs the rules again, verifies every match of the selected rules and
 //!   returns a [`CleanupPlan`] with what would be cleaned and what was refused and why.
+//! - [`label_candidates`] (`candidates.rs`) picks the folders the local model may label; [`plan_labelled`]
+//!   plans what it labelled `review`, through the same guard.
 //! - [`execute`] (`execute.rs`): carries a plan out through the [`EntryRemover`](platter_core::EntryRemover)
 //!   port, checking every target again right before it acts.
 //!
@@ -16,14 +18,22 @@
 //! component by component as exact bytes.
 
 mod action;
+mod candidates;
 mod execute;
 mod guard;
+mod kept;
+mod look;
 mod path;
 mod plan;
 mod protect;
 
 pub use action::{CleanupAction, Tool, action_for};
+pub use candidates::{CandidateLimits, label_candidates};
 pub use execute::{CleanupEvent, CleanupReport, Disk, TargetOutcome, TargetResult, execute, undo};
 pub use guard::{Refusal, VerifiedTarget};
-pub use plan::{CleanupPlan, MARKED, PlanGroup, Refused, plan_cleanup, plan_marked};
-pub use protect::Protected;
+pub use kept::{KEPT_LEARNING_BUDGET, KeptFolders, with_real_keeps};
+pub use plan::{
+    ADVISOR, CleanupPlan, MARKED, PlanGroup, Refused, plan_cleanup, plan_cleanup_with, plan_labelled,
+    plan_labelled_with, plan_marked,
+};
+pub use protect::{PROTECTED_LEARNING_BUDGET, Protected};
