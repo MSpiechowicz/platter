@@ -1,0 +1,51 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Platter — History</title><link rel="stylesheet" href="shared.css">
+<style>
+#chart{display:block;width:100%;height:auto}
+#chart text{font-family:var(--font);font-size:11px;fill:var(--muted)}
+#chart .mk text{font-size:11px}
+.wk rect{transform-box:fill-box;animation:barin .6s cubic-bezier(.2,.8,.2,1) both;animation-delay:var(--d)}
+.wk .up{transform-origin:bottom}.wk .dn{transform-origin:top}
+@keyframes barin{from{transform:scaleY(0)}}
+.wk:hover rect{filter:brightness(1.25)}
+.lg{display:flex;align-items:center;gap:16px;font-size:12px;line-height:1;color:var(--muted)}.lg span{display:inline-flex;align-items:center;gap:6px}.lg i{display:block;flex:none}
+td .mono{font-size:12px;color:var(--muted)}
+td .btn{padding:4px 10px;font-size:12px}
+tr.gone td{opacity:.45}
+</style></head><body>
+<div class="app"><div id="side"></div>
+<main class="main">
+  <div class="top"><div><h1 class="hud-title">HISTORY</h1><div class="sub">last 90 days · nvme0n1p2</div></div><div class="sp"></div><button class="btn">Export CSV</button></div>
+  <div class="stats" id="stats"></div>
+  <div class="card" style="margin-bottom:16px"><h3>Disk usage with and without cleanups <span class="sp"></span><span class="lg" style="letter-spacing:0;text-transform:none;font-weight:400"><span><i style="background:var(--cyan);height:8px;width:8px;border-radius:2px"></i>your disk</span><span><i style="width:14px;border-top:2px dashed var(--slate)"></i>without cleanups</span><span><i style="background:var(--green);opacity:.5;height:8px;width:8px;border-radius:2px"></i>saved</span></span></h3><svg id="chart" viewBox="0 0 1000 300"></svg></div>
+  <div class="card"><h3>Cleanups</h3><table><thead><tr><th>Date</th><th>What was cleaned</th><th>Freed</th><th>Method</th><th>Status</th></tr></thead><tbody id="rows"></tbody></table></div>
+</main></div>
+<script src="shared.js"></script>
+<script>
+$('#side').outerHTML = sidebar('History');
+// day index within the 90-day window, label, items, freed GB, method, restorable-until
+const RUNS = [[87, '12 Nov', 'Old recordings · Old downloads', 31, 'trash', '19 Nov'], [72, '28 Oct', 'Rust build artifacts · node_modules', 74, 'deleted', null], [47, '3 Oct', 'Pacman package cache', 22, 'paccache -rk2', null], [28, '14 Sep', 'Docker dangling images', 48, 'docker prune', null], [13, '30 Aug', 'Thumbnails · pip cache', 12, 'deleted', null]];
+const rate = 3.2, freed = RUNS.reduce((a, r) => a + r[3], 0), free = DISK.total - DISK.used;
+$('#stats').innerHTML = [[fmt(freed), 'freed in ' + RUNS.length + ' cleanups'], ['+' + rate + ' GB', 'average growth per day'], ['~' + Math.round(free / rate / 30) + ' months', 'until the disk is full at this rate'], ['31 GB', 'can still be restored from trash']].map(([b, s]) => `<div class="card stat"><b class="num">${b}</b><small>${s}</small></div>`).join('');
+
+// Daily series: what was added each day, and the drop on each cleanup day.
+const WK = [19, 24, 21, 27, 18, 23, 25, 20, 29, 22, 17, 26, 20], N = 91; let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const add = Array.from({ length: N }, (_, d) => WK[Math.floor(d / 7)] / 7 * (.45 + 1.1 * rnd())), fr = Array.from({ length: N }, (_, d) => (RUNS.find(r => r[0] === d) || [0, 0, 0, 0])[3]);
+const used = [DISK.used - add.reduce((a, b) => a + b) + freed]; for (let d = 0; d < N; d++) used.push(used[d] + add[d] - fr[d]);
+const noClean = [used[0]]; for (let d = 0; d < N; d++) noClean.push(noClean[d] + add[d]);
+const day = d => new Date(2026, 7, 17 + d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }).replace('Sept', 'Sep');
+const X0 = 70, X1 = 870, Y0 = 24, Y1 = 250, lo = 1200, hi = 1620, sx = d => X0 + d / N * (X1 - X0), y = v => Y1 - (v - lo) / (hi - lo) * (Y1 - Y0);
+let a = `M${sx(0)},${y(used[0])}`, back = ''; for (let d = 0; d < N; d++) { const p1 = `${sx(d + 1).toFixed(1)},${y(used[d] + add[d]).toFixed(1)}`, p2 = `${sx(d + 1).toFixed(1)},${y(used[d + 1]).toFixed(1)}`; a += 'L' + p1 + (fr[d] ? 'L' + p2 : ''); back = (fr[d] ? 'L' + p2 : '') + 'L' + p1 + back; }
+const b = noClean.map((v, d) => `${d ? 'L' : 'M'}${sx(d).toFixed(1)},${y(v).toFixed(1)}`).join('');
+$('#chart').innerHTML =
+  [1200, 1300, 1400, 1500, 1600].map(v => `<line x1="${X0}" x2="${X1}" y1="${y(v)}" y2="${y(v)}" stroke="#232c3d" stroke-dasharray="2 5"/><text x="${X0 - 10}" y="${y(v) + 4}" text-anchor="end">${fmt(v)}</text>`).join('') +
+  [0, 14, 28, 42, 56, 70, 84].map(d => `<text x="${sx(d)}" y="276" text-anchor="middle" style="fill:#5b6679">${day(d)}</text>`).join('') +
+  `<path d="${b}${back}L${sx(0)},${y(used[0])}Z" fill="#4fb286" fill-opacity=".16"/><path d="${b}" fill="none" stroke="#66728a" stroke-width="1.5" stroke-dasharray="5 5"/><path d="${a}" fill="none" stroke="#3ec5d8" stroke-width="2" stroke-linejoin="round"/>` +
+  RUNS.map(r => `<g class="wk"><title>${r[1]} · ${r[2]} · −${r[3]} GB</title><circle cx="${sx(r[0] + 1)}" cy="${y(used[r[0] + 1])}" r="4" fill="#4fb286" stroke="#111723" stroke-width="1.5"/></g>`).join('') +
+  `<circle cx="${X1}" cy="${y(used[N])}" r="4" fill="#3ec5d8"/><text x="${X1 + 12}" y="${y(used[N]) + 4}" style="fill:#7fd8e6;font-weight:600;font-size:12px">${fmt(used[N])}</text><text x="${X1 + 12}" y="${y(used[N]) + 19}">today</text>
+   <circle cx="${X1}" cy="${y(noClean[N])}" r="4" fill="#66728a"/><text x="${X1 + 12}" y="${y(noClean[N]) + 4}" style="fill:var(--text);font-weight:600;font-size:12px">${fmt(noClean[N])}</text><text x="${X1 + 12}" y="${y(noClean[N]) + 19}">without cleanups</text>
+   <line x1="${X1}" x2="${X1}" y1="${y(noClean[N]) + 8}" y2="${y(used[N]) - 8}" stroke="#4fb286" stroke-width="2"/><text x="${X1 - 10}" y="${(y(noClean[N]) + y(used[N])) / 2 + 4}" text-anchor="end" style="fill:#7fd3ac;font-weight:600;font-size:14px">${fmt(freed)} saved</text>`;
+
+$('#rows').innerHTML = RUNS.map((r, i) => `<tr data-i="${i}"><td class="num">${r[1]}</td><td>${r[2]}</td><td><b class="num">${fmt(r[3])}</b></td><td><span class="mono">${r[4]}</span></td><td>${r[5] ? `<span class="muted" style="margin-right:10px">in trash until ${r[5]}</span><button class="btn">Restore</button>` : '<span class="muted">permanent</span>'}</td></tr>`).join('');
+$$('#rows .btn').forEach(b => b.onclick = () => { const tr = b.closest('tr'); tr.classList.add('gone'); b.parentNode.innerHTML = '<span class="muted">restored</span>'; toast('Restored 31 GB', 'Files are back in ~/Videos and ~/Downloads.'); });
+</script></body></html>

@@ -1,0 +1,115 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Platter — Advisor</title><link rel="stylesheet" href="shared.css">
+<style>
+.grid{display:grid;grid-template-columns:320px minmax(0,1fr) 360px;gap:16px;align-items:stretch}
+.col{display:flex;flex-direction:column;gap:16px;min-width:0}.col>.card:last-child{flex:1}
+.kv2{display:grid;grid-template-columns:1fr auto;gap:7px 10px;font-size:13px}.kv2 span:nth-child(odd){color:var(--muted)}
+.ram{height:8px;border-radius:2px;background:#ffffff10;overflow:hidden;margin:14px 0 6px}.ram i{display:block;height:100%;background:var(--accent);transition:width .8s cubic-bezier(.2,.8,.2,1)}
+.pipe{display:flex;flex-direction:column}
+.st{display:grid;grid-template-columns:26px minmax(0,1fr) auto;gap:12px;align-items:start;position:relative;padding-bottom:18px}
+.st:last-child{padding-bottom:0}
+.st:not(:last-child)::before{content:"";position:absolute;left:12.5px;top:28px;bottom:2px;width:1px;background:var(--line)}
+.st>i{width:26px;height:26px;border-radius:50%;border:1px solid var(--accent);color:var(--accent);display:grid;place-items:center;font-style:normal;font-size:12px;font-weight:600}
+.st b{display:block;font-size:13.5px;line-height:26px}.st small{display:block;color:var(--muted);font-size:12px;line-height:1.4}
+.st .cn{text-align:right}.st .cn b{font-size:17px}
+.st code{display:block;font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sees{margin-top:auto;padding-top:18px}.sh{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;padding-top:14px;border-top:1px solid var(--line);margin-bottom:8px}
+.sr{display:flex;gap:10px;align-items:center;font-size:12.5px;padding:4px 0}.sr i{font-style:normal;width:14px;text-align:center;font-size:12px}.sr.ok i{color:var(--green)}.sr.no{color:var(--muted)}.sr.no i{color:var(--red)}
+.split{display:flex;height:8px;border-radius:2px;overflow:hidden;gap:2px}.split i{display:block;height:100%;min-width:3px}
+.splitl{display:flex;gap:14px;font-size:12px;color:var(--muted);margin-top:8px}.splitl i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}
+.ask{display:flex;flex-direction:column}
+.log{flex:1;min-height:260px;height:0;overflow:auto;display:flex;flex-direction:column;gap:12px;padding-right:12px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.msg{max-width:84%;font-size:13px;animation:rise .3s both}
+.msg .who{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:5px;display:flex;align-items:center;gap:7px}
+.msg .who svg{width:14px;height:14px;fill:none;stroke:var(--accent);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.msg.q{align-self:flex-end}.msg.q .who{justify-content:flex-end}
+.msg.q .bd{background:#3ec5d81f;border:1px solid #3ec5d859;border-radius:10px 10px 2px 10px;padding:9px 12px;font-family:var(--mono);font-size:12.5px}
+.msg.a .who{color:var(--accent)}
+.msg.a .bd{background:var(--card2);border-radius:2px 10px 10px 10px;padding:11px 13px;line-height:1.55}
+.msg.a .v{margin-top:9px;padding-top:9px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted)}
+.sugq{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 10px}
+.sugq button{border:1px solid var(--line);border-radius:6px;padding:5px 10px;font-size:12px;color:var(--muted);font-family:var(--mono)}.sugq button:hover{border-color:var(--accent);color:var(--text)}
+.inp{display:flex;gap:8px}.inp input{flex:1;font-family:var(--mono)}
+.item{padding:11px 0;border-top:1px solid var(--line);font-size:13px}.item:first-of-type{border-top:0;padding-top:0}
+.item .p{font-family:var(--mono);font-size:12.5px;display:flex;justify-content:space-between;gap:8px}.item small{display:block;color:var(--muted);font-size:12px;margin:3px 0 8px}
+.item .acts{display:flex;gap:8px}.item .acts .btn{padding:4px 10px;font-size:12px}
+.rule{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:9px 0;border-top:1px solid var(--line);font-size:12.5px}.rule:first-of-type{border-top:0;padding-top:0}
+.rule button{color:var(--dim)}.rule button:hover{color:var(--red)}
+.empty{color:var(--muted);font-size:12.5px}
+@media(max-width:1300px){.grid{grid-template-columns:300px minmax(0,1fr)}.col.r{grid-column:1/-1;flex-direction:row}.col.r>.card{flex:1}}
+@media(max-width:800px){.grid{grid-template-columns:1fr}.col.r{flex-direction:column}}
+</style></head><body>
+<div class="app"><div id="side"></div>
+<main class="main">
+  <div class="top"><div><h1 class="hud-title">ADVISOR</h1><div class="sub">local model · runs offline in RAM</div></div><div class="sp"></div>
+    <div class="pill"><span class="dot" id="mdot"></span><span id="mstate">Model loaded</span></div><button class="btn" id="toggle">Unload from RAM</button></div>
+  <div class="grid">
+    <div class="col">
+      <div class="card"><h3>Model</h3>
+        <div class="kv2"><span>Name</span><span>Qwen2.5-0.5B-Instruct</span><span>Format</span><span>GGUF · Q4_K_M</span><span>On disk</span><span>398 MB</span><span>Speed</span><span id="speed">212 tokens/s</span><span>Unloads after</span><span>5 min idle</span></div>
+        <div class="ram"><i id="ram" style="width:0"></i></div><div class="muted" style="font-size:12px"><span id="ramt">412 MB</span> of 32 GB RAM in use</div></div>
+      <div class="card" style="display:flex;flex-direction:column"><h3>How a verdict is made <span class="sp"></span><span class="ai">last scan</span></h3>
+        <div class="pipe">
+          <div class="st"><i>1</i><div><b>Built-in rules</b><small>Known places: caches, build folders, trash.</small><code>/var/cache/pacman/pkg → safe</code></div><div class="cn"><b class="num">1,912</b><small>folders</small></div></div>
+          <div class="st"><i>2</i><div><b>Local model</b><small>The rest, from name, size and dates only.</small><code>~/Projekty/old-backups → review</code></div><div class="cn"><b class="num">269</b><small>folders</small></div></div>
+          <div class="st"><i>3</i><div><b>Safety guard</b><small>System paths and your rules always win.</small><code>~/Documents/** → keep</code></div><div class="cn"><b class="num">3</b><small>left for you</small></div></div>
+        </div>
+        <div style="margin-top:20px">
+          <div class="split"><i style="width:87.5%;background:var(--accent)"></i><i style="width:12.3%;background:var(--violet)"></i><i style="width:.2%;background:var(--amber)"></i></div>
+          <div class="splitl"><span><i style="background:var(--accent)"></i>rules 87%</span><span><i style="background:var(--violet)"></i>model 12%</span><span class="sp"></span><span>model time 4.1 s</span></div>
+        </div>
+        <div class="sees"><div class="sh">What the model can see</div>
+          <div class="sr ok"><i>✓</i>Folder and file names</div><div class="sr ok"><i>✓</i>Sizes, counts and dates</div><div class="sr ok"><i>✓</i>Which built-in rule matched</div>
+          <div class="sr no"><i>✕</i>File contents</div><div class="sr no"><i>✕</i>The network, at any point</div></div></div>
+    </div>
+    <div class="col">
+      <div class="card ask"><h3>Ask about a folder</h3>
+        <div class="log" id="log"><div class="empty">Pick a question below or type a path. Answers come from the model on this machine.</div></div>
+        <div class="sugq" id="sugq"></div>
+        <form class="inp" id="form"><input type="text" id="q" placeholder="~/some/folder — is it safe to delete?"><button class="btn pri">Ask</button></form></div>
+    </div>
+    <div class="col r">
+      <div class="card"><h3>Needs your input <span class="sp"></span><span class="ai" id="ncnt"></span></h3><div id="unsure"></div></div>
+      <div class="card" style="display:flex;flex-direction:column"><h3>Your rules</h3><div id="rules" style="flex:1"></div><form class="inp" id="addrule" style="margin-top:12px"><input type="text" id="rp" placeholder="~/path/** to always keep"><button class="btn">Add</button></form></div>
+    </div>
+  </div>
+</main></div>
+<script src="shared.js"></script>
+<script>
+$('#side').outerHTML = sidebar('Advisor');
+let loaded = true;
+const paintModel = () => { $('#ram').style.width = loaded ? '22%' : '0'; $('#ramt').textContent = loaded ? '412 MB' : '0 MB'; $('#mstate').textContent = loaded ? 'Model loaded' : 'Model on disk, not loaded'; $('#mdot').style.background = loaded ? 'var(--green)' : 'var(--dim)'; $('#toggle').textContent = loaded ? 'Unload from RAM' : 'Load into RAM'; $('#speed').textContent = loaded ? '212 tokens/s' : '—'; };
+$('#toggle').onclick = () => { loaded = !loaded; paintModel(); toast(loaded ? 'Model loaded' : 'Model unloaded', loaded ? 'Ready in 0.8 s, using 412 MB of RAM.' : '412 MB of RAM released.'); };
+setTimeout(paintModel, 150);
+
+const QA = {
+  'Can I delete ~/.cache?': ['Mostly yes. It holds 47 GB of data that applications rebuild on their own: browser caches, thumbnails, pip and uv downloads. Chrome is running, so its 14 GB is skipped until you close it.', 'safe', 'rule: XDG cache directory'],
+  'What is /var/lib/docker/overlay2?': ['Docker stores image and container layers here (96 GB). 38 GB belongs to images no container uses, and 16 GB is build cache. Deleting files by hand breaks Docker, so Platter runs docker system prune instead. Volumes are not touched.', 'review', 'rule: docker + model'],
+  'Why is Steam marked keep?': ['~/.local/share/Steam is 142 GB of installed games, and 3 of them were played this month. Removing them means downloading them again. Uninstall unused games from Steam itself.', 'keep', 'model: recent activity'],
+};
+const BULB = '<svg viewBox="0 0 16 16"><path d="M8 2a4 4 0 0 0-2.3 7.3V11h4.6V9.3A4 4 0 0 0 8 2zM6.3 13.5h3.4"/></svg>';
+const say = (cls, html) => { $('.empty')?.remove(); const m = el(`<div class="msg ${cls}"><div class="who">${cls === 'q' ? 'You' : BULB + 'Advisor'}</div><div class="bd">${html}</div></div>`); $('#log').appendChild(m); $('#log').scrollTop = 1e9; return m; };
+async function ask(q) {
+  if (!q.trim()) return; say('q', q);
+  if (!loaded) { loaded = true; paintModel(); say('a', '<span class="muted">Loading model into RAM…</span>'); await new Promise(r => setTimeout(r, 700)); $('#log').lastChild.remove(); }
+  const [text, v, src] = QA[q] || ['I can see names, sizes and dates, not file contents. Nothing I know matches this path, so I would leave it and look inside it in the Explorer first.', 'review', 'model: no matching rule'];
+  const m = say('a', '<span class="t"></span>'), t = $('.t', m); let i = 0;
+  const iv = setInterval(() => { t.textContent = text.slice(0, i += 3); $('#log').scrollTop = 1e9; if (i >= text.length) { clearInterval(iv); $('.bd', m).appendChild(el(`<div class="v"><span class="tag ${v}">${v}</span>${src}</div>`)); } }, 16);
+}
+$('#sugq').innerHTML = Object.keys(QA).map(q => `<button type="button">${q}</button>`).join('');
+$$('#sugq button').forEach(b => b.onclick = () => ask(b.textContent));
+$('#form').onsubmit = e => { e.preventDefault(); ask($('#q').value); $('#q').value = ''; };
+
+let unsure = [['~/Projekty/old-backups', '23 GB', 'Named like a backup, last changed 14 months ago. It could be your only copy.'], ['~/.var/app/com.valvesoftware.Steam', '31 GB', 'Flatpak app data. Looks like a second Steam library, possibly a duplicate.'], ['/opt/android-sdk/system-images', '11 GB', 'Emulator images; re-downloadable, but only if you still use the emulator.']];
+let rules = [['~/Documents/**', 'keep'], ['~/Projekty/**/node_modules', 'safe'], ['~/Videos/recordings', 'keep'], ['~/Projekty/platter/**', 'keep'], ['~/.cache/thumbnails', 'safe'], ['~/Pictures/**', 'keep']];
+function paint() {
+  $('#ncnt').textContent = unsure.length ? unsure.length + ' folders' : '';
+  $('#unsure').innerHTML = unsure.length ? unsure.map(([p, s, w], i) => `<div class="item"><div class="p"><span>${p}</span><b class="num">${s}</b></div><small>${w}</small><div class="acts"><button class="btn" data-i="${i}" data-v="keep">Always keep</button><button class="btn" data-i="${i}" data-v="safe">Safe to clean</button></div></div>`).join('') : '<div class="empty">Nothing waiting. Folders the model is unsure about show up here.</div>';
+  $('#rules').innerHTML = rules.map(([p, v], i) => `<div class="rule"><span class="mono">${p}</span><span class="tag ${v}">${v}</span><button data-r="${i}" title="Remove rule">✕</button></div>`).join('') || '<div class="empty">No rules yet.</div>';
+  $$('#unsure button').forEach(b => b.onclick = () => { const [p] = unsure.splice(+b.dataset.i, 1)[0]; rules.unshift([p, b.dataset.v]); paint(); toast('Rule saved', 'The advisor will follow it from the next scan.'); });
+  $$('#rules button').forEach(b => b.onclick = () => { rules.splice(+b.dataset.r, 1); paint(); });
+}
+paint();
+$('#addrule').onsubmit = e => { e.preventDefault(); const v = $('#rp').value.trim(); if (v) { rules.unshift([v, 'keep']); $('#rp').value = ''; paint(); } };
+ask('Can I delete ~/.cache?');
+</script></body></html>

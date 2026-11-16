@@ -1,0 +1,28 @@
+[package]
+name = "platter-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Platter OS adapters: directory readers and volume listing implementing the core ports."
+
+[lints]
+workspace = true
+
+[features]
+# Exposes `platter_platform::testing`, OS-specific helpers for other crates' tests.
+testing = []
+
+[dependencies]
+platter-core.workspace = true
+sysinfo.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+# The integration tests use the crate's own `testing` helpers; this turns the feature on for them.
+platter-platform = { workspace = true, features = ["testing"] }
+platter-core = { workspace = true, features = ["testing"] }
+tempfile.workspace = true

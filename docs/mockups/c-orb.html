@@ -1,0 +1,163 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Platter — Cleanup</title><link rel="stylesheet" href="shared.css">
+<style>
+.steps{display:grid;grid-template-columns:repeat(3,1fr);width:420px;border:1px solid var(--line);border-radius:7px;overflow:hidden;font-size:12.5px;font-weight:600}
+.steps span{display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 6px;color:var(--dim);transition:background .2s,color .2s}
+.steps span+span{border-left:1px solid var(--line)}
+.steps i{box-sizing:border-box;width:18px;height:18px;border-radius:50%;border:1px solid currentColor;display:block;text-align:center;line-height:16px;font-style:normal;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;flex:none}
+.steps .on{background:#ffffff10;color:var(--text)}.steps .on i{border-color:var(--accent);color:var(--accent)}
+.steps .ok{color:var(--muted)}.steps .ok i{background:var(--green);border-color:var(--green);color:#06141a}
+.wrap{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:16px;align-items:stretch}
+.viz{display:flex;flex-direction:column;min-height:620px}
+.hero{display:flex;align-items:flex-end;gap:36px;flex-wrap:wrap;margin-bottom:22px;padding-bottom:18px;border-bottom:1px solid var(--line)}
+.hero .lab{font-size:11px;letter-spacing:.12em;color:var(--muted);text-transform:uppercase;margin-bottom:4px}
+.hero b{font-size:38px;line-height:1;display:block}.hero .s b{font-size:20px}
+.hero .s{margin-left:auto;text-align:right}
+.cap{height:14px;border-radius:3px;background:#ffffff10;display:flex;overflow:hidden}
+.cap i{display:block;height:100%;transition:width .6s cubic-bezier(.2,.8,.2,1)}
+.capl{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:8px 0 18px}.capl i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}
+#flow{position:relative;flex:1;min-height:420px}
+#flow svg{position:absolute;inset:0;display:block}
+#flow text{font-family:var(--font);fill:var(--text);font-size:12.5px}
+#flow .mu{fill:var(--muted)}#flow .dn{fill:var(--dim);text-decoration:line-through}
+#flow .hit{cursor:pointer}#flow .hit path{transition:fill-opacity .2s}#flow .hit:hover path{fill-opacity:.7}#flow .hit.off:hover path{fill-opacity:.3}
+.viz{position:relative}.scanbox{position:absolute;inset:0 0 6px;display:grid;place-content:center;justify-items:center;gap:14px;text-align:center}.scanbox b{line-height:1}.tick{line-height:18px}
+.scanbox b{font-size:38px}.scanbox .cap{width:min(420px,70vw)}
+.tick{font-family:var(--mono);font-size:12px;color:var(--dim);height:18px;max-width:min(520px,80vw);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.pcol{position:relative;min-height:480px}
+#panel{position:absolute;inset:0;display:flex;flex-direction:column}
+/* same list pattern as the Overview advisor card */
+.tools{display:flex;align-items:center;gap:8px;padding:0 0 10px;font-size:12.5px;color:var(--muted)}
+.segc{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.chip{padding:3px 10px;font-size:12px;color:var(--muted)}.chip+.chip{border-left:1px solid var(--line)}.chip:hover{color:var(--text)}.chip.on{color:var(--text);background:#ffffff14}
+.plist{flex:1;min-height:0;overflow:auto;padding-right:12px;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.gh{position:sticky;top:0;z-index:2;background:var(--card);display:flex;justify-content:space-between;align-items:center;padding:9px 0;font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:600}
+.gh:not(:first-child){border-top:1px solid var(--line)}.gh span:last-child{letter-spacing:0;text-transform:none;font-weight:400;color:var(--muted);font-size:12px}
+.gh.safe{color:var(--green)}.gh.review{color:var(--amber)}.gh.keep{color:var(--red)}
+.row{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;padding:10px 0;cursor:pointer;align-items:start}
+.row+.row{border-top:1px solid var(--line)}
+.row input{accent-color:var(--accent);margin:3px 0 0 -2px}
+.row .p{font-size:11px;color:var(--dim);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row small{display:block;color:var(--muted);font-size:12px;margin-top:3px}
+.row.done{opacity:.35}.row.done .t{text-decoration:line-through}
+.total{margin-top:12px;padding-top:14px;border-top:1px solid var(--line)}
+.total b{font-size:22px}
+.trow{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:44px}
+.tbtns{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+.warn{font-size:12.5px;line-height:1.4;color:var(--muted);text-align:right;max-width:230px}.warn.amber{color:#f0c060}
+.ba{display:grid;gap:10px;font-size:12.5px;color:var(--muted);margin-top:16px}.ba .cap{margin-top:5px}
+@media(max-width:1100px){.steps{width:100%}.wrap{grid-template-columns:1fr}#panel{position:relative}.plist{max-height:440px}}
+</style></head><body>
+<div class="app"><div id="side"></div><main class="main">
+  <div class="top"><div><h1 class="hud-title">CLEANUP</h1><div class="sub">scan · review · clean</div></div><div class="sp"></div><div class="steps" id="steps"></div></div>
+  <div class="wrap">
+    <div class="card viz" id="viz"></div>
+    <div class="pcol"><div class="card" id="panel"></div></div>
+  </div></main></div>
+<script src="shared.js"></script>
+<script>
+$('#side').outerHTML = sidebar('Cleanup');
+const VC = { safe: C.green, review: C.amber, keep: C.red }, VT = { safe: 'Safe to clean', review: 'Needs your review', keep: 'Kept by the advisor' };
+const LOCK = '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>';
+const items = SUGGEST.map(s => ({ ...s, on: s.v === 'safe' })), sum = l => l.reduce((a, s) => a + s.size, 0);
+let used = DISK.used, cleaning = false;
+const steps = i => $('#steps').innerHTML = ['Scan', 'Review', 'Clean'].map((s, j) => `<span class="${j < i ? 'ok' : j === i ? 'on' : ''}"><i>${j < i ? '✓' : j + 1}</i>${s}</span>`).join('');
+const open = v => items.filter(i => !i.done && i.v !== 'keep' && (!v || i.v === v)), picked = () => open().filter(i => i.on);
+
+// Step 1 — scan: a plain progress bar, a file counter and the path being read.
+function scan() {
+  steps(0);
+  $('#viz').innerHTML = `<h3>Scanning ${DISK.mount}</h3><div class="scanbox"><b class="num" id="files">0</b><div class="muted">files read</div><div class="cap"><i id="prog" style="width:0;background:var(--accent);transition:width 3s linear"></i></div><div class="tick" id="tick"></div></div>`;
+  $('#panel').innerHTML = `<h3>What happens</h3><p class="muted" style="font-size:13px">Platter reads folder names, sizes and dates. Nothing is changed and nothing leaves this machine. When the scan ends, the advisor groups what can be removed.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px">${[['Used', fmt(DISK.used)], ['Free', fmt(DISK.total - DISK.used)], ['Filesystem', DISK.fs], ['Threads', '16']].map(([k, v]) => `<div><div class="muted" style="font-size:11px;letter-spacing:.12em">${k.toUpperCase()}</div><b style="font-size:18px">${v}</b></div>`).join('')}</div>`;
+  countUp($('#files'), 2184331, v => Math.round(v).toLocaleString('en'), 3000); setTimeout(() => $('#prog').style.width = '100%', 50);
+  const paths = ['/home/sam/Projekty/platter/target/debug/deps', '/var/cache/pacman/pkg', '/home/sam/.cache/google-chrome/Default/Cache', '/var/lib/docker/overlay2', '/.snapshots/412/snapshot/usr/lib', '/home/sam/.local/share/Steam/steamapps/common'];
+  let k = 0; const t = setInterval(() => $('#tick').textContent = paths[k++ % paths.length], 220);
+  if (location.search.includes('holdscan')) return; setTimeout(() => { clearInterval(t); review(); }, location.search.includes('static') ? 0 : 3300);
+}
+// Step 2 — review: flow of groups to freed / stays; click a ribbon or a row to include it.
+function review() {
+  steps(1);
+  $('#viz').innerHTML = `<div class="hero"><div><div class="lab" id="hl">Selected to free</div><b class="num" id="hv">0</b></div><div class="s"><div class="lab">Disk after cleanup</div><b class="num" id="ha"></b></div></div>
+    <div id="flow"></div>
+    <div class="capl" style="margin:16px 0 0"><span><i style="background:var(--green)"></i>safe</span><span><i style="background:var(--amber)"></i>needs review</span><span><i style="background:var(--red)"></i>kept by the advisor</span><span><i style="background:var(--slate)"></i>everything else</span><span class="sp"></span><span>Click a ribbon to move it between the two sides</span></div>`;
+  $('#flow').onclick = e => { const g = e.target.closest('[data-id]'); if (g) toggle(items.find(i => i.id === g.dataset.id)); };
+  new ResizeObserver(() => { fcur = null; drawFlow(); }).observe($('#flow'));
+  $('#panel').innerHTML = `<h3>Advisor <span class="sp"></span><span class="ai">local model</span></h3>
+    <div class="tools"><span id="cnt"></span><span class="sp"></span><span class="muted">Select</span><div class="segc"><button class="chip" id="qsafe">Safe</button><button class="chip" id="qrev">All</button><button class="chip" id="qnone">None</button></div></div>
+    <div class="plist">${['safe', 'review', 'keep'].map(v => `<div class="gh ${v}"><span>${VT[v]}</span><span>${items.filter(i => i.v === v).length} items · ${fmt(sum(items.filter(i => i.v === v)))}</span></div>` + items.filter(i => i.v === v).map(i => `<label class="row" data-id="${i.id}">${i.v === 'keep' ? '<span></span>' : '<input type="checkbox">'}<div><div class="t">${i.name}</div><div class="p">${i.path}</div><small>${i.why}</small></div><b class="num">${fmt(i.size)}</b></label>`).join('')).join('')}</div>
+    <div class="total"><div class="trow"><div><div class="muted" style="font-size:11px;letter-spacing:.12em">SELECTED</div><b class="num" id="tot">0</b></div><div class="warn" id="st"></div></div>
+      <div class="tbtns"><button class="btn" id="gosafe">Clean safe</button><button class="btn pri" id="go">Clean selected</button></div></div>`;
+  $$('.row input').forEach(b => b.onchange = () => toggle(items.find(i => i.id === b.closest('.row').dataset.id), b.checked));
+  const select = pred => { if (!cleaning) { open().forEach(i => i.on = pred(i)); paint(); } };
+  $('#qsafe').onclick = () => select(i => i.v === 'safe'); $('#qrev').onclick = () => select(() => true); $('#qnone').onclick = () => select(() => false);
+  $('#gosafe').onclick = () => { select(i => i.v === 'safe'); clean(); }; $('#go').onclick = confirmClean; layout(); paint();
+}
+function layout() {}
+// Flow: every group on the left sends a ribbon to "freed" or "stays on disk" on the right.
+const U0 = DISK.used, REST = U0 - sum(items), ORDER = items.slice().sort((a, b) => b.size - a.size);
+let fcur = null, fanim = 0;
+function drawFlow() {
+  const box = $('#flow'); if (!box) return;
+  const W = box.clientWidth, H = box.clientHeight, bw = 14, gap = 5, pad = 8, narrow = W < 620, x0 = narrow ? 188 : 250, x1 = W - 148, nm = n => narrow ? n.replace('Application ', 'App ').replace(' dangling images', ' images').replace(' package cache', ' cache').replace('Old btrfs ', 'Old ').replace('Rust build artifacts', 'Rust builds') : n, m = (x0 + bw + x1) / 2;
+  const nodes = ORDER.map(i => ({ i, s: i.size })).concat([{ s: REST }]), avail = H - pad * 2 - gap * (nodes.length - 1);
+  nodes.forEach(n => n.h = Math.max(16, n.s / U0 * avail)); const f = avail / sum(nodes.map(n => ({ size: n.h }))); let y = pad; nodes.forEach(n => { n.h *= f; n.y = y; y += n.h + gap; });
+  const isOn = n => n.i && n.i.on && n.i.v !== 'keep', fh = sum(nodes.filter(isOn).map(n => ({ size: n.h }))), sh = avail * 1 - fh, sy = pad + fh + (fh ? 26 : 0); let fo = pad, so = sy;
+  const target = nodes.map(n => { const t = isOn(n) ? fo : so; if (isOn(n)) fo += n.h; else so += n.h; return t; }).concat([fh, sy, sh]);
+  const freedV = sum(ORDER.filter(i => i.on && i.v !== 'keep')), anyDone = cleaning || ORDER.some(i => i.done);
+  const render = v => { const [vfh, vsy, vsh] = v.slice(-3); let s = '';
+    nodes.forEach((n, k) => { const it = n.i, c = it ? VC[it.v] : C.slate, on = isOn(n), ty = v[k], fixed = !it || it.v === 'keep' || it.done;
+      s += `<g class="${fixed ? '' : 'hit'} ${on ? '' : 'off'}" ${fixed ? '' : `data-id="${it.id}"`}><path d="M${x0 + bw},${n.y}C${m},${n.y} ${m},${ty} ${x1},${ty}L${x1},${ty + n.h}C${m},${ty + n.h} ${m},${n.y + n.h} ${x0 + bw},${n.y + n.h}Z" fill="${c}" fill-opacity="${it && it.done ? .8 : on ? .5 : .16}"/>
+        <rect x="${x0}" y="${n.y}" width="${bw}" height="${n.h}" rx="2" fill="${c}" ${it && it.v === 'keep' ? 'fill-opacity=".45"' : ''}/>
+        <rect x="0" y="${n.y - gap / 2}" width="${x0}" height="${n.h + gap}" fill="transparent"/>
+        <text x="${x0 - 12}" y="${n.y + n.h / 2 + 4.5}" text-anchor="end"><tspan class="${it && it.done ? 'dn' : fixed ? 'mu' : ''}">${it ? nm(it.name) : 'Everything else'}${it && it.v === 'keep' ? ' (kept)' : ''}</tspan><tspan dx="8" font-weight="700" class="num">${fmt(n.s)}</tspan></text></g>`; });
+    if (vfh > 1) s += `<rect x="${x1}" y="${pad}" width="${bw}" height="${vfh}" rx="2" fill="${C.green}"/><text x="${x1 + bw + 12}" y="${pad + vfh / 2 - 3}" style="font-size:11px;letter-spacing:.1em;fill:${C.green};font-weight:600">${anyDone ? 'FREED' : 'WILL BE FREED'}</text><text x="${x1 + bw + 12}" y="${pad + vfh / 2 + 17}" style="font-size:20px;font-weight:700">${fmt(freedV)}</text>`;
+    s += `<rect x="${x1}" y="${vsy}" width="${bw}" height="${vsh}" rx="2" fill="${C.slate}"/><text x="${x1 + bw + 12}" y="${vsy + vsh / 2 - 3}" class="mu" style="font-size:11px;letter-spacing:.1em;font-weight:600">STAYS ON DISK</text><text x="${x1 + bw + 12}" y="${vsy + vsh / 2 + 17}" style="font-size:20px;font-weight:700">${fmt(U0 - freedV)}</text>`;
+    box.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${s}</svg>`; };
+  const id = ++fanim, from = fcur && fcur.length === target.length ? fcur : null;
+  if (!from || location.search.includes('static')) { fcur = target; return render(target); }
+  const t0 = performance.now(); (function step() { if (id !== fanim) return; const k = Math.min(1, (performance.now() - t0) / 380), e = 1 - Math.pow(1 - k, 3); fcur = target.map((t, j) => from[j] + (t - from[j]) * e); render(fcur); if (k < 1) requestAnimationFrame(step); })();
+}
+function toggle(it, val) { if (cleaning || it.v === 'keep' || it.done) return; it.on = val === undefined ? !it.on : val; paint(); }
+function paint() {
+  const p = picked(), all = open(), s = sum(p), nRev = p.filter(i => i.v === 'review').length, safeAll = open('safe'), onlySafe = safeAll.length && p.length === safeAll.length && !nRev;
+  items.forEach(i => { const b = $(`.row[data-id="${i.id}"] input`); if (b) b.checked = i.on && !i.done; }); drawFlow();
+  if (!cleaning) countUp($('#hv'), s, fmt, 300);
+  $('#ha').textContent = `${fmt(used - s)} used · ${Math.round((used - s) / DISK.total * 100)}%`;
+  if (!$('#tot')) return;
+  countUp($('#tot'), s, fmt, 300); $('#cnt').textContent = `${p.length} of ${all.length} selected`;
+  $('#qsafe').classList.toggle('on', !!onlySafe); $('#qrev').classList.toggle('on', all.length > 0 && p.length === all.length); $('#qnone').classList.toggle('on', !p.length);
+  $('#st').classList.toggle('amber', nRev > 0);
+  $('#st').textContent = nRev ? `Includes ${nRev} review item${nRev > 1 ? 's' : ''} (${fmt(sum(p.filter(i => i.v === 'review')))}). You will confirm them first.` : !p.length ? 'Nothing selected.' : onlySafe ? 'All safe items, nothing else.' : `${p.length} safe item${p.length > 1 ? 's' : ''} selected.`;
+  $('#go').disabled = !p.length || cleaning; $('#go').textContent = `Clean selected (${p.length})`;
+  $('#gosafe').disabled = !safeAll.length || cleaning; $('#gosafe').textContent = safeAll.length ? `Clean safe · ${fmt(sum(safeAll))}` : 'Clean safe';
+}
+function confirmClean() {
+  const p = picked(), rev = p.filter(i => i.v === 'review'); if (!rev.length) return clean();
+  const d = el(`<dialog class="dlg"><h2>Clean ${rev.length} item${rev.length > 1 ? 's' : ''} that need${rev.length > 1 ? '' : 's'} review?</h2><p>The advisor is not sure these are safe to remove. Check each one before you continue.</p>
+    ${rev.map(s => `<div class="di"><span>${s.name} <span class="mono">${s.path}</span></span><b class="num">${fmt(s.size)}</b><small>${s.why}</small></div>`).join('')}
+    <div class="dsum"><span>${p.length - rev.length} safe item${p.length - rev.length === 1 ? '' : 's'} also selected</span><span>Total <b class="num">${fmt(sum(p))}</b></span></div>
+    <div class="dbtn"><button class="btn" data-a="cancel" autofocus>Cancel</button><button class="btn pri" data-a="ok">Clean ${fmt(sum(p))}</button></div></dialog>`);
+  document.body.appendChild(d); d.showModal(); d.oncancel = () => d.remove();
+  d.onclick = e => { const a = e.target.dataset.a; if (a || e.target === d) { d.close(); d.remove(); if (a === 'ok') clean(); } };
+}
+// Step 3 — clean: ribbons turn solid one by one as each group is removed.
+async function clean() {
+  const list = picked(); if (!list.length) return;
+  steps(2); cleaning = true; const before = used; let freed = 0; paint(); $('#hl').textContent = 'Freed so far'; $('#hv').dataset.v = 0; $('#hv').textContent = fmt(0);
+  for (const it of list) {
+    await new Promise(r => setTimeout(r, 300));
+    it.done = 1; freed += it.size; used -= it.size; $(`.row[data-id="${it.id}"]`).classList.add('done');
+    countUp($('#hv'), freed, fmt, 400); layout(); paint(); await new Promise(r => setTimeout(r, 250));
+  }
+  cleaning = false; steps(3); $('#hl').textContent = 'Freed';
+  $('#panel').innerHTML = `<h3>Result</h3><div style="font-size:38px;font-weight:700;line-height:1" class="num">${fmt(freed)} <span class="muted" style="font-size:14px;font-weight:400">freed</span></div>
+    <div class="ba"><div>Before · ${fmt(before)} used (${Math.round(before / DISK.total * 100)}%)<div class="cap"><i style="width:${before / DISK.total * 100}%;background:var(--slate)"></i></div></div>
+    <div>After · ${fmt(used)} used (${Math.round(used / DISK.total * 100)}%)<div class="cap"><i style="width:${before / DISK.total * 100}%;background:var(--green)" id="aft"></i></div></div></div>
+    <p class="muted" style="margin-top:16px;font-size:13px">${list.length} groups cleaned. ${open('review').length} review items are still on the left if you want to go on.</p>
+    <div class="tbtns" style="margin-top:auto"><button class="btn" id="undo">Undo</button><button class="btn pri" id="again">Scan again</button></div>`;
+  setTimeout(() => $('#aft').style.width = used / DISK.total * 100 + '%', 100);
+  $('#undo').onclick = () => toast('Undo', 'Restores the trashed items. Caches are rebuilt by their apps.', 'info'); $('#again').onclick = () => location.reload();
+}
+scan();
+</script></body></html>

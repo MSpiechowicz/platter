@@ -1,0 +1,169 @@
+/* Design tokens and base styles. Taken from docs/mockups/shared.css.
+   Flat styling only: no gradients, no glows. One accent colour; green means "safe" and nothing else. */
+
+:root {
+  --bg: #0a0e17;
+  --side-bg: #0c111b;
+  --card: #111723;
+  --card2: #161d2b;
+  --line: #232c3d;
+  --text: #e4e9f2;
+  --muted: #8a96ab;
+  --dim: #5b6679;
+  --accent: #3ec5d8;
+  --accent-hover: #5ad3e4;
+  --on-accent: #06141a;
+  --hover: #ffffff0f;
+  --track: #ffffff10;
+
+  --cyan: #3ec5d8;
+  --violet: #8f86d9;
+  --blue: #5b8fd6;
+  --pink: #d6739f;
+  --amber: #d9a441;
+  --green: #4fb286;
+  --red: #d96a6a;
+  --slate: #66728a;
+  --clay: #c98a6b;
+
+  /* One colour per file category. Green is reserved for "safe", so no category uses it. */
+  --cat-video: var(--pink);
+  --cat-image: var(--clay);
+  --cat-audio: var(--violet);
+  --cat-document: #7aa7d9;
+  --cat-archive: #b58bd0;
+  --cat-code: var(--cyan);
+  --cat-build: var(--amber);
+  --cat-package: #d98a4a;
+  --cat-app: var(--blue);
+  --cat-diskImage: #cdbf94;
+  --cat-data: #7fa6a0;
+  --cat-other: var(--slate);
+
+  --r: 10px;
+  --font: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 var(--font);
+  overflow-x: hidden;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 0;
+  background: none;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The ring is for the keyboard only. focus.ts sets data-input; WebKitGTK reports :focus-visible after a click. */
+:root[data-input='pointer'] :focus-visible {
+  outline: none !important;
+}
+
+#app {
+  min-height: 100%;
+}
+
+/* utilities shared by every feature */
+.mono {
+  font-family: var(--mono);
+}
+.muted {
+  color: var(--muted);
+}
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+@keyframes grow {
+  from {
+    transform: scaleY(0);
+  }
+}
+
+/* Reduce motion: the OS preference applies at once; the setting and the ?static test hook set data-motion="reduce". */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+:root[data-motion='reduce'] *,
+:root[data-motion='reduce'] *::before,
+:root[data-motion='reduce'] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* One scrollbar for the whole app: thin, flat, never touching the content.
+   WebKitGTK (the app window on Linux) only honours the ::-webkit rules. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--line);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--dim);
+}

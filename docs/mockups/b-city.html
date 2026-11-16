@@ -1,0 +1,247 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Platter — Explorer</title><link rel="stylesheet" href="shared.css">
+<style>
+.wrap{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px}
+.crumbs{display:flex;gap:6px;align-items:center;font-family:var(--mono);font-size:13px;flex-wrap:wrap}
+.crumbs button{color:var(--cyan);padding:3px 7px;border-radius:6px}.crumbs button:hover{background:#3ec5d81a}
+.stage{display:flex;flex-direction:column;gap:12px;min-height:680px}
+.nav2{display:flex;gap:6px;align-items:center}
+.nav2 .btn{display:flex;align-items:center;gap:6px;padding:6px 12px 6px 10px;font-size:12.5px;line-height:1.3}
+.nav2 svg{transform:translateY(-1px);width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.nav2 .hint{margin-left:auto;font-size:12px;color:var(--dim)}
+.mapbox{flex:1;min-height:520px;position:relative;overflow:hidden;border-radius:6px}
+#map{position:absolute;inset:0;width:100%;height:100%;display:block;transform-origin:0 0}
+#map.zin{animation:zin .45s cubic-bezier(.2,.8,.2,1)}
+#map.zout{animation:zout .35s cubic-bezier(.2,.8,.2,1)}
+@keyframes zin{from{transform:translate(var(--tx),var(--ty)) scale(var(--sx),var(--sy));opacity:.35}}
+@keyframes zout{from{transform:scale(1.12);transform-origin:50% 50%;opacity:0}}
+#map .n{cursor:pointer;transition:opacity .2s}
+#map .n rect{transition:filter .15s}
+#map .n.hot>rect{filter:brightness(1.3)}
+#map.has-sel .n:not(.sel){opacity:.32}
+#map .n.sel.top>rect{stroke:#fff;stroke-width:2;stroke-opacity:1}
+#map .n.mk.top>rect{stroke:#fff;stroke-width:2;stroke-opacity:1;stroke-dasharray:6 4}
+#map text{font-family:var(--font);fill:#fff;pointer-events:none}
+#map text.nm{font-family:var(--mono);font-weight:600;font-size:13px}
+#map text.sz{font-size:12px;opacity:.8;font-variant-numeric:tabular-nums}
+.legend{display:flex;gap:20px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--muted)}.legend span{display:inline-flex;align-items:center;gap:7px}.legend .sp{flex:1}
+.legend .k{display:block;width:16px;height:11px;border-radius:3px;border:1.5px solid var(--green)}.legend .k.mk{border:1.5px dashed var(--text)}.legend .k.sl{border-color:#fff;background:#ffffff1f}
+.det h2{font-family:var(--mono);font-size:16px;word-break:break-all}
+.det .big{font-size:30px;font-weight:700;margin:6px 0}
+.why{font-size:12.5px;color:var(--muted);margin:10px 0 12px}
+.cont{flex:1;display:flex;flex-direction:column;min-height:300px}
+.clist{flex:1;min-height:0;overflow:auto;padding-right:12px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.crow{display:grid;grid-template-columns:16px minmax(0,1fr) 64px 56px;gap:10px;align-items:center;padding:10px 0;font-size:13px;cursor:pointer}
+.crow+.crow{border-top:1px solid var(--line)}
+.crow input{accent-color:var(--accent);margin:0 0 0 -2px}
+.crow .lock{width:14px;height:14px;fill:none;stroke:var(--dim);stroke-width:1.5;stroke-linecap:round;margin-left:-1px}
+.crow .kept{font-family:var(--font);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin-left:8px}
+.crow .nm{font-family:var(--mono);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.crow .bar{margin:0;height:4px}.crow .bar i{background:var(--c)}
+.crow b{text-align:right}
+.crow:hover .nm,.crow.sel .nm{color:#fff}.crow.sel{background:#ffffff0a;box-shadow:-8px 0 #ffffff0a,8px 0 #ffffff0a}
+.total{margin-top:12px;padding-top:14px;border-top:1px solid var(--line);display:flex;align-items:center;gap:14px}
+.total b{font-size:22px}.total small{display:block;font-size:12px;color:var(--muted)}
+@media(max-width:1000px){.wrap{grid-template-columns:1fr}.stage{min-height:520px}.mapbox{min-height:400px}}
+.det h2{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.det .why{min-height:2.9em;line-height:1.45}.det .btn{flex:1;white-space:nowrap}.det .btn:disabled{opacity:.4;cursor:default}
+.vsw{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;margin-left:12px}.vsw button{padding:6px 14px;font-size:12.5px;color:var(--muted)}.vsw button+button{border-left:1px solid var(--line)}.vsw button.on{background:#ffffff14;color:var(--text)}
+#v3{position:absolute;inset:0;cursor:grab;user-select:none;touch-action:none}#v3.drag{cursor:grabbing}#v3 canvas{display:block}
+#lead,#labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}#lead{width:100%;height:100%}
+.lb{position:absolute;left:0;top:0;transform:translate(-50%,-100%);white-space:nowrap;font-size:12px;line-height:1.25;color:#fff;background:#0a0e17d9;border:1px solid #ffffff22;border-radius:5px;padding:3px 7px;text-align:center;transition:opacity .2s}
+.lb b{font-family:var(--mono);font-weight:600;display:block}.lb span{color:#c3cbd9}.lb.dim{opacity:.35}.lb.sel{border-color:#fff!important}.lb.mk{border-style:dashed;border-color:#fff!important}
+.how{position:absolute;left:0;bottom:0;display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim);pointer-events:none}
+.how svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+</style></head><body>
+<div class="app"><div id="side"></div>
+<main class="main">
+  <div class="top"><div><h1 class="hud-title">EXPLORER</h1><div class="crumbs" id="crumbs"></div></div></div>
+  <div class="wrap">
+    <div class="card stage">
+      <div class="nav2"><button class="btn" id="up"><svg viewBox="0 0 16 16"><path d="M13 8H3M7 4L3 8l4 4"/></svg><span>Back</span></button><button class="btn" id="root"><svg viewBox="0 0 16 16"><path d="M2.5 7.5L8 3l5.5 4.5M4 6.5V13h8V6.5"/></svg>Whole disk</button><span class="hint">Click a folder to select it, click again to open it</span><div class="vsw" id="vsw"><button class="on" data-v="flat">Flat</button><button data-v="3d">3D</button></div></div>
+      <div class="mapbox" id="mapbox"><svg id="map"></svg><div id="v3" hidden><svg id="lead"></svg><div id="labels"></div><div class="how"><svg viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.7-4M2.5 2.5V5H5"/></svg>Drag to rotate · scroll to zoom</div></div></div>
+      <div class="legend"><span id="lgk">Bigger tile = more space</span><span class="sp"></span><span><i class="k safe"></i>Safe to clean</span><span><i class="k mk"></i>Marked for cleanup</span><span><i class="k sl"></i>Selected</span></div></div>
+    <div style="display:flex;flex-direction:column;gap:16px;min-width:0">
+      <div class="card det" id="det"></div>
+      <div class="card cont"><h3>In this folder <span class="sp"></span><span class="ai" id="ccnt"></span></h3><div class="clist" id="clist"></div>
+        <div class="total"><div><div class="muted" style="font-size:11px;letter-spacing:.12em">MARKED FOR CLEANUP</div><b class="num" id="btot">0</b><small id="bst"></small></div><div class="sp"></div><button class="btn pri" id="clean" disabled>Clean</button></div></div>
+    </div>
+  </div>
+</main></div>
+<script src="shared.js"></script><script src="d3.min.js"></script>
+<script>
+$('#side').outerHTML = sidebar('Explorer');
+const BG = '#0a0e17', GREEN = '#4fb286', map = $('#map'), box = $('#mapbox'), mix = (c, p) => `color-mix(in srgb, ${c} ${p}%, ${BG})`;
+const WHY = { safe: 'Rebuildable or already discarded data. Removing it does not lose anything you created.', review: 'Probably removable, but it has a cost or may be personal. Check before cleaning.', keep: 'In active use or irreplaceable. The advisor will not offer this for cleanup.' };
+const rnd = str => { let s = 7; for (const ch of str) s = (s * 31 + ch.charCodeAt(0)) % 2147483647; return () => (s = (s * 16807) % 2147483647) / 2147483647; };
+const POOL = ['archive', '2025', '2024', 'backup', 'misc', 'data', 'old', 'export', 'tmp', 'work'];
+function conv(nd, depth = 0) {   // the sample data is shallow, so big leaves are split into made-up sub-folders
+  const o = { name: nd.name, size: nd.size, color: nd.color, ai: nd.ai };
+  if (nd.children) o.children = nd.children.map(c => conv(c, depth + 1));
+  else if (nd.size > 6 && depth < 4) { const r = rnd(nd.name + depth), w = Array.from({ length: 3 + Math.floor(r() * 3) }, () => .3 + r()), t = w.reduce((a, b) => a + b), names = POOL.slice().sort(() => r() - .5);
+    o.children = w.map((x, i) => conv({ name: names[i], size: nd.size * x / t, color: nd.color, ai: nd.ai }, depth + 1)); }
+  return o;
+}
+const weigh = n => n.sum(d => d.children ? 0 : d.size).sort((a, b) => b.value - a.value);
+const root = weigh(d3.hierarchy(conv(TREE)));
+root.eachAfter(n => n.v = n.children ? (n.children.every(c => c.v === 'safe') ? 'safe' : n.children.some(c => c.v !== 'keep') ? 'review' : 'keep') : n.data.ai);
+const byData = new Map(root.descendants().map(n => [n.data, n]));
+const pathStr = n => '/' + n.ancestors().reverse().slice(1).map(a => a.data.name).join('/'), sum = l => l.reduce((a, x) => a + x.value, 0);
+let focus = root.children[0], sel = null, hov = null, marked = [], tiles = [];
+
+// ---------- nested map ----------
+function drawMap() {
+  const W = box.clientWidth, H = box.clientHeight, sub = weigh(focus.copy());
+  d3.treemap().size([W, H]).paddingOuter(5).paddingTop(d => d.depth && d.depth < 3 && d.children ? 25 : 5).paddingInner(3).round(true)(sub);
+  tiles = sub.descendants().filter(d => d.depth > 0 && d.depth <= 3).map(d => { let t = d; while (t.depth > 1) t = t.parent; return { d, n: byData.get(d.data), top: byData.get(t.data) }; });
+  const fit = (str, px) => { const k = Math.floor(px / 7.9); return str.length <= k ? str : k < 3 ? '' : str.slice(0, k - 1) + '…'; };
+  map.innerHTML = tiles.map(({ d, n, top }, i) => { const col = top.data.color; const w = d.x1 - d.x0, h = d.y1 - d.y0, head = d.depth < 3 && d.children, safeTop = n.v === 'safe' && (d.depth === 1 || n.parent.v !== 'safe');
+    const size = fmt(n.value), tag = safeTop ? 'SAFE · ' : '', right = head && w > n.data.name.length * 7.9 + (tag.length + size.length) * 6.6 + 34, name = fit(n.data.name, w - 16 - (right ? (tag.length + size.length) * 6.6 + 12 : 0));
+    return `<g class="n ${d.depth === 1 ? 'top' : ''}" data-i="${i}"><rect x="${d.x0}" y="${d.y0}" width="${w}" height="${h}" rx="4" fill="${mix(col, [0, 22, 38, 56][d.depth])}" ${safeTop ? `stroke="${GREEN}" stroke-width="2"` : `stroke="${mix(col, 80)}" stroke-opacity=".55"`}/>` +
+      (head ? (name ? `<text class="nm" x="${d.x0 + 8}" y="${d.y0 + 17}">${name}</text>` + (right ? `<text class="sz" x="${d.x1 - 8}" y="${d.y0 + 17}" text-anchor="end">${safeTop ? `<tspan fill="${GREEN}" font-weight="700" font-size="10.5" letter-spacing=".06em">SAFE</tspan> · ` : ''}${size}</text>` : '') : '')
+        : name && h > 42 && w > 50 ? `<text class="nm" x="${d.x0 + 8}" y="${d.y0 + 19}">${name}</text><text class="sz" x="${d.x0 + 8}" y="${d.y0 + 35}">${fit(size, w - 12)}</text>` : '') + `</g>`; }).join('');
+  $$('#map .n').forEach(g => { const t = tiles[g.dataset.i];
+    g.onmouseenter = () => { hov = t.top; paintSel(); }; g.onmouseleave = () => { hov = null; paintSel(); }; g.onclick = e => { e.stopPropagation(); choose(t.top); }; });
+}
+map.onclick = () => { if (sel) { sel = null; paintSel(); detail(); } };
+new ResizeObserver(() => { drawMap(); paintSel(); paintMarks(); }).observe(box);
+function zoomTo(n, out) {
+  const t = tiles.find(x => x.n === n), W = box.clientWidth, H = box.clientHeight; focus = n; sel = null; render();
+  map.classList.remove('zin', 'zout'); void map.getBoundingClientRect();
+  if (!out && t) { map.style.setProperty('--tx', t.d.x0 + 'px'); map.style.setProperty('--ty', t.d.y0 + 'px'); map.style.setProperty('--sx', (t.d.x1 - t.d.x0) / W); map.style.setProperty('--sy', (t.d.y1 - t.d.y0) / H); map.classList.add('zin'); }
+  else map.classList.add('zout');
+}
+
+// ---------- page ----------
+function render() {
+  const chain = focus.ancestors().reverse();
+  $('#crumbs').innerHTML = chain.map((p, i) => `<button data-i="${i}">${i ? p.data.name : DISK.mount}</button>`).join('<span class="muted">›</span>') + `<span class="muted" style="margin-left:8px">${fmt(focus.value)}</span>`;
+  $$('#crumbs button').forEach(b => b.onclick = () => { const n = chain[b.dataset.i]; if (n !== focus) zoomTo(n, true); });
+  $('#up').disabled = $('#root').disabled = !focus.parent; $('#up span').textContent = focus.parent ? 'Back to ' + (focus.parent.parent ? focus.parent.data.name : '/') : 'Back';
+  hov = null; drawMap(); if (is3d && T3) build3d(); list(); paintSel(); paintMarks(); detail();
+}
+function choose(n) { if (n.children && sel === n) return zoomTo(n); sel = n; paintSel(); detail(); }
+function mark(nd, on) { if (nd.v === 'keep') return; if (on && !marked.includes(nd)) marked.push(nd); if (!on) marked = marked.filter(x => x !== nd); paintMarks(); detail(); }
+function detail() {
+  const nd = sel || focus, on = marked.includes(nd);
+  $('#det').innerHTML = `<h3>${sel ? 'Selected' : 'Current folder'}</h3><h2>${pathStr(nd)}</h2><div class="big num">${fmt(nd.value)}</div>
+    <span class="tag ${nd.v}">${nd.v}</span><div class="why">${WHY[nd.v]}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="enter" ${sel && sel.children ? '' : 'disabled'}>Open folder</button><button class="btn ${on ? '' : 'pri'}" id="add" ${sel && nd.v !== 'keep' ? '' : 'disabled'}>${on ? 'Unmark' : 'Mark for cleanup'}</button></div>`;
+  $('#enter').onclick = () => zoomTo(sel);
+  if ($('#add')) $('#add').onclick = () => mark(nd, !on);
+}
+function list() {
+  const kids = focus.children, max = kids[0].value;
+  $('#ccnt').textContent = kids.length + ' items';
+  $('#clist').innerHTML = kids.map((k, i) => `<div class="crow" data-n="${i}" style="--c:${k.data.color}">${k.v === 'keep' ? '<svg class="lock" viewBox="0 0 16 16"><title>Kept by the advisor, cannot be marked</title><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>' : '<input type="checkbox">'}<div class="nm">${k.data.name}${k.v === 'keep' ? '<span class="kept">kept</span>' : ''}</div><div class="bar"><i style="width:${k.value / max * 100}%"></i></div><b class="num">${fmt(k.value)}</b></div>`).join('');
+  $$('.crow').forEach(r => { const k = kids[r.dataset.n]; r.onclick = e => { if (e.target.tagName !== 'INPUT') choose(k); }; r.onmouseenter = () => { hov = k; paintSel(); }; r.onmouseleave = () => { hov = null; paintSel(); }; const cb = $('input', r); if (cb) cb.onchange = e => mark(k, e.target.checked); });
+}
+function paintSel() {
+  map.classList.toggle('has-sel', !!sel);
+  $$('#map .n').forEach(g => { const t = tiles[g.dataset.i]; g.classList.toggle('sel', t.top === sel); g.classList.toggle('hot', t.top === hov); });
+  $$('.crow').forEach(r => r.classList.toggle('sel', focus.children[r.dataset.n] === sel));
+  paint3d();
+}
+function paintMarks() {
+  $$('#map .n').forEach(g => g.classList.toggle('mk', marked.includes(tiles[g.dataset.i].top))); paint3d();
+  $$('.crow input').forEach(cb => cb.checked = marked.includes(focus.children[cb.closest('.crow').dataset.n]));
+  const here = marked.filter(m => focus.children.includes(m)).length, rev = marked.filter(m => m.v === 'review').length;
+  countUp($('#btot'), sum(marked), fmt, 300); $('#clean').disabled = !marked.length; $('#clean').textContent = marked.length ? `Clean (${marked.length})` : 'Clean';
+  $('#bst').textContent = !marked.length ? 'Tick folders in the list.' : `${marked.length} item${marked.length > 1 ? 's' : ''}${marked.length - here ? `, ${marked.length - here} in other folders` : ''}${rev ? ` · ${rev} need review` : ''}`;
+}
+function doClean(items) { const t = sum(items); items.forEach(n => n.leaves().forEach(l => l.data.size *= .02)); weigh(root); marked = []; sel = null; render(); toast(`Freed ${fmt(t)}`, 'The map has been redrawn without the cleaned folders.'); }
+$('#clean').onclick = () => {
+  const rev = marked.filter(m => m.v === 'review'); if (!rev.length) return doClean(marked);
+  const d = el(`<dialog class="dlg"><h2>Clean ${rev.length} item${rev.length > 1 ? 's' : ''} that need${rev.length > 1 ? '' : 's'} review?</h2><p>The advisor is not sure these are safe to remove. Check each one before you continue.</p>
+    ${rev.map(m => `<div class="di"><span class="mono" style="font-size:12.5px;color:var(--text)">${pathStr(m)}</span><b class="num">${fmt(m.value)}</b><small>${WHY.review}</small></div>`).join('')}
+    <div class="dsum"><span>${marked.length - rev.length} safe item${marked.length - rev.length === 1 ? '' : 's'} also marked</span><span>Total <b class="num">${fmt(sum(marked))}</b></span></div>
+    <div class="dbtn"><button class="btn" data-a="cancel" autofocus>Cancel</button><button class="btn pri" data-a="ok">Clean ${fmt(sum(marked))}</button></div></dialog>`);
+  document.body.appendChild(d); d.showModal(); d.oncancel = () => d.remove();
+  d.onclick = e => { const a = e.target.dataset.a; if (a || e.target === d) { d.close(); d.remove(); if (a === 'ok') doClean(marked); } };
+};
+// ---------- 3D columns: a second view of the same folder ----------
+// Each folder is a column of equal height, its floors are the sub-folders, so volume equals size.
+const v3 = $('#v3'), STATIC = location.search.includes('static'); let is3d = false, T3 = null;
+function init3d() {
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: STATIC }), scene = new THREE.Scene(), cam = new THREE.PerspectiveCamera(32, 1, 1, 2000), ray = new THREE.Raycaster();
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setClearColor(0x111723); v3.prepend(renderer.domElement);
+  scene.add(new THREE.AmbientLight(0xffffff, 2.1)); const sun = new THREE.DirectionalLight(0xffffff, 1.5); sun.position.set(-60, 120, 80); scene.add(sun);
+  T3 = { renderer, scene, cam, group: null, picks: [], labels: [], view: { d: 188, phi: 1.02, th: .62, ty: 17 }, t0: 0, run: false };
+  const size = () => { const w = v3.clientWidth, h = v3.clientHeight; if (!w || !h) return; renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix(); if (T3 && T3.group) fit3d(); }; new ResizeObserver(size).observe(v3); size();
+  const hit = e => { const b = v3.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX - b.left) / b.width * 2 - 1, -(e.clientY - b.top) / b.height * 2 + 1), cam); const h = ray.intersectObjects(T3.picks, false)[0]; return h ? h.object.userData.top : null; };
+  let drag = null; const V = T3.view;
+  v3.onpointerdown = e => { drag = { x: e.clientX, y: e.clientY, th: V.th, phi: V.phi, moved: 0 }; v3.setPointerCapture(e.pointerId); };
+  v3.onpointermove = e => { if (!drag) { const n = hit(e); if (n !== hov) { hov = n; paintSel(); } return; } const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.moved = Math.max(drag.moved, Math.abs(dx) + Math.abs(dy)); if (drag.moved > 4) { v3.classList.add('drag'); V.th = drag.th - dx * .008; V.phi = Math.max(.12, Math.min(1.5, drag.phi - dy * .006)); if (!T3.zoomed) fit3d(); } };
+  v3.onpointerup = e => { const d = drag; drag = null; v3.classList.remove('drag'); if (d && d.moved <= 4) { const n = hit(e); if (n) choose(n); else if (sel) { sel = null; paintSel(); detail(); } } };   // same rule as the flat map: click selects, second click opens
+  v3.onpointerleave = () => { if (!drag && hov) { hov = null; paintSel(); } };
+  v3.onwheel = e => { e.preventDefault(); T3.zoomed = true; V.d = Math.max(60, Math.min(700, V.d * (e.deltaY > 0 ? 1.1 : .91))); };
+}
+function build3d() {
+  const bg = new THREE.Color(BG), shade = (c, p) => bg.clone().lerp(new THREE.Color(c), p / 100), PCT = [0, 34, 52, 72];
+  if (T3.group) { T3.scene.remove(T3.group); T3.group.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); }); }
+  const group = T3.group = new THREE.Group(); T3.picks = []; T3.labels = [];
+  const slab = (x0, z0, x1, z1, y0, y1) => new THREE.BoxGeometry(Math.max(.05, x1 - x0), Math.max(.05, y1 - y0), Math.max(.05, z1 - z0)).translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2), kids = d => d.children || [d];
+  const add = (geo, top, depth, safe) => { const col = top.data.color, m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: shade(col, PCT[depth]) })); m.userData = { top, eo: safe ? 1 : .7, base: shade(col, PCT[depth]), dark: shade(col, PCT[depth] * .32) }; group.add(m); T3.picks.push(m);
+    m.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: safe ? new THREE.Color(GREEN) : shade(col, Math.min(100, PCT[depth] + 26)), transparent: true, opacity: m.userData.eo }))); };
+  const isSafe = d => { const n = byData.get(d.data); return n.v === 'safe' && (n.parent === focus || n.parent.v !== 'safe'); };
+  const s = weigh(focus.copy()), H = 34, G = .55; d3.treemap().size([84, 84]).paddingInner(3).round(false)(s);
+  s.children.forEach(a => { const top = byData.get(a.data), x0 = a.x0 - 42, x1 = a.x1 - 42, z0 = a.y0 - 42, z1 = a.y1 - 42, fl = kids(a), tot = H - G * (fl.length - 1); let y = 0;
+    fl.forEach(b => { const h = b.value / a.value * tot, parts = kids(b), alongX = x1 - x0 >= z1 - z0, L = (alongX ? x1 - x0 : z1 - z0) - G * (parts.length - 1); let o = alongX ? x0 : z0;
+      parts.forEach(c => { const w = c.value / b.value * L; add(alongX ? slab(o, z0, o + w, z1, y, y + h) : slab(x0, o, x1, o + w, y, y + h), top, c === a ? 1 : c === b ? 2 : 3, isSafe(c) || isSafe(b) || isSafe(a)); o += w + G; });
+      y += h + G; });
+    add(slab(x0, z0, x1, z1, y, y + 1), top, 3, isSafe(a)); T3.labels.push({ n: top, p: new THREE.Vector3((x0 + x1) / 2, H + 3, (z0 + z1) / 2) }); });
+  T3.scene.add(group); T3.t0 = performance.now(); T3.zoomed = false; fit3d();
+  $('#labels').innerHTML = T3.labels.map((l, i) => `<div class="lb" data-i="${i}"><b>${l.n.data.name}</b><span class="num">${fmt(l.n.value)}</span></div>`).join('');
+}
+const camAt = d => { const { cam, view: V } = T3, sp = Math.sin(V.phi); cam.position.set(d * sp * Math.sin(V.th), V.ty + d * Math.cos(V.phi), d * sp * Math.cos(V.th)); cam.lookAt(new THREE.Vector3(0, V.ty, 0)); cam.updateMatrixWorld(); };
+// Pull the camera back just far enough that the whole block, with room for its labels, is inside the card.
+function fit3d() {
+  const pts = []; for (const x of [-42, 42]) for (const z of [-42, 42]) for (const y of [0, 36]) pts.push(new THREE.Vector3(x, y, z));
+  const fits = d => { camAt(d); return pts.every(p => { const q = p.clone().project(T3.cam); return Math.abs(q.x) < .9 && q.y > -.9 && q.y < .66; }); };
+  let lo = 40, hi = 700; for (let i = 0; i < 20; i++) { const m = (lo + hi) / 2; if (fits(m)) hi = m; else lo = m; } T3.view.d = hi;
+}
+function paint3d() {
+  if (!is3d || !T3 || !T3.group) return;
+  T3.picks.forEach(m => { const t = m.userData.top, dim = !!sel && t !== sel; m.material.color.copy(dim ? m.userData.dark : m.userData.base); m.material.emissive.set(t === hov ? 0x2a2f38 : 0); m.children[0].material.opacity = dim ? .25 : m.userData.eo; });
+  $$('#labels .lb').forEach(el => { const n = T3.labels[el.dataset.i].n; el.classList.toggle('sel', n === sel); el.classList.toggle('dim', !!sel && n !== sel); el.classList.toggle('mk', marked.includes(n)); });
+}
+function loop3d() {
+  if (!is3d) return void (T3.run = false); T3.run = true;
+  const { cam, view: V, group } = T3, k = STATIC ? 1 : Math.min(1, (performance.now() - T3.t0) / 650), e = 1 - Math.pow(1 - k, 3); group.scale.set(1, Math.max(.001, e), 1);
+  camAt(V.d); T3.renderer.render(T3.scene, cam);
+  const w = v3.clientWidth, h = v3.clientHeight, taken = []; let lead = '';
+  const inR = (px, py, t, m = 3) => px > t[0] - m && px < t[2] + m && py > t[1] - m && py < t[3] + m, OFF = [[0, 0]]; for (let j = 1; j <= 9; j++) for (const dx of [0, 30 * j, -30 * j, 60 * j, -60 * j]) OFF.push([dx, -18 * j]);
+  $$('#labels .lb').forEach(el => { const l = T3.labels[el.dataset.i], v = l.p.clone(); v.y *= e; v.project(cam); const x = (v.x + 1) / 2 * w, y = (1 - v.y) / 2 * h, bw = el.offsetWidth, bh = el.offsetHeight;
+    if (v.z > 1) return void (el.style.visibility = 'hidden'); el.style.visibility = 'visible';
+    const q = l.p.clone(); q.y = (q.y - 1.5) * e; q.project(cam); const ax = (q.x + 1) / 2 * w, ay = (1 - q.y) / 2 * h, rect = (dx, dy) => [x + dx - bw / 2, y - 16 + dy - bh, x + dx + bw / 2, y - 16 + dy];
+    // connector: straight down from the middle of the label, across, then down to the dot on the folder
+    const route = (dx, dy) => { const r = rect(dx, dy), lx = x + dx, ly = r[3], my = Math.min(ly + 9, ay - 6); return Math.abs(lx - ax) < 2 || my <= ly ? [[lx, ly], [ax, ay]] : [[lx, ly], [lx, my], [ax, my], [ax, ay]]; };
+    const onPath = (pts, t) => pts.slice(1).some((p, i) => [.15, .4, .65, .9, 1].some(f => inR(pts[i][0] + (p[0] - pts[i][0]) * f, pts[i][1] + (p[1] - pts[i][1]) * f, t)));
+    // a spot is free when the label covers no other label or dot and its connector passes behind no other label
+    const free = ([dx, dy]) => { const r = rect(dx, dy); if (r[0] < 4 || r[2] > w - 4 || r[1] < 4) return false; const pts = route(dx, dy); return !taken.some(t => (r[0] < t[2] + 3 && r[2] > t[0] - 3 && r[1] < t[3] + 3 && r[3] > t[1] - 3) || onPath(pts, t)); };
+    const [dx, dy] = OFF.find(free) || OFF[0], r = rect(dx, dy), pts = route(dx, dy), col = l.n.data.color, dim = sel && l.n !== sel;
+    taken.push(r, [ax - 5, ay - 5, ax + 5, ay + 5]); if (pts.length > 2) taken.push([Math.min(pts[1][0], pts[2][0]), pts[1][1] - 2, Math.max(pts[1][0], pts[2][0]), pts[1][1] + 2]);   // the cross run keeps its own space too
+    el.style.left = x + dx + 'px'; el.style.top = r[3] + 'px'; el.style.borderColor = col + (dim ? '55' : 'cc');
+    lead += `<g opacity="${dim ? .3 : 1}"><path d="M${pts.map(p => p.map(v => v.toFixed(1)).join(',')).join('L')}" fill="none" stroke="${col}" stroke-width="1.5" stroke-linejoin="round"/><circle cx="${ax}" cy="${ay}" r="3.5" fill="${col}" stroke="#0a0e17" stroke-width="1.5"/></g>`; });
+  $('#lead').innerHTML = lead;
+  if (STATIC) { const xs = [], ys = []; for (const x of [-42, 42]) for (const z of [-42, 42]) for (const y of [0, 36]) { const q = new THREE.Vector3(x, y, z).project(cam); xs.push((q.x + 1) / 2 * w); ys.push((1 - q.y) / 2 * h); } v3.dataset.fit = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys), w, h].map(Math.round).join(','); }   // test aid: where the block lands inside the card
+  requestAnimationFrame(loop3d);
+}
+function setView(to3d) {
+  is3d = to3d; $$('#vsw button').forEach(b => b.classList.toggle('on', (b.dataset.v === '3d') === to3d)); try { localStorage.setItem('platter.explorer', to3d ? '3d' : 'flat'); } catch {}
+  $('#lgk').textContent = to3d ? 'Column = folder · floor = sub-folder · volume = space' : 'Bigger tile = more space'; map.style.display = to3d ? 'none' : '';
+  if (!to3d) { v3.hidden = true; $('.spin', box)?.remove(); return; }
+  const show = () => { $('.spin', box)?.remove(); if (!is3d) return; v3.hidden = false; if (!T3) init3d(); build3d(); paint3d(); if (!T3.run) loop3d(); };
+  if (window.THREE) return show();
+  // first use: the 3D engine is loaded on demand, so the logo spinner covers the wait
+  box.insertAdjacentHTML('beforeend', spinner('Preparing the 3D view…')); if (location.search.includes('holdspin')) return;
+  const t0 = performance.now(), sc = document.createElement('script'); sc.src = 'three.min.js'; sc.onload = () => setTimeout(show, STATIC ? 0 : Math.max(0, 700 - (performance.now() - t0))); document.head.appendChild(sc);
+}
+$$('#vsw button').forEach(b => b.onclick = () => setView(b.dataset.v === '3d'));
+const goUp = () => focus.parent && zoomTo(focus.parent, true);
+$('#up').onclick = goUp; $('#root').onclick = () => focus.parent && zoomTo(root, true);
+addEventListener('keydown', e => { if ((e.key === 'Backspace' || e.key === 'Escape') && !document.querySelector('dialog[open]')) goUp(); });
+render();
+if (location.search.includes('pick')) { sel = focus.children.find(c => c.data.name === '.cache'); paintSel(); detail(); mark(sel, true); }
+if (location.search.includes('root')) { focus = root; render(); }
+{ let v = ''; try { v = localStorage.getItem('platter.explorer'); } catch {} if (location.search.includes('3d') || (v === '3d' && !location.search.includes('flat'))) setView(true); }
+</script></body></html>

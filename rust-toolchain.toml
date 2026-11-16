@@ -1,0 +1,6 @@
+[toolchain]
+# Exact version, so every machine and CI run builds with the same compiler. Bump it deliberately
+# (together with `rust-version` in Cargo.toml if the language level changes); dependabot's `rust-toolchain`
+# ecosystem proposes the updates.
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]

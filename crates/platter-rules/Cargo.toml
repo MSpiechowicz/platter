@@ -1,0 +1,18 @@
+[package]
+name = "platter-rules"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Platter cleanup rules: labels what in a finished scan could be cleaned. Read-only; never touches the filesystem."
+
+[lints]
+workspace = true
+
+[dependencies]
+platter-core.workspace = true
+
+[dev-dependencies]
+platter-core = { workspace = true, features = ["testing"] }
+serde_json.workspace = true

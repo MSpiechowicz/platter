@@ -1,0 +1,38 @@
+[package]
+name = "platter-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Platter desktop app: a thin Tauri IPC layer over platter-core and platter-platform."
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[lib]
+name = "platter_desktop_lib"
+
+[[bin]]
+name = "platter"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+platter-core.workspace = true
+platter-platform.workspace = true
+platter-rules.workspace = true
+serde.workspace = true
+tauri.workspace = true
+tauri-plugin-dialog.workspace = true
+tauri-plugin-opener.workspace = true
+
+[dev-dependencies]
+platter-core = { workspace = true, features = ["testing"] }
+platter-platform = { workspace = true, features = ["testing"] }
+serde_json.workspace = true
+tempfile.workspace = true
+tauri = { workspace = true, features = ["test"] }

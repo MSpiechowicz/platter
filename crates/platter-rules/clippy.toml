@@ -1,0 +1,28 @@
+# platter-rules reads a finished `Tree` and an `Environment` and returns labels. It must never touch the
+# filesystem, start a process or read the system clock or environment itself. `tests/read_only.rs` checks
+# the sources for the same; these lists make clippy refuse the common ways in as well.
+disallowed-types = [
+  { path = "std::fs::File", reason = "platter-rules is read-only and does no I/O" },
+  { path = "std::fs::OpenOptions", reason = "platter-rules is read-only and does no I/O" },
+  { path = "std::process::Command", reason = "platter-rules never executes anything" },
+]
+disallowed-methods = [
+  { path = "std::fs::read", reason = "platter-rules does no I/O" },
+  { path = "std::fs::read_dir", reason = "platter-rules does no I/O" },
+  { path = "std::fs::read_to_string", reason = "platter-rules does no I/O" },
+  { path = "std::fs::metadata", reason = "platter-rules does no I/O" },
+  { path = "std::fs::canonicalize", reason = "platter-rules does no I/O" },
+  { path = "std::fs::write", reason = "platter-rules never changes anything" },
+  { path = "std::fs::copy", reason = "platter-rules never changes anything" },
+  { path = "std::fs::rename", reason = "platter-rules never moves anything" },
+  { path = "std::fs::remove_file", reason = "platter-rules never deletes anything" },
+  { path = "std::fs::remove_dir", reason = "platter-rules never deletes anything" },
+  { path = "std::fs::remove_dir_all", reason = "platter-rules never deletes anything" },
+  { path = "std::fs::create_dir", reason = "platter-rules never changes anything" },
+  { path = "std::fs::create_dir_all", reason = "platter-rules never changes anything" },
+  { path = "std::fs::set_permissions", reason = "platter-rules never changes anything" },
+  { path = "std::env::var", reason = "the caller supplies the Environment" },
+  { path = "std::env::var_os", reason = "the caller supplies the Environment" },
+  { path = "std::time::SystemTime::now", reason = "the caller supplies the time in the Environment" },
+  { path = "std::time::Instant::now", reason = "the caller supplies the time in the Environment" },
+]

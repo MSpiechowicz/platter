@@ -1,0 +1,62 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Platter — Settings</title><link rel="stylesheet" href="shared.css">
+<style>
+.sgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.sgrid .card{display:flex;flex-direction:column}
+.paths{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.paths span{font-family:var(--mono);font-size:12px;border:1px solid var(--line);border-radius:6px;padding:3px 8px;display:flex;gap:8px;align-items:center}
+.paths button{color:var(--dim)}.paths button:hover{color:var(--red)}
+.vol{display:flex;align-items:center;gap:10px;font-size:13px;padding:5px 0}.vol input{accent-color:var(--accent);margin:0}.vol span:last-child{margin-left:auto;color:var(--muted);font-size:12px}
+.seg3{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}.seg3 button{padding:6px 12px;font-size:12.5px;color:var(--muted)}.seg3 button+button{border-left:1px solid var(--line)}.seg3 button.on{background:#ffffff14;color:var(--text)}
+.about{font-size:13px;color:var(--muted);line-height:1.6}.about b{color:var(--text)}.about a{color:var(--accent);text-decoration:none}
+.grow{flex:1}
+@media(max-width:1000px){.sgrid{grid-template-columns:1fr}}
+</style></head><body>
+<div class="app"><div id="side"></div>
+<main class="main">
+  <div class="top"><div><h1 class="hud-title">SETTINGS</h1><div class="sub">saved automatically</div></div></div>
+  <div class="sgrid">
+    <div class="card"><h3>Scanning</h3>
+      <div class="field" style="display:block"><div>Volumes to scan<small>Pseudo, network and removable filesystems are skipped unless ticked.</small></div>
+        <div style="margin-top:8px"><label class="vol"><input type="checkbox" checked><span class="mono">/</span><span>nvme0n1p2 · btrfs · 1.90 TB</span></label><label class="vol"><input type="checkbox"><span class="mono">/mnt/backup</span><span>sda1 · ext4 · 3.64 TB</span></label><label class="vol"><input type="checkbox"><span class="mono">/run/media/usb</span><span>sdb1 · exfat · 58 GB · removable</span></label></div></div>
+      <div class="field"><div>Stay on one filesystem<small>Do not descend into other mounted disks.</small></div><input type="checkbox" class="sw" checked></div>
+      <div class="field"><div>Count btrfs snapshots<small>Shown as their own layer; shared blocks are marked "may be shared".</small></div><input type="checkbox" class="sw" checked></div>
+      <div class="field" style="display:block"><div>Excluded paths</div><div class="paths" id="paths"></div></div></div>
+    <div class="card"><h3>Cleanup</h3>
+      <div class="field"><div>Your files go to trash first<small>Caches and package data are deleted directly, since trashing them frees nothing.</small></div><input type="checkbox" class="sw" checked></div>
+      <div class="field"><div>Empty Platter's trash after</div><select><option>7 days</option><option>14 days</option><option>30 days</option><option>Never</option></select></div>
+      <div class="field"><div>Confirm when "review" items are included<small>Asks for a second click before cleaning them.</small></div><input type="checkbox" class="sw" checked></div>
+      <div class="field"><div>Keep package versions<small>How many old versions of each package stay in the cache.</small></div><select><option>2</option><option>1</option><option>3</option></select></div>
+      <div class="field"><div>Ask for administrator rights when needed<small>Used for system caches and logs, through the standard system prompt.</small></div><input type="checkbox" class="sw" checked></div></div>
+    <div class="card"><h3>Advisor</h3>
+      <div class="field"><div>Use the local model<small>Off: only the built-in rules label items.</small></div><input type="checkbox" class="sw" checked></div>
+      <div class="field"><div>Model</div><select><option>Qwen2.5-0.5B · 398 MB (installed)</option><option>Qwen2.5-1.5B · 1.1 GB (download)</option></select></div>
+      <div class="field"><div>Unload from RAM after</div><select><option>5 minutes idle</option><option>1 minute idle</option><option>When the window closes</option></select></div>
+      <div class="field"><div>Label new folders in the background<small>Runs after each scan, on battery too.</small></div><input type="checkbox" class="sw"></div></div>
+    <div class="card"><h3>Updates</h3>
+      <div class="field"><div>Platter 0.1.0<small id="updinfo">Version 0.2.0 is available · checked 2 hours ago</small></div><button class="btn" id="check">Check now</button></div>
+      <div class="field"><div>Check for updates<small>Runs in the background while Platter is open, and once at start.</small></div><select><option>Every 6 hours</option><option>Once a day</option><option>Once a week</option><option>Never</option></select></div>
+      <div class="field"><div>Install updates automatically<small>Downloaded from GitHub Releases and verified by signature.</small></div><input type="checkbox" class="sw" checked></div>
+      <div class="field"><div>Channel</div><div class="seg3"><button class="on">Stable</button><button>Beta</button></div></div>
+      </div>
+    <div class="card"><h3>Appearance</h3>
+      <div class="field"><div>Theme</div><div class="seg3"><button class="on">Dark</button><button>Light</button><button>System</button></div></div>
+      <div class="field"><div>Size units<small>GB counts in thousands, GiB in 1024s.</small></div><div class="seg3"><button class="on">GB</button><button>GiB</button></div></div>
+      <div class="field"><div>Reduce motion<small>Turns off the build-up and count-up animations.</small></div><input type="checkbox" class="sw"></div></div>
+    <div class="card"><h3>About</h3>
+      <div class="about"><b>Platter</b> is free software under the GNU General Public License, version 3 or later.<br>Everything runs on this machine. The only network calls are the update check and the optional model download.<br><br><a href="#">Source code</a> · <a href="#">Report a problem</a> · <a href="#">Licenses of included software</a></div></div>
+  </div>
+</main></div>
+<script src="shared.js"></script>
+<script>
+$('#side').outerHTML = sidebar('Settings');
+let paths = ['~/Documents', '/mnt', '~/.local/share/Steam'];
+const paintPaths = () => { $('#paths').innerHTML = paths.map((p, i) => `<span>${p}<button data-i="${i}">✕</button></span>`).join('') + '<button class="btn" id="addp" style="padding:3px 10px;font-size:12px">Add folder…</button>';
+  $$('#paths span button').forEach(b => b.onclick = () => { paths.splice(+b.dataset.i, 1); paintPaths(); }); $('#addp').onclick = () => { paths.push('~/Pictures'); paintPaths(); toast('Add folder', 'Opens the system folder picker.', 'info'); }; };
+paintPaths();
+enhanceSelects();
+if (location.search.includes('dd') && 0) $$('.dd')[3].firstChild.click();
+$$('.seg3').forEach(s => $$('button', s).forEach(b => b.onclick = () => $$('button', s).forEach(x => x.classList.toggle('on', x === b))));
+$('#check').onclick = () => { $('#updinfo').textContent = 'Checking…'; setTimeout(() => $('#updinfo').textContent = 'Version 0.2.0 is available · checked just now', 900); };
+document.addEventListener('change', e => { if (e.target.matches('.sw,select')) toast('Saved', 'The setting applies from now on.'); });
+</script></body></html>

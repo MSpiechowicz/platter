@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "No plugin or core permissions for the main window. The webview only calls the app's own commands (they need no ACL entry while the app declares no app manifest) and receives scan events over a Channel (its fetch command is exempt from the ACL). The folder dialog and reveal-in-file-manager run in Rust behind app commands, so the webview gets no core, dialog, opener, fs, shell or http permissions.",
+  "windows": ["main"],
+  "permissions": []
+}

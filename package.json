@@ -1,0 +1,13 @@
+{
+  "name": "platter",
+  "private": true,
+  "packageManager": "pnpm@11.23.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "pnpm -C apps/desktop dev",
+    "build": "pnpm -C apps/desktop build",
+    "check": "pnpm -C apps/desktop check",
+    "lint": "pnpm -C apps/desktop lint",
+    "test": "pnpm -C apps/desktop test"
+  }
+}

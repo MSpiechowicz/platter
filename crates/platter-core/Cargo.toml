@@ -1,0 +1,23 @@
+[package]
+name = "platter-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Platter domain: tree model, parallel scanner, queries and ports. No OS-specific code."
+
+[lints]
+workspace = true
+
+[features]
+# Exposes `platter_core::testing` (an in-memory `DirSource`) to other crates' tests.
+testing = []
+
+[dependencies]
+rayon.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

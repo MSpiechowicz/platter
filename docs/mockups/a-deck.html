@@ -1,0 +1,212 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Platter — A · Command Deck</title><link rel="stylesheet" href="shared.css">
+<style>
+.grid{display:grid;grid-template-columns:270px minmax(0,1fr) 380px;gap:16px;align-items:stretch}
+.topr{display:flex;gap:10px;width:380px}.topr .pill{flex:1}
+.col.l>.card:last-child,.col.c>.card:first-child{flex:1}
+.col.r{position:relative;min-height:420px}
+.col.r>.card{position:absolute;inset:0;display:flex;flex-direction:column}
+.fill{display:flex;flex-direction:column}.fill>.grow{flex:1}
+.col.l>.card{display:flex;flex-direction:column}
+#types{flex:1;display:flex;flex-direction:column;justify-content:space-between;gap:2px}
+.recsub{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;margin:10px 0 4px;padding-top:12px;border-top:1px solid var(--line)}
+.recr .mono{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rec{display:flex;height:10px;border-radius:2px;overflow:hidden;background:#ffffff10;margin-bottom:12px}.rec i{display:block;height:100%;transition:width .8s}
+.recr{display:grid;grid-template-columns:10px 1fr auto;gap:8px;align-items:center;font-size:12.5px;padding:5px 0}.recr i{width:8px;height:8px;border-radius:2px}.recr span:last-child{color:var(--muted)}
+.row2>.card{display:flex;flex-direction:column}
+.age{flex:1;display:flex;gap:10px;min-height:150px}
+.agec{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;min-width:0;font-size:11.5px;color:var(--muted)}
+.agec b{color:var(--text);font-size:12.5px}
+.agec .trk{flex:1;width:100%;display:flex;align-items:flex-end}
+.agec .trk i{display:block;width:100%;background:var(--c);border-radius:2px 2px 0 0;transform-origin:bottom;animation:grow .8s cubic-bezier(.2,.8,.2,1) both}
+.agec span{white-space:nowrap}
+.lg{display:flex;flex-wrap:wrap;gap:4px 14px;margin:-4px 0 12px;font-size:11px;letter-spacing:0;text-transform:none;font-weight:400;color:var(--muted)}.lg i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px}
+.agesum{display:flex;align-items:center;gap:16px;margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+.agesum b{font-size:24px;line-height:1;white-space:nowrap}
+.agesum div{font-size:12.5px;line-height:1.5;color:var(--text)}.agesum small{display:block;font-size:12px;color:var(--muted)}
+.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+.gauge{display:grid;place-items:center;position:relative}
+.gauge .mid{position:absolute;text-align:center}
+.gauge .mid b{font-size:30px;font-weight:700;display:block;line-height:1}
+.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px;font-size:12px;color:var(--muted);text-align:center}
+.kv b{display:block;color:var(--text);font-size:14px}
+.type{display:grid;grid-template-columns:104px 1fr 56px;gap:8px;align-items:center;font-size:12.5px;padding:4px 0}
+.type .bar{margin:0}
+.type span:last-child{text-align:right;color:var(--muted)}
+#stack{display:block;width:100%;max-width:760px;margin:auto;height:auto}
+.col.c>.card:first-child{display:flex;flex-direction:column}
+.slab{cursor:pointer;transition:opacity .2s;animation:drop .7s cubic-bezier(.2,.9,.3,1.1) both;animation-delay:calc(var(--i)*110ms)}
+#stack.hov .slab:not(.hot){opacity:.3}
+@keyframes drop{from{opacity:0;transform:translateY(-70px)}}
+.slab text{font-family:var(--font);fill:var(--text)}
+.slab .nm{font-family:var(--mono);font-size:14px;font-weight:600}
+.slab .sz{font-size:13px;fill:var(--muted)}
+.slab .in{font-size:11.5px;fill:var(--dim)}
+.sug{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;padding:10px 0;align-items:start;cursor:pointer}
+.sug+.sug{border-top:1px solid var(--line)}
+.sug:hover .t{color:#fff}
+.sug input{accent-color:var(--accent);margin:3px 0 0 -2px}
+.sug .p{font-size:11px;color:var(--dim);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sug .why{font-size:12px;color:var(--muted);margin-top:3px}
+.sug.done{opacity:.35}.sug.done .t{text-decoration:line-through}
+.sug .r{display:flex;flex-direction:column;gap:5px;align-items:flex-end}
+.total{margin-top:12px;padding-top:14px;border-top:1px solid var(--line)}
+.trow{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:44px}
+.tbtns{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+.tbtns .btn{padding:9px 8px;overflow:hidden;text-overflow:ellipsis}
+.tools{display:flex;align-items:center;gap:8px;padding:0 0 10px;font-size:12.5px;color:var(--muted)}
+.tools label{display:flex;align-items:center;gap:10px;cursor:pointer}
+.tools input,.gh input{accent-color:var(--accent)}
+.segc{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.chip{padding:3px 10px;font-size:12px;color:var(--muted);transition:border-color .15s,color .15s}
+.chip+.chip{border-left:1px solid var(--line)}
+.chip:hover{color:var(--text)}
+.chip.on{color:var(--text);background:#ffffff14}
+.gh{position:sticky;top:0;z-index:2;background:var(--card);display:flex;justify-content:space-between;align-items:center;padding:9px 0;font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:600}
+.gh:not(:first-child){border-top:1px solid var(--line)}
+.gh label{display:flex;gap:10px;align-items:center;cursor:pointer}
+.gh .gsum{letter-spacing:0;text-transform:none;font-weight:400;color:var(--muted);font-size:12px}
+.gh[data-v=safe] label{color:var(--green)}.gh[data-v=review] label{color:var(--amber)}.gh[data-v=keep] label{color:var(--red)}.gh label{cursor:default}
+.warn{font-size:12.5px;line-height:1.4;color:var(--muted);text-align:right;max-width:210px}
+.warn.amber{color:#f0c060}
+.btn.danger{background:var(--amber);border-color:var(--amber);color:#1a1204}
+.total b{font-size:22px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:16px}.row2>*{min-width:0}
+#sug{flex:1;min-height:0;overflow:auto;padding-right:12px;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.fold span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fold{flex:1;align-content:space-between;display:grid;grid-template-columns:1fr 60px;gap:4px 10px;font-size:12.5px;align-items:center}
+.fold .bar{grid-column:1/-1;margin:0 0 7px}
+.axis{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);margin-top:6px}
+@media(max-width:1560px){.grid{grid-template-columns:minmax(0,1fr) 360px}.col.l{flex-direction:row}.col.l>.card{flex:1;min-width:0}.col.c{grid-column:1;grid-row:2}.col.r{grid-column:2;grid-row:1/3}.topr{width:360px}}
+@media(max-width:1000px){.grid{grid-template-columns:1fr}.col.r{grid-column:1;grid-row:auto;min-height:0}.col.r>.card{position:relative}#sug{max-height:520px}.col.c{grid-row:auto}.topr{width:100%}}
+@media(max-width:700px){.row2{grid-template-columns:1fr}.col.l{flex-direction:column}}
+</style></head><body>
+<div class="app"><div id="side"></div>
+<main class="main">
+  <div class="top"><div><h1 class="hud-title">STORAGE OVERVIEW</h1><div class="sub">nvme0n1p2 · btrfs · mounted at /</div></div><div class="sp"></div>
+    <div class="topr"><div class="pill"><span class="dot"></span>Scan complete · <b>2,184,331 files</b> in 11.4 s</div><button class="btn">Rescan</button></div></div>
+  <div class="grid">
+    <div class="col l">
+      <div class="card"><h3>Capacity</h3><div class="gauge"><div id="cap"></div><div class="mid"><b class="num" id="pct">0%</b><span class="muted" style="font-size:11px;letter-spacing:.14em">USED</span></div></div>
+        <div class="kv"><div><b class="num" id="used">0</b>used</div><div><b class="num" id="free">0</b>free</div><div><b>1.90 TB</b>total</div></div></div>
+      <div class="card"><h3>By file type</h3><div id="types"></div></div>
+      <div class="card fill"><h3>Reclaimable</h3><div class="rec" id="rec"></div><div id="recr" class="grow"></div></div>
+    </div>
+    <div class="col c">
+      <div class="card"><h3>What is on the disk <span class="sp"></span><span class="ai">layer thickness = space used</span></h3><svg id="stack" viewBox="0 0 760 500"></svg></div>
+      <div class="row2">
+        <div class="card"><h3>Space by last modified</h3><div class="lg"><span><i style="background:var(--cyan)"></i>changed within a year</span><span><i style="background:var(--slate)"></i>untouched for over a year</span></div><div class="age" id="age"></div><div class="agesum" id="agesum"></div></div>
+        <div class="card"><h3>Largest folders</h3><div class="fold" id="fold"></div></div>
+      </div>
+    </div>
+    <div class="col r">
+      <div class="card"><h3>Advisor <span class="sp"></span><span class="ai">local model</span></h3>
+        <div class="tools"><span id="cnt"></span><span class="sp"></span><span class="muted">Select</span><div class="segc"><button class="chip" id="qsafe">Safe</button><button class="chip" id="qrev">All</button><button class="chip" id="qnone">None</button></div></div>
+        <div id="sug"></div>
+        <div class="total"><div class="trow"><div><div class="muted" style="font-size:11px;letter-spacing:.12em">SELECTED</div><b class="num" id="sel">0</b></div><div class="warn" id="warn"></div></div>
+          <div class="tbtns"><button class="btn" id="cleansafe">Clean safe</button><button class="btn pri" id="clean">Clean selected</button></div></div></div>
+    </div>
+  </div>
+</main></div>
+<script src="shared.js"></script>
+<script>
+$('#side').outerHTML = sidebar('Overview');
+const state = { used: DISK.used, tree: JSON.parse(JSON.stringify(TREE)) };
+const setCap = segRing($('#cap'), 0, C.cyan, 56, 190);
+function paintCap() { const p = state.used / DISK.total; setCap(p); countUp($('#pct'), p * 100, v => Math.round(v) + '%'); countUp($('#used'), state.used); countUp($('#free'), DISK.total - state.used); }
+paintCap();
+
+$('#types').innerHTML = TYPES.map(([t, s, c]) => `<div class="type"><span>${t}</span><div class="bar"><i style="--c:${c};width:0" data-w="${s / 319 * 100}"></i></div><span class="num">${fmt(s)}</span></div>`).join('');
+setTimeout(() => $$('#types i').forEach(i => i.style.width = i.dataset.w + '%'), 200);
+
+// Isometric stack of opaque slabs; every slab is labelled directly with a leader line.
+function drawStack() {
+  const cx = 380, a = 150, b = 62, gap = 10, k = 0.16, base = 420, mix = (c, p) => `color-mix(in srgb, ${c} ${p}%, #0a0e17)`;
+  const kids = state.tree.children.slice().sort((x, y) => y.size - x.size), big = kids.filter(c => c.size / DISK.total >= .05), small = kids.filter(c => c.size / DISK.total < .05);
+  const layers = big.map(c => ({ name: '/' + c.name, size: c.size, color: c.color, inside: (c.children || []).slice().sort((x, y) => y.size - x.size).slice(0, 3).map(x => x.name).join(' · ') }));
+  layers.push({ name: 'system & other', size: small.reduce((s, c) => s + c.size, 0), color: C.slate, inside: small.map(c => c.name).join(' · ') });
+  layers.push({ name: 'free space', size: DISK.total - state.used, color: '#8a96ab', inside: 'available', free: 1 });
+  let bottom = base, s = `<polygon points="${cx - a - 26},${base} ${cx},${base + b + 11} ${cx + a + 26},${base} ${cx},${base - b - 11}" fill="none" stroke="#232c3d"/>`;
+  layers.forEach((l, i) => {
+    const h = Math.max(14, l.size * k), t = bottom - h; bottom = t - gap;
+    const top = `${cx - a},${t} ${cx},${t + b} ${cx + a},${t} ${cx},${t - b}`, left = `${cx - a},${t} ${cx},${t + b} ${cx},${t + b + h} ${cx - a},${t + h}`, right = `${cx},${t + b} ${cx + a},${t} ${cx + a},${t + h} ${cx},${t + b + h}`;
+    const R = i % 2 === 0, ex = R ? cx + a : cx - a, lx = R ? ex + 46 : ex - 46, ly = t + h / 2, tx = R ? lx + 8 : lx - 8, anc = R ? 'start' : 'end';
+    const faces = l.free
+      ? [left, right, top].map(p => `<polygon points="${p}" fill="#ffffff05" stroke="${l.color}" stroke-dasharray="4 4"/>`).join('')
+      : `<polygon points="${left}" style="fill:${mix(l.color, 55)}"/><polygon points="${right}" style="fill:${mix(l.color, 36)}"/><polygon points="${top}" style="fill:${mix(l.color, 88)}"/>`;
+    s += `<g class="slab" data-i="${i}" style="--i:${i}">${faces}<polyline points="${ex},${ly} ${lx},${ly}" fill="none" stroke="${l.color}"/><circle cx="${ex}" cy="${ly}" r="3" fill="${l.color}"/>
+      <text class="nm" x="${tx}" y="${ly - 6}" text-anchor="${anc}">${l.name}</text><text class="sz" x="${tx}" y="${ly + 11}" text-anchor="${anc}">${fmt(l.size)} · ${Math.round(l.size / DISK.total * 100)}%</text><text class="in" x="${tx}" y="${ly + 27}" text-anchor="${anc}">${l.inside}</text></g>`;
+  });
+  const svg = $('#stack'); svg.innerHTML = s;
+  $$('.slab').forEach(e => { e.onmouseenter = () => { svg.classList.add('hov'); e.classList.add('hot'); }; e.onmouseleave = () => { svg.classList.remove('hov'); e.classList.remove('hot'); }; e.onclick = () => toast(layers[e.dataset.i].name, 'Opens this part of the disk in the Explorer.', 'info'); });
+}
+drawStack();
+
+// Advisor list: grouped by verdict, with group / master checkboxes and quick selections.
+const GROUPS = [['safe', 'Safe to clean'], ['review', 'Needs your review'], ['keep', 'Kept by the advisor']];
+$('#sug').innerHTML = GROUPS.map(([v, t]) => `<div class="gh" data-v="${v}"><label>${t}</label><span class="gsum num"></span></div>` +
+  SUGGEST.filter(s => s.v === v).map(s => `<label class="sug" data-id="${s.id}"><input type="checkbox" ${s.v === 'safe' ? 'checked' : ''} ${s.v === 'keep' ? 'disabled' : ''}><div><div class="t">${s.name}</div><div class="p">${s.path}</div><div class="why">${s.why}</div></div><div class="r"><b class="num">${fmt(s.size)}</b></div></label>`).join('')).join('');
+const box = s => $(`.sug[data-id="${s.id}"] input`), open = v => SUGGEST.filter(s => !s.done && s.v !== 'keep' && (!v || s.v === v));
+const picked = () => open().filter(s => box(s).checked), sum = l => l.reduce((a, s) => a + s.size, 0);
+const select = pred => { open().forEach(s => box(s).checked = pred(s)); paintSel(); };
+function paintRec() {
+  const safe = sum(open('safe')), rev = sum(open('review')), rest = state.used - safe - rev;
+  const rows = [['Safe to clean', safe, C.green], ['Needs your review', rev, C.amber], ['Kept', rest, C.slate], ['Already freed', DISK.used - state.used, C.cyan]];
+  $('#rec').innerHTML = rows.slice(0, 3).map(([, v, c]) => `<i style="width:${v / state.used * 100}%;background:${c}"></i>`).join('');
+  const wins = open().slice().sort((a, b) => b.size - a.size).slice(0, 4);
+  $('#recr').innerHTML = rows.map(([t, v, c]) => `<div class="recr"><i style="background:${c}"></i><span>${t}</span><span class="num">${fmt(v)}</span></div>`).join('') +
+    (wins.length ? '<div class="recsub">Biggest wins</div>' + wins.map(s => `<div class="recr"><i style="background:${s.v === 'safe' ? C.green : C.amber}"></i><span>${s.name}</span><span class="num">${fmt(s.size)}</span></div>`).join('') : '');
+}
+function tri(input, n, of) { input.checked = of > 0 && n === of; input.indeterminate = n > 0 && n < of; input.disabled = !of; }
+function paintSel() {
+  const p = picked(), all = open(), nSafe = p.filter(s => s.v === 'safe').length, nRev = p.length - nSafe, safeAll = open('safe'), revAll = open('review');
+  paintRec(); countUp($('#sel'), sum(p), fmt, 300);
+  $('#cnt').textContent = all.length ? `${p.length} of ${all.length} selected` : 'Nothing left to clean'; 
+  GROUPS.forEach(([v]) => { const g = SUGGEST.filter(s => s.v === v && !s.done);
+    $(`.gh[data-v="${v}"] .gsum`).textContent = g.length ? `${g.length} item${g.length > 1 ? 's' : ''} · ${fmt(sum(g))}` : 'done'; });
+  const onlySafe = safeAll.length && nSafe === safeAll.length && !nRev;
+  $('#qsafe').classList.toggle('on', !!onlySafe); $('#qrev').classList.toggle('on', all.length > 0 && p.length === all.length); $('#qnone').classList.toggle('on', !p.length);
+  $('#warn').classList.toggle('amber', nRev > 0);
+  $('#warn').textContent = nRev ? `Includes ${nRev} review item${nRev > 1 ? 's' : ''} (${fmt(sum(p.filter(s => s.v === 'review')))}). You will confirm them first.` : !all.length ? 'Everything offered has been cleaned.' : !p.length ? 'Nothing selected.' : onlySafe ? 'All safe items, nothing else.' : `${p.length} safe item${p.length > 1 ? 's' : ''} selected.`;
+  $('#clean').disabled = !p.length; $('#clean').textContent = `Clean selected (${p.length})`;
+  $('#cleansafe').disabled = !safeAll.length; $('#cleansafe').textContent = safeAll.length ? `Clean safe · ${fmt(sum(safeAll))}` : 'Clean safe';
+}
+$('#sug').onchange = e => { const g = e.target.dataset.g; if (g) open(g).forEach(s => box(s).checked = e.target.checked); paintSel(); };
+$('#qnone').onclick = () => select(() => false);
+$('#qsafe').onclick = () => select(s => s.v === 'safe'); $('#qrev').onclick = () => select(() => true);
+async function clean(items) {
+  $('#clean').disabled = $('#cleansafe').disabled = true; let freed = 0;
+  for (const s of items) {
+    await new Promise(r => setTimeout(r, 420)); s.done = 1; freed += s.size; state.used -= s.size;
+    const row = $(`.sug[data-id="${s.id}"]`); row.classList.add('done'); box(s).checked = false; box(s).disabled = true;
+    const top = state.tree.children.find(c => c.name === (s.path.startsWith('~') ? 'home' : s.path.split('/')[1])); if (top) top.size -= s.size;
+    paintCap();
+  }
+  $('#cleansafe').disabled = false; paintSel(); drawStack(); $('.foot .bar i').style.width = state.used / DISK.total * 100 + '%';
+  toast(`Freed ${fmt(freed)}`, 'Items were moved to trash. You can undo this for 7 days.');
+}
+$('#cleansafe').onclick = () => clean(open('safe'));
+$('#clean').onclick = () => {
+  const p = picked();
+  const rev = p.filter(s => s.v === 'review'), safe = p.filter(s => s.v === 'safe');
+  if (!rev.length) return clean(p);
+  const d = el(`<dialog class="dlg"><h2>Clean ${rev.length} item${rev.length > 1 ? 's' : ''} that need${rev.length > 1 ? '' : 's'} review?</h2><p>The advisor is not sure these are safe to remove. Check each one before you continue.</p>
+    ${rev.map(s => `<div class="di"><span>${s.name} <span class="mono">${s.path}</span></span><b class="num">${fmt(s.size)}</b><small>${s.why}</small></div>`).join('')}
+    <div class="dsum"><span>${safe.length ? `Plus ${safe.length} safe item${safe.length > 1 ? 's' : ''} · ${fmt(sum(safe))}` : 'No safe items selected'}</span><span>Total <b class="num">${fmt(sum(p))}</b></span></div>
+    <div class="dbtn"><button class="btn" data-a="cancel" autofocus>Cancel</button><button class="btn pri" data-a="ok">Clean ${fmt(sum(p))}</button></div></dialog>`);
+  document.body.appendChild(d); d.showModal();
+  d.onclick = e => { const a = e.target.dataset.a; if (a || e.target === d) { d.close(); d.remove(); if (a === 'ok') clean(p); } };
+  d.oncancel = () => d.remove();
+};
+paintSel();
+
+const AGES = [['< 1 mo', 212], ['1–6 mo', 298], ['6–12 mo', 184], ['1–2 yr', 331], ['2–3 yr', 226], ['3+ yr', 157]], amax = Math.max(...AGES.map(a => a[1]));
+$('#age').innerHTML = AGES.map(([l, v], i) => `<div class="agec"><b class="num">${fmt(v)}</b><div class="trk"><i style="height:${v / amax * 100}%;--c:${i > 2 ? C.slate : C.cyan};animation-delay:${i * 70}ms"></i></div><span>${l}</span></div>`).join('');
+const stale = AGES.slice(3).reduce((a, x) => a + x[1], 0);
+$('#agesum').innerHTML = `<b class="num">${fmt(stale)}</b><div>Untouched for over a year<small>${Math.round(stale / DISK.used * 100)}% of used space</small></div>`;
+const folders = TREE.children.flatMap(c => (c.children || []).filter(x => !x.name.includes(' ')).map(x => ({ ...x, name: '/' + c.name + '/' + x.name }))).sort((a, b) => b.size - a.size).slice(0, 5);
+$('#fold').innerHTML = folders.map(f => `<span class="mono">${f.name}</span><span class="num muted" style="text-align:right">${fmt(f.size)}</span><div class="bar"><i style="width:0" data-w="${f.size / folders[0].size * 100}"></i></div>`).join('');
+setTimeout(() => $$('#fold i').forEach(i => i.style.width = i.dataset.w + '%'), 300);
+// ?dlg opens the review dialog straight away (used for screenshots).
+if (location.search.includes('dlg')) { $('#qrev').click(); $('#clean').click(); }
+</script></body></html>

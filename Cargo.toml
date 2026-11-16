@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = ["crates/platter-core", "crates/platter-platform", "crates/platter-rules", "crates/platter-cli", "apps/desktop/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/MSpiechowicz/platter"
+rust-version = "1.99"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace.dependencies]
+platter-core = { path = "crates/platter-core" }
+platter-platform = { path = "crates/platter-platform" }
+platter-rules = { path = "crates/platter-rules" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+rayon = "1"
+rustix = { version = "1", features = ["fs"] }
+sysinfo = { version = "0.40", default-features = false, features = ["disk"] }
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
