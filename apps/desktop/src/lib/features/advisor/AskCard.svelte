@@ -200,11 +200,7 @@
   }
 </script>
 
-{#snippet clearAction()}
-  <Button disabled={waiting} onclick={clear}>Clear</Button>
-{/snippet}
-
-<Card title="Ask about this scan" class="ask" actions={exchanges.length > 0 ? clearAction : undefined}>
+<Card title="Ask about this scan" class="ask">
   <div class="log" bind:this={log} role="log" aria-label="Questions and answers">
     {#each exchanges as exchange (exchange.id)}
       {@const question = exchange.kind === 'scan' ? exchange.question : ''}
@@ -289,6 +285,8 @@
       />
     </div>
     <Button type="submit" variant="primary" disabled={!canType || question.trim() === ''}>Ask</Button>
+    <!-- Always there, so the field keeps its width; nothing to clear or a question on its way disables it. -->
+    <Button type="button" disabled={waiting || exchanges.length === 0} onclick={clear}>Clear</Button>
   </form>
 </Card>
 
@@ -450,7 +448,7 @@
   /* The field is as tall as the button beside it. */
   .inp {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     column-gap: 8px;
     margin-top: 14px;
   }

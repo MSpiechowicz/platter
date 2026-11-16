@@ -58,7 +58,7 @@ describe('AskCard: asking a free question', () => {
     expect(screen.getByRole('region', { name: 'Ask about this scan' })).toBeTruthy();
     expect(screen.getByText(EMPTY_LINE)).toBeTruthy();
     expect(input().placeholder).toBe('Ask about this scan, in your own words');
-    expect(screen.queryAllByRole('button').map((button) => button.textContent?.trim())).toEqual(['Ask']);
+    expect(screen.queryAllByRole('button').map((button) => button.textContent?.trim())).toEqual(['Ask', 'Clear']);
     expect(send().disabled).toBe(true);
   });
 
@@ -699,10 +699,15 @@ describe('AskCard: clearing the conversation', () => {
   const clearButton = (): HTMLButtonElement =>
     screen.getByRole('button', { name: 'Clear' }) as HTMLButtonElement;
 
-  it('has no Clear while there is nothing to clear', () => {
+  it('puts Clear after Ask at the bottom, shut while there is nothing to clear', () => {
     setup(vi.fn());
 
-    expect(screen.queryByRole('button', { name: 'Clear' })).toBeNull();
+    const buttons = [...document.querySelectorAll('form.inp button')].map((button) =>
+      button.textContent?.trim(),
+    );
+
+    expect(buttons).toEqual(['Ask', 'Clear']);
+    expect(clearButton().disabled).toBe(true);
   });
 
   it('takes the exchanges of this scan off the screen, keeps those of another scan, and refocuses the box', async () => {
@@ -720,7 +725,7 @@ describe('AskCard: clearing the conversation', () => {
     expect(screen.queryByText('largest')).toBeNull();
     expect(store.exchangesOf(1)).toEqual([]);
     expect(store.exchangesOf(2)).toHaveLength(1);
-    expect(screen.queryByRole('button', { name: 'Clear' })).toBeNull();
+    expect(clearButton().disabled).toBe(true);
     await waitFor(() => expect(document.activeElement).toBe(input()));
   });
 
