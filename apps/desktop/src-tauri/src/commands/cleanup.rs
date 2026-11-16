@@ -17,10 +17,10 @@ use std::time::{Duration, Instant};
 
 use platter_cleanup::{
     CleanupAction, CleanupEvent, CleanupPlan, CleanupReport, Disk, TargetOutcome, TargetResult, execute,
-    plan_cleanup as make_plan, undo,
+    plan_cleanup as make_plan, plan_marked, undo,
 };
-use platter_core::CancelToken;
 use platter_core::dto::{ScanId, Verdict};
+use platter_core::{CancelToken, NodeId};
 use platter_platform::environment::home_trash;
 use platter_rules::RuleSet;
 use serde::Serialize;
@@ -41,6 +41,8 @@ const MAX_PLANS: usize = 4;
 const MAX_DONE: usize = 4;
 /// Rule ids one plan may name.
 const MAX_RULES: usize = 64;
+/// Items one marked plan may name.
+const MAX_MARKED: usize = 1000;
 /// Refusals listed in a plan.
 const MAX_REFUSED: usize = 200;
 /// Longest path shown in the confirmation, in characters; longer ones are shortened in the middle.
@@ -419,6 +421,17 @@ pub async fn plan_cleanup(
     plan(&state, scan, suggestions).await
 }
 
+/// Plans moving what the user marked in the Explorer (node ids of a finished scan) to the trash. Each
+/// item is a `review` item, checked like a rule's match; started and confirmed like any other plan.
+#[tauri::command]
+pub async fn plan_marked_cleanup(
+    state: State<'_, AppState>,
+    scan: ScanId,
+    nodes: Vec<NodeId>,
+) -> CommandResult<CleanupPlanDto> {
+    plan_marked_nodes(&state, scan, nodes).await
+}
+
 /// Starts a plan (once). Asks for confirmation first when something cannot be undone; a refused
 /// confirmation is the error `cancelled`. Events arrive on `on_event`, the last one `finished` or
 /// `failed`.
@@ -525,6 +538,44 @@ pub async fn plan(state: &AppState, scan: ScanId, suggestions: Vec<String>) -> C
         let env = platform.environment_for(tree.root_path());
         let ids: Vec<&str> = suggestions.iter().map(String::as_str).collect();
         make_plan(&tree, &env, &rules, &ids, &platform.entry_probe)
+    })
+    .await?;
+
+    let dto = describe(&plan, scan, 0);
+    let id = state.cleanups.store(scan, plan);
+    Ok(CleanupPlanDto { plan_id: id, ..dto })
+}
+
+/// Plans moving the folders and files the user marked in the Explorer (`nodes`) to the trash.
+pub async fn plan_marked_nodes(
+    state: &AppState,
+    scan: ScanId,
+    nodes: Vec<NodeId>,
+) -> CommandResult<CleanupPlanDto> {
+    if nodes.is_empty() || nodes.len() > MAX_MARKED {
+        return Err(CommandError::invalid(format!(
+            "mark between 1 and {MAX_MARKED} items"
+        )));
+    }
+    if state.scans.is_outdated(scan) {
+        return Err(CommandError::invalid(
+            "the disk changed since this scan; rescan first",
+        ));
+    }
+
+    let tree = state.scans.tree(scan)?;
+    if let Some(unknown) = nodes.iter().find(|node| !tree.contains(**node)) {
+        return Err(CommandError::not_found(format!("node {unknown} does not exist")));
+    }
+    let Some(_planning) = Planning::begin(&state.cleanups) else {
+        return Err(CommandError::invalid(
+            "a plan is being made; try again in a moment",
+        ));
+    };
+    let platform = Arc::clone(&state.platform);
+    let plan = tauri::async_runtime::spawn_blocking(move || {
+        let env = platform.environment_for(tree.root_path());
+        plan_marked(&tree, &env, &RuleSet::builtin(), &nodes, &platform.entry_probe)
     })
     .await?;
 
@@ -660,6 +711,9 @@ fn command_text(action: CleanupAction) -> Option<(String, bool)> {
 }
 
 fn title_of(rule_id: &str) -> String {
+    if rule_id == platter_cleanup::MARKED {
+        return "Marked in the Explorer".to_owned();
+    }
     RuleSet::builtin()
         .rules()
         .iter()

@@ -113,6 +113,10 @@ a {
 .num {
   font-variant-numeric: tabular-nums;
 }
+/* A figure that describes the scan from before a cleanup: the look of a disabled control, no change of layout. */
+.stale {
+  opacity: 0.4;
+}
 
 @keyframes rise {
   from {

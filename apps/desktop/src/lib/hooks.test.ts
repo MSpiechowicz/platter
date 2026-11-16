@@ -12,10 +12,10 @@ const ALL_OFF = {
   overlays: false,
   ex: null,
   pick: null,
+  mark: [],
   focus: null,
   dominant: false,
   warn: false,
-  clean: null,
   cleanup: false,
 };
 
@@ -53,7 +53,7 @@ describe('parseHooks', () => {
   });
 
   it('reads the Cleanup view and its Scan step, outside Tauri only', () => {
-    expect(parseHooks('?view=cleanup&clean=run', false)).toMatchObject({ view: 'cleanup', clean: 'run' });
+    expect(parseHooks('?view=cleanup', false)).toMatchObject({ view: 'cleanup' });
     expect(parseHooks('?view=scanning&cleanup', false)).toMatchObject({ view: 'scanning', cleanup: true });
     expect(parseHooks('?view=scanning&cleanup', true)).toEqual(ALL_OFF);
   });
@@ -73,7 +73,13 @@ describe('parseHooks', () => {
   });
 
   it('ignores Explorer hooks with bad values', () => {
-    expect(parseHooks('?ex=cube&pick=-1&focus=abc', false)).toEqual(ALL_OFF);
+    expect(parseHooks('?ex=cube&pick=-1&focus=abc&mark=x,-2', false)).toEqual(ALL_OFF);
+  });
+
+  it('reads the marks of the Explorer as a list of children', () => {
+    expect(parseHooks('?mark=0', false).mark).toEqual([0]);
+    expect(parseHooks('?mark=1,3,x,4', false).mark).toEqual([1, 3, 4]);
+    expect(parseHooks('?mark=0,1', true).mark).toEqual([]);
   });
 
   it('ignores every hook inside the Tauri window', () => {
@@ -95,10 +101,10 @@ describe('parseHooks', () => {
     }
   });
 
-  it('reads the cleanup hook, and ignores any other value', () => {
-    expect(parseHooks('?clean=review', false).clean).toBe('review');
-    expect(parseHooks('?clean=run', false).clean).toBe('run');
-    expect(parseHooks('?clean=everything', false).clean).toBeNull();
-    expect(parseHooks('?clean=run', true).clean).toBeNull();
+  it('has no hook that starts or confirms a cleanup, whatever the query says', () => {
+    const search = '?view=cleanup&clean=run&markclean=run&mark=0&clean=review&markclean=review';
+
+    expect(parseHooks(search, false)).toEqual({ ...ALL_OFF, view: 'cleanup', mark: [0] });
+    expect(Object.keys(parseHooks(search, false)).sort()).toEqual(Object.keys(ALL_OFF).sort());
   });
 });

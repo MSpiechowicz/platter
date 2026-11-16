@@ -22,7 +22,10 @@ import type {
  * Still different from the backend:
  * - The mock knows only the up to 20 largest matches of a rule (what `getSuggestions` lists as `nodes`), so a
  *   group has at most 20 items; the backend plans every match.
- * - It has no disk to guard, so nothing is refused for being protected, nested or changed since the plan.
+ * - It has no disk to guard, so nothing is refused for being protected or changed since the plan. (A marked plan
+ *   refuses the scan root, an item a `keep` suggestion covers, holds or lies in, links, mounts, unreadable
+ *   folders and an item inside another marked one, as the backend does; the mock only knows the up to 20
+ *   largest matches of a `keep` rule.)
  * - Every target succeeds: there are no `skipped` or `failed` outcomes, no problems, and no tool that is missing.
  * - `freed` is the sum of what was deleted, emptied or cleaned by a tool (not what was trashed, which
  *   frees nothing yet), as the mock cannot measure a disk.
@@ -35,11 +38,21 @@ const PLAN_LIFETIME_MS = 10 * 60 * 1000;
 const MAX_PLANS = 4;
 const MAX_DONE = 4;
 const MAX_RULES = 64;
+const MAX_MARKED = 1000;
+const MAX_REFUSED = 200;
 const SAMPLE_PATHS = 20;
 
 const SCAN_ROOT_REASON = 'it is the scanned folder itself';
 const KEPT_REASON = 'kept on purpose';
 const NOT_CLEANED_REASON = 'Platter does not clean this';
+const NESTED_REASON = 'inside another item of the plan';
+const SYMLINK_REASON = 'it is a link';
+const MOUNT_REASON = 'it is, or lies below, another mounted filesystem';
+const UNREADABLE_REASON = 'part of it could not be read';
+
+/** The rule id and title of what the user marked by hand (`MARKED` in `crates/platter-cleanup/src/plan.rs`). */
+const MARKED_RULE = 'marked';
+const MARKED_TITLE = 'Marked in the Explorer';
 
 interface Tool {
   program: string;
@@ -136,7 +149,49 @@ export interface MockCleanupHost {
   durationMs: number;
 }
 
-export type MockCleanupApi = Pick<Api, 'planCleanup' | 'startCleanup' | 'cancelCleanup' | 'undoCleanup'>;
+export type MockCleanupApi = Pick<
+  Api,
+  'planCleanup' | 'planMarkedCleanup' | 'startCleanup' | 'cancelCleanup' | 'undoCleanup'
+>;
+
+/** The nodes the `keep` suggestions list (up to 20 per rule, the most the mock knows of what a keep rule matches). */
+const keptNodes = (suggestions: SuggestionDto[]): Set<number> =>
+  new Set(
+    suggestions
+      .filter((suggestion) => suggestion.verdict === 'keep')
+      .flatMap((suggestion) => suggestion.nodes),
+  );
+
+/** The node and the folders above it, nearest first. */
+function ancestry(tree: MockTree, node: MockNode): MockNode[] {
+  const chain: MockNode[] = [node];
+
+  for (let at = node; at.id !== 0;) {
+    at = tree.nodes[at.parent] as MockNode;
+    chain.push(at);
+  }
+
+  return chain;
+}
+
+/** A keep rule protects the node, something inside it, or something around it. */
+function touchesKept(tree: MockTree, node: MockNode, kept: ReadonlySet<number>): boolean {
+  if (ancestry(tree, node).some((above) => kept.has(above.id))) {
+    return true;
+  }
+
+  return [...kept].some((id) => {
+    const inside = tree.nodes[id];
+
+    return inside !== undefined && ancestry(tree, inside).some((above) => above.id === node.id);
+  });
+}
+
+/** The node lies inside one of `others`. */
+const withinAny = (tree: MockTree, node: MockNode, others: ReadonlySet<number>): boolean =>
+  ancestry(tree, node)
+    .slice(1)
+    .some((above) => others.has(above.id));
 
 /** As in the backend, every plan with something to do is confirmed (the mock has no dialog to show). */
 const needsConfirmation = (groups: PlannedGroup[]): boolean => groups.length > 0;
@@ -355,7 +410,109 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanupApi {
     setTimeout(pump, 0);
   };
 
+  /** Why the backend would refuse a marked node, or `undefined` when it would plan it (the mock has no disk to look at). */
+  const refusalOf = (tree: MockTree, node: MockNode, kept: ReadonlySet<number>): string | undefined => {
+    if (node.id === 0) {
+      return SCAN_ROOT_REASON;
+    }
+
+    if (touchesKept(tree, node, kept)) {
+      return KEPT_REASON;
+    }
+
+    if (node.kind === 'symlink') {
+      return SYMLINK_REASON;
+    }
+
+    if (node.kind === 'mount') {
+      return MOUNT_REASON;
+    }
+
+    return node.unreadable ? UNREADABLE_REASON : undefined;
+  };
+
+  /** What `plan_marked` does with marked node ids, as a description and as the group to play out. */
+  const describeMarked = (
+    scan: ScanId,
+    ids: number[],
+    tree: MockTree,
+  ): { plan: Omit<CleanupPlanDto, 'planId'>; planned: PlannedGroup[] } => {
+    const kept = keptNodes(suggestionsOf(tree).suggestions);
+    // Outer items first, so an item inside one that is planned is found out.
+    const nodes = [...new Set(ids)]
+      .map((id) => tree.nodes[id] as MockNode)
+      .sort((a, b) => ancestry(tree, a).length - ancestry(tree, b).length || a.id - b.id);
+    const refused: RefusedDto[] = [];
+    const targets: Target[] = [];
+    const planned = new Set<number>();
+
+    for (const node of nodes) {
+      const path = host.pathOf(tree, node);
+      const reason = refusalOf(tree, node, kept);
+
+      if (reason !== undefined) {
+        refused.push({ ruleId: MARKED_RULE, path, reason });
+      } else if (withinAny(tree, node, planned)) {
+        refused.push({ ruleId: MARKED_RULE, path, reason: NESTED_REASON });
+      } else {
+        planned.add(node.id);
+        targets.push({ path, allocated: node.allocated });
+      }
+    }
+
+    const groups: PlanGroupDto[] = [];
+    const stored: PlannedGroup[] = [];
+
+    if (targets.length > 0) {
+      stored.push({ ruleId: MARKED_RULE, action: TRASH, targets });
+      groups.push({
+        ruleId: MARKED_RULE,
+        title: MARKED_TITLE,
+        verdict: 'review',
+        action: 'trash',
+        items: targets.length,
+        allocated: targets.reduce((sum, target) => sum + target.allocated, 0),
+        needsElevation: false,
+        samplePaths: targets.slice(0, SAMPLE_PATHS).map((target) => target.path),
+      });
+    }
+
+    return {
+      plan: {
+        scanId: scan,
+        groups,
+        refused: refused.slice(0, MAX_REFUSED),
+        refusedMore: Math.max(0, refused.length - MAX_REFUSED),
+        notFound: [],
+        allocated: groups.reduce((sum, group) => sum + group.allocated, 0),
+        needsConfirmation: needsConfirmation(stored),
+      },
+      planned: stored,
+    };
+  };
+
   return {
+    async planMarkedCleanup(scan, nodes) {
+      if (nodes.length === 0 || nodes.length > MAX_MARKED) {
+        return fail('invalid', `mark between 1 and ${MAX_MARKED} items`);
+      }
+
+      if (outdated.has(scan)) {
+        return fail('invalid', 'the disk changed since this scan; rescan first');
+      }
+
+      const tree = host.treeOf(scan);
+      const unknown = nodes.find((node) => !Number.isInteger(node) || tree.nodes[node] === undefined);
+
+      if (unknown !== undefined) {
+        return fail('notFound', `node ${unknown} does not exist`);
+      }
+
+      const { plan, planned } = describeMarked(scan, nodes, tree);
+
+      return { planId: store(scan, planned), ...plan };
+    },
+
     async planCleanup(scan, suggestionIds) {
       if (suggestionIds.length === 0 || suggestionIds.length > MAX_RULES) {
         return fail('invalid', `choose between 1 and ${MAX_RULES} suggestions`);

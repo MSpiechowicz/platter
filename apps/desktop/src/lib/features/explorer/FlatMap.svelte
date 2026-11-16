@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { COLLAPSED_NODE_ID } from '../../api/client';
   import type { NodeDto, NodeId } from '../../api/types';
   import { fmt } from '../../state/fmt.svelte';
@@ -18,6 +19,7 @@
     type Tile,
   } from './layout/treemap';
   import MapMessage from './MapMessage.svelte';
+  import { tileMarked } from './marking';
   import { moveFocus } from './roving';
   import type { Frame } from './state/explorer.svelte';
 
@@ -33,12 +35,28 @@
     onclear: () => void;
     /** The "smaller items" tile was chosen: the node it stands for and the items merged into it. */
     ongroup: (node: NodeDto, members: readonly NodeId[]) => void;
+    /** The folders the user marked for cleanup: a tile that stands for one gets a dashed outline. */
+    marked?: ReadonlySet<NodeId>;
+    /** The tiles (by the id of their first folder) that are the topmost safe ones: a green outline and a SAFE tag. */
+    safe?: ReadonlySet<NodeId>;
     /** Whether some tile is drawn larger than its true share, so the legend can say so. */
     onboost?: (boosted: boolean) => void;
   }
 
-  let { frame, model, colors, selected, hovered, onchoose, onhover, onclear, ongroup, onboost }: Props =
-    $props();
+  let {
+    frame,
+    model,
+    colors,
+    selected,
+    hovered,
+    onchoose,
+    onhover,
+    onclear,
+    ongroup,
+    marked = new SvelteSet(),
+    safe = new SvelteSet(),
+    onboost,
+  }: Props = $props();
 
   const ZOOM_IN_MS = 450;
   const ZOOM_OUT_MS = 350;
@@ -136,6 +154,16 @@
     return selected !== null && ids.includes(selected) ? selected : ids[0];
   });
 
+  const SAFE_TAG = 'SAFE';
+
+  /** What is said of a tile besides its size, for the tooltip and the screen reader: colour is never the only cue. */
+  function states(tile: Tile): string[] {
+    return [
+      ...(safe.has(tile.node.id) ? ['safe to clean'] : []),
+      ...(tileMarked(tile, marked) ? ['marked for cleanup'] : []),
+    ];
+  }
+
   /** What the tooltip says: the whole path of a chain, the size, and the true share of a tile drawn larger than it is. */
   function tooltip(tile: Tile): string {
     if (isCollapsed(tile.node)) {
@@ -144,7 +172,7 @@
 
     const share = tile.boosted ? ` · ${formatShare(tile.share)} of this folder` : '';
 
-    return `${tileTitle(tile)} · ${fmt.size(tile.node.allocated)}${share}`;
+    return [`${tileTitle(tile)} · ${fmt.size(tile.node.allocated)}${share}`, ...states(tile)].join(' · ');
   }
 
   function onkeydown(event: KeyboardEvent, id: NodeId): void {
@@ -193,12 +221,16 @@
   >
     {#snippet tileSet(set: Tile[])}
       {#each set as tile (tile.key)}
-        {@const label = tileLabel(tile, fmt.size(tile.node.allocated))}
+        {@const isSafe = safe.has(tile.node.id)}
+        {@const size = fmt.size(tile.node.allocated)}
+        {@const label = tileLabel(tile, isSafe ? `${SAFE_TAG} · ${size}` : size)}
         {@const style = tileStyle(tile, colors)}
         <!-- A "smaller items" tile has its folder's colour, a step quieter, and a dashed outline. -->
         <rect
           class:first={tile.depth === 1}
           class:merged={style.merged}
+          class:safe={isSafe}
+          class:marked={tileMarked(tile, marked)}
           x={tile.x0}
           y={tile.y0}
           width={tile.x1 - tile.x0}
@@ -214,11 +246,17 @@
         {#if label?.where === 'header'}
           <text class="nm" x={tile.x0 + 8} y={tile.y0 + 17}>{label.name}</text>
           {#if label.size}<text class="sz" x={tile.x1 - 8} y={tile.y0 + 17} text-anchor="end"
-              >{label.size}</text
+              >{#if isSafe}<tspan class="tag">{SAFE_TAG}</tspan>{label.size.slice(
+                  SAFE_TAG.length,
+                )}{:else}{label.size}{/if}</text
             >{/if}
         {:else if label}
           <text class="nm" x={tile.x0 + 8} y={tile.y0 + 19}>{label.name}</text>
-          {#if label.size}<text class="sz" x={tile.x0 + 8} y={tile.y0 + 35}>{label.size}</text>{/if}
+          {#if label.size}<text class="sz" x={tile.x0 + 8} y={tile.y0 + 35}
+              >{#if isSafe}<tspan class="tag">{SAFE_TAG}</tspan>{label.size.slice(
+                  SAFE_TAG.length,
+                )}{:else}{label.size}{/if}</text
+            >{/if}
         {/if}
       {/each}
     {/snippet}
@@ -233,7 +271,7 @@
           role="button"
           tabindex={group.top === tabbable ? 0 : -1}
           aria-pressed={group.top === selected}
-          aria-label="{tileTitle(first)}, {fmt.size(first.node.allocated)}"
+          aria-label={[`${tileTitle(first)}, ${fmt.size(first.node.allocated)}`, ...states(first)].join(', ')}
           onclick={(event) => choose(event, group.top)}
           onkeydown={(event) => onkeydown(event, group.top)}
           onfocus={() => (current = group.top)}
@@ -283,10 +321,25 @@
     opacity: 0.32;
   }
 
+  /* Safe to clean: a green outline. Green means safe and nothing else. */
+  .top rect.safe {
+    stroke: var(--green);
+    stroke-width: 2;
+    stroke-opacity: 1;
+  }
+
   .sel > rect.first {
     stroke: #fff;
     stroke-width: 2;
     stroke-opacity: 1;
+  }
+
+  /* Marked for cleanup: a dashed outline, over the others. */
+  .top rect.marked {
+    stroke: #fff;
+    stroke-width: 2;
+    stroke-opacity: 1;
+    stroke-dasharray: 6 4;
   }
 
   .pick:focus-visible {
@@ -315,5 +368,12 @@
     font-size: 12px;
     opacity: 0.8;
     font-variant-numeric: tabular-nums;
+  }
+
+  text .tag {
+    fill: var(--green);
+    font-weight: 700;
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
   }
 </style>

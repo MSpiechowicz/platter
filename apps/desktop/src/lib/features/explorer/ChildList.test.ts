@@ -491,3 +491,137 @@ describe('ChildList search', () => {
     expect(document.activeElement).toBe(field);
   });
 });
+
+describe('ChildList marking', () => {
+  const dir = (id: number, name: string, extra: Partial<NodeDto> = {}): NodeDto => ({
+    ...item,
+    id,
+    name,
+    kind: 'dir',
+    allocated: 1000 * id,
+    ...extra,
+  });
+  const marking = (extra: object = {}) => ({
+    ...props({}),
+    hasMore: false,
+    items: [dir(1, 'Downloads'), dir(2, 'Videos'), dir(3, 'link', { kind: 'symlink' })],
+    total: 3,
+    allTotal: 3,
+    loaded: 3,
+    onmark: vi.fn(),
+    isKept: (id: number) => id === 2,
+    ...extra,
+  });
+  const box = (name: string) =>
+    screen.getByRole('checkbox', { name: `Mark ${name} for cleanup` }) as HTMLInputElement;
+
+  it('has a checkbox for a row, and a lock with "KEPT" for a kept one', () => {
+    render(ChildList, { props: marking() });
+
+    expect(box('Downloads').disabled).toBe(false);
+    expect(screen.queryByRole('checkbox', { name: 'Mark Videos for cleanup' })).toBeNull();
+    expect(screen.getByRole('img', { name: /Kept on purpose/ })).toBeTruthy();
+    expect(document.querySelectorAll('.kept')).toHaveLength(1);
+    expect(document.querySelector('.kept')?.textContent).toBe('Kept');
+  });
+
+  it('keeps the name and the lock in the same columns whether a row is kept or not', () => {
+    render(ChildList, { props: marking() });
+
+    const items = [...document.querySelectorAll('.rows .item')];
+
+    expect(items).toHaveLength(3);
+    // Each item has exactly one control column (a box or a lock) before its button.
+    expect(items.every((row) => row.firstElementChild?.matches('.box, .lock'))).toBe(true);
+    expect(items.every((row) => row.lastElementChild?.matches('button.row'))).toBe(true);
+  });
+
+  it('reports a tick and a cleared box, with the row', async () => {
+    const onmark = vi.fn();
+
+    render(ChildList, { props: marking({ onmark }) });
+    await fireEvent.click(box('Downloads'));
+
+    expect(onmark).toHaveBeenCalledWith(expect.objectContaining({ id: 1, name: 'Downloads' }), true);
+  });
+
+  it('shows what is marked, not what was clicked: a box the owner refuses springs back', async () => {
+    render(ChildList, { props: marking({ marked: new Set<number>() }) });
+
+    await fireEvent.click(box('Downloads'));
+    await tick();
+
+    expect(box('Downloads').checked).toBe(false);
+  });
+
+  it('shows a marked row ticked', () => {
+    render(ChildList, { props: marking({ marked: new Set([1]) }) });
+
+    expect(box('Downloads').checked).toBe(true);
+  });
+
+  it('does not select the row when its box is clicked', async () => {
+    const onchoose = vi.fn();
+
+    render(ChildList, { props: marking({ onchoose }) });
+    await fireEvent.click(box('Downloads'));
+
+    expect(onchoose).not.toHaveBeenCalled();
+  });
+
+  it('turns every box off, with the reason, while marking is off', () => {
+    render(ChildList, { props: marking({ markOff: 'A cleanup is in progress.', marked: new Set([1]) }) });
+
+    expect(box('Downloads').disabled).toBe(true);
+    expect(box('Downloads').checked).toBe(true);
+    expect(box('Downloads').closest('.box')?.getAttribute('title')).toBe('A cleanup is in progress.');
+  });
+
+  it('turns off the boxes that are not ticked when the most items are marked', () => {
+    render(ChildList, {
+      props: marking({ markFull: true, marked: new Set([1]), items: [dir(1, 'Downloads'), dir(4, 'Other')] }),
+    });
+
+    expect(box('Downloads').disabled).toBe(false);
+    expect(box('Other').disabled).toBe(true);
+  });
+
+  it('turns off the box of a link: the backend never cleans one', () => {
+    render(ChildList, { props: marking() });
+
+    expect(box('link').disabled).toBe(true);
+    expect(box('link').closest('.box')?.getAttribute('title')).toBe('A link is never cleaned.');
+  });
+
+  it('shows hidden characters in a name, and uses that name for the box', () => {
+    render(ChildList, { props: marking({ items: [dir(1, 'a‮b')] }) });
+
+    expect(box('a\\u{202E}b')).toBeTruthy();
+    expect(document.querySelector('.row .nm')?.textContent).toBe('a\\u{202E}b');
+  });
+
+  it('puts the footer it is given under the rows, inside the card', async () => {
+    const { createRawSnippet } = await import('svelte');
+
+    render(ChildList, {
+      props: marking({ bottom: createRawSnippet(() => ({ render: () => '<p data-bottom>Footer</p>' })) }),
+    });
+
+    expect(document.querySelector('.child-list [data-bottom]')).not.toBeNull();
+    expect(document.querySelector('.child-list [data-bottom]')?.previousElementSibling?.classList).toContain(
+      'rows',
+    );
+  });
+
+  it('only one box is in the tab order: the one of the row that was focused last', async () => {
+    render(ChildList, { props: marking({ items: [dir(1, 'Downloads'), dir(4, 'Other')] }) });
+
+    expect(box('Downloads').tabIndex).toBe(0);
+    expect(box('Other').tabIndex).toBe(-1);
+
+    await fireEvent.focusIn(screen.getByRole('button', { name: /^Other/ }));
+
+    expect(box('Other').tabIndex).toBe(0);
+    expect(box('Downloads').tabIndex).toBe(-1);
+  });
+});

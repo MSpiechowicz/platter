@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SuggestionDto, Verdict, VolumeDto } from '../../api/types';
+import type { PlanGroupDto, SuggestionDto, Verdict, VolumeDto } from '../../api/types';
 import type { GroupState } from '../../state/cleanup.svelte';
 import { afterCleanup, basisOf, chartItems, resultBars, runBytes, stepMarks, stepOf } from './model';
 
@@ -207,6 +207,60 @@ describe('chartItems', () => {
   });
 });
 
+const markedPlanGroup: PlanGroupDto = {
+  ruleId: 'marked',
+  title: 'Marked in the Explorer',
+  verdict: 'review',
+  action: 'trash',
+  items: 3,
+  allocated: 40 * GB,
+  needsElevation: false,
+  samplePaths: [],
+};
+
+describe('chartItems with a hand-marked group', () => {
+  const suggestions = [suggestion('target', 'safe', 88)];
+  const source = (extra: Partial<Parameters<typeof chartItems>[0]> = {}) => ({
+    suggestions,
+    selected: new Set<string>(),
+    cleaned: new Set<string>(),
+    groups: new Map<string, GroupState>(),
+    marked: markedPlanGroup,
+    ran: false,
+    locked: false,
+    ...extra,
+  });
+
+  it('adds nothing without a marked group', () => {
+    expect(chartItems(source({ marked: undefined })).map((item) => item.id)).toEqual(['target']);
+  });
+
+  it('adds one group of its own, in the review colour, on the freed side and never clickable', () => {
+    const items = chartItems(source());
+
+    expect(items.map((item) => item.id)).toEqual(['target', 'marked']);
+    expect(items[1]).toEqual({
+      id: 'marked',
+      label: 'Marked in the Explorer',
+      size: 40 * GB,
+      verdict: 'review',
+      side: 'freed',
+      progress: undefined,
+      clickable: false,
+    });
+  });
+
+  it('carries how far the run got with it', () => {
+    const groups = new Map<string, GroupState>([['marked', 'done']]);
+
+    expect(chartItems(source({ groups, ran: true }))[1]).toMatchObject({ side: 'freed', progress: 'done' });
+  });
+
+  it('leaves it on the stay side when the run ended without reaching it', () => {
+    expect(chartItems(source({ ran: true }))[1]).toMatchObject({ side: 'stays', clickable: false });
+  });
+});
+
 describe('runBytes', () => {
   const suggestions = [
     suggestion('a', 'safe', 10),
@@ -220,6 +274,16 @@ describe('runBytes', () => {
 
   it('adds up the rules of the cleanup, finished or not, and only those', () => {
     expect(runBytes(suggestions, groups)).toBe(50 * GB);
+  });
+
+  it('counts the hand-marked group with the rules, when it is one of the groups of the run', () => {
+    const withMarked = new Map<string, GroupState>([...groups, ['marked', 'done']]);
+
+    expect(runBytes(suggestions, withMarked, undefined, markedPlanGroup)).toBe(90 * GB);
+    expect(runBytes(suggestions, withMarked, 'done', markedPlanGroup)).toBe(50 * GB);
+    expect(runBytes(suggestions, groups, undefined, markedPlanGroup)).toBe(50 * GB);
+    expect(runBytes([], new Map([['marked', 'done' as const]]), undefined, markedPlanGroup)).toBe(40 * GB);
+    expect(runBytes([], new Map([['marked', 'done' as const]]))).toBe(0);
   });
 
   it('can count one state only', () => {

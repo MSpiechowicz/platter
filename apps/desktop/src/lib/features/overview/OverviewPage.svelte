@@ -1,8 +1,6 @@
 <script lang="ts">
-  import { tick, untrack } from 'svelte';
   import { api } from '../../api';
   import { baseName, formatCount, formatDuration } from '../../format';
-  import { hooks } from '../../hooks';
   import PageHeader from '../../components/layout/PageHeader.svelte';
   import Button from '../../components/ui/Button.svelte';
   import Card from '../../components/ui/Card.svelte';
@@ -49,28 +47,6 @@
     void attempt;
 
     return api.getSuggestions(ready.scanId);
-  });
-
-  // Screenshots only (`?clean=`, see hooks.ts): the mock plays the click that a person would make.
-  let hooked = false;
-
-  $effect(() => {
-    if (hooked || !hooks.clean || !suggestions.data || !overview.data) {
-      return;
-    }
-
-    hooked = true;
-
-    void tick().then(() =>
-      untrack(() => {
-        if (hooks.clean === 'review') {
-          cleanup.select('all');
-          void cleanup.cleanSelected();
-        } else {
-          void cleanup.cleanSafe();
-        }
-      }),
-    );
   });
 
   const retrySuggestions = (): void => {
@@ -124,6 +100,7 @@
           onretry={retrySuggestions}
           scanned={data.summary.node.allocated}
           freed={cleanup.freedTotal}
+          stale={ready.outdated}
         />
       </div>
 

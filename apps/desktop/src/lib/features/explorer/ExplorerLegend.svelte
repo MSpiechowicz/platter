@@ -7,9 +7,11 @@
     omitted?: number;
     /** Some tile or column is drawn larger than its true share, so that it can be read. */
     boosted?: boolean;
+    /** The open folder is inside one that is marked for cleanup: everything on the map goes with it. */
+    insideMarked?: boolean;
   }
 
-  let { view, omitted = 0, boosted = false }: Props = $props();
+  let { view, omitted = 0, boosted = false, insideMarked = false }: Props = $props();
 
   const text = $derived.by(() => {
     const base =
@@ -26,7 +28,12 @@
       {omitted === 1 ? '1 small item is' : `${omitted} small items are`} not drawn — see the list
     </span>
   {/if}
+  {#if insideMarked}
+    <span class="omitted">This folder is inside one that is marked for cleanup</span>
+  {/if}
   <span class="sp"></span>
+  <span><i class="k safe"></i>Safe to clean</span>
+  <span><i class="k marked"></i>Marked for cleanup</span>
   <span><i class="k"></i>Selected</span>
 </div>
 
@@ -57,5 +64,16 @@
     border-radius: 3px;
     border: 1.5px solid #fff;
     background: #ffffff1f;
+  }
+
+  /* Green means safe and nothing else; marked is the dashed outline the map draws. */
+  .k.safe {
+    border-color: var(--green);
+    background: none;
+  }
+
+  .k.marked {
+    border: 1.5px dashed var(--text);
+    background: none;
   }
 </style>

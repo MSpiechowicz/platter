@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import type { NodeDto } from '../../api/types';
 import DetailsCard from './DetailsCard.svelte';
@@ -42,5 +42,55 @@ describe('DetailsCard share', () => {
     render(DetailsCard, { props: props({ color: '#3ec5d8' }) });
 
     expect(document.querySelector('.dot')?.getAttribute('style')).toContain('#3ec5d8');
+  });
+});
+
+describe('DetailsCard buttons', () => {
+  const names = () =>
+    [...document.querySelectorAll('.actions button')].map(
+      (button) => button.textContent?.trim() || button.getAttribute('aria-label'),
+    );
+
+  it('always has "Open folder", "Mark for cleanup" and the file manager, whether or not they can be used', () => {
+    render(DetailsCard, { props: props({ node: undefined, selected: false, canOpen: false }) });
+
+    expect(names()).toEqual(['Open folder', 'Mark for cleanup', 'Show in file manager']);
+    expect((screen.getByRole('button', { name: 'Open folder' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Mark for cleanup' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
+  it('marks on a click, when there is a way to', async () => {
+    const onmark = vi.fn();
+
+    render(DetailsCard, { props: props({ onmark, markOff: undefined }) });
+    await fireEvent.click(screen.getByRole('button', { name: 'Mark for cleanup' }));
+
+    expect(onmark).toHaveBeenCalledOnce();
+  });
+
+  it('says "Unmark" for what is marked, in the plain button', () => {
+    render(DetailsCard, { props: props({ onmark: vi.fn(), markOff: undefined, marked: true }) });
+
+    const button = screen.getByRole('button', { name: 'Unmark' });
+
+    expect(button.classList.contains('primary')).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Mark for cleanup' })).toBeNull();
+  });
+
+  it('is off with the reason as its tooltip', () => {
+    render(DetailsCard, { props: props({ onmark: vi.fn(), markOff: 'Kept on purpose.' }) });
+
+    const button = screen.getByRole('button', { name: 'Mark for cleanup' }) as HTMLButtonElement;
+
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe('Kept on purpose.');
+  });
+
+  it('shows a path with its hidden characters made visible', () => {
+    render(DetailsCard, { props: props({ path: '/tmp/a‮b' }) });
+
+    expect(screen.getByRole('heading', { name: '/tmp/a\\u{202E}b' })).toBeTruthy();
   });
 });

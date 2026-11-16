@@ -69,6 +69,14 @@ export interface Api {
    */
   planCleanup(scan: ScanId, suggestionIds: string[]): Promise<CleanupPlanDto>;
   /**
+   * Plans moving the items the user marked in the Explorer (node ids of a finished scan, 1 to 1000) to the trash:
+   * one group `marked`, verdict `review`, action `trash`. Nothing is changed. Items the backend will not touch
+   * (kept, protected, a link, the scan root, inside another marked item) come back in `refused`. `invalid`: no ids,
+   * more than 1000, or an outdated scan; `notFound`: an id that is not in the scan. It is started, confirmed and
+   * undone like any other plan.
+   */
+  planMarkedCleanup(scan: ScanId, nodes: NodeId[]): Promise<CleanupPlanDto>;
+  /**
    * Starts a plan; a plan starts once. Resolves with the cleanup id as soon as it is running; `groupStarted`,
    * `targetDone`, `groupFinished` and a last `finished` (or `failed`) arrive on `onEvent`, possibly before this
    * promise resolves. Rejects with `cancelled` when the user declines the backend's own confirmation (asked when

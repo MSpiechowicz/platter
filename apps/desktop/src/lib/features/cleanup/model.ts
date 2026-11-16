@@ -1,5 +1,5 @@
-import type { SuggestionDto, VolumeDto } from '../../api/types';
-import type { CleanupPhase, GroupState } from '../../state/cleanup.svelte';
+import type { PlanGroupDto, SuggestionDto, VolumeDto } from '../../api/types';
+import { MARKED_RULE, type CleanupPhase, type GroupState } from '../../state/cleanup.svelte';
 import type { ScanState } from '../../state/scan.svelte';
 import { visibleText } from '../overview/display';
 import type { FlowItem } from './flow';
@@ -108,6 +108,8 @@ export interface ChartSource {
   selected: ReadonlySet<string>;
   cleaned: ReadonlySet<string>;
   groups: ReadonlyMap<string, GroupState>;
+  /** What the user marked by hand, when the plan under review or the cleanup that runs or ran has it. */
+  marked?: PlanGroupDto | undefined;
   /** A cleanup runs or has run: the selection no longer says what is freed, its groups do. */
   ran: boolean;
   /** Planning, a review dialog, a run or an outdated scan: the selection cannot be changed now. */
@@ -117,10 +119,11 @@ export interface ChartSource {
 /**
  * The groups of the chart. Before a cleanup, a group is on the freed side when its rule is selected, and a click
  * moves it. Once a cleanup runs or has run, the groups it took in are on the freed side, each with how far it got,
- * and the others stay where they are.
+ * and the others stay where they are. What the user marked by hand is a group of its own, in the review colour,
+ * that is never clicked: it is what the plan under review or the cleanup that runs or ran is made of.
  */
 export function chartItems(source: ChartSource): FlowItem[] {
-  return source.suggestions.map((suggestion): FlowItem => {
+  const items = source.suggestions.map((suggestion): FlowItem => {
     const state =
       source.groups.get(suggestion.id) ?? (source.cleaned.has(suggestion.id) ? 'done' : undefined);
     const common = {
@@ -148,19 +151,47 @@ export function chartItems(source: ChartSource): FlowItem[] {
       clickable: !source.locked,
     };
   });
+
+  return source.marked ? [...items, markedItem(source.marked, source)] : items;
 }
 
-/** Bytes the groups of the cleanup that runs or ran cover, from the suggestions' own sizes. */
+function markedItem(marked: PlanGroupDto, source: ChartSource): FlowItem {
+  const state = source.groups.get(MARKED_RULE);
+  const common = {
+    id: MARKED_RULE,
+    label: visibleText(marked.title),
+    size: marked.allocated,
+    verdict: 'review' as const,
+    clickable: false,
+  };
+
+  // A cancelled run that never reached it leaves it where it was: on disk.
+  if (state === undefined && source.ran) {
+    return { ...common, side: 'stays' };
+  }
+
+  return { ...common, side: 'freed', progress: state };
+}
+
+/**
+ * Bytes the groups of the cleanup that runs or ran cover: the suggestions' own sizes, and the hand-marked group's
+ * (`marked`) when it is one of them.
+ */
 export function runBytes(
   suggestions: readonly SuggestionDto[],
   groups: ReadonlyMap<string, GroupState>,
   only?: GroupState,
+  marked?: PlanGroupDto,
 ): number {
-  return suggestions
-    .filter((suggestion) => {
-      const state = groups.get(suggestion.id);
+  const covered = (id: string): boolean => {
+    const state = groups.get(id);
 
-      return state !== undefined && (only === undefined || state === only);
-    })
+    return state !== undefined && (only === undefined || state === only);
+  };
+
+  const ofSuggestions = suggestions
+    .filter((suggestion) => covered(suggestion.id))
     .reduce((sum, suggestion) => sum + suggestion.allocated, 0);
+
+  return ofSuggestions + (marked && covered(MARKED_RULE) ? marked.allocated : 0);
 }

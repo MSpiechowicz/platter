@@ -22,6 +22,7 @@ fn app() -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
             commands::suggestions::get_suggestions,
             commands::query::get_children,
             commands::cleanup::plan_cleanup,
+            commands::cleanup::plan_marked_cleanup,
             commands::cleanup::start_cleanup,
             commands::cleanup::cancel_cleanup,
             commands::cleanup::undo_cleanup,

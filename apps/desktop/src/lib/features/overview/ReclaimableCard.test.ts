@@ -33,6 +33,7 @@ function show(
     loading: boolean;
     error: unknown;
     freed: number;
+    stale: boolean;
   }> = {},
 ) {
   render(ReclaimableCard, {
@@ -131,5 +132,56 @@ describe('ReclaimableCard', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
 
     expect(onretry).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ReclaimableCard after a cleanup, until a rescan', () => {
+  const NOTE = 'From the scan before the cleanup — rescan to update';
+  const rowOf = (text: string): HTMLElement => screen.getByText(text).closest('.recr') as HTMLElement;
+
+  beforeEach(() => {
+    settings.reduceMotion = true;
+  });
+
+  afterEach(() => {
+    settings.reduceMotion = false;
+  });
+
+  it('shows everything in full while the scan is current', () => {
+    show();
+
+    expect(document.querySelectorAll('.stale')).toHaveLength(0);
+    expect(document.querySelector('[title]')).toBeNull();
+  });
+
+  it('greys the bar, the three rows and the biggest wins, with a tooltip, and leaves "Already freed" alone', () => {
+    show({ stale: true, freed: 5 * GB });
+
+    const greyed = [
+      screen.getByRole('img'),
+      rowOf('Safe to clean'),
+      rowOf('Needs your review'),
+      rowOf('Kept'),
+      rowOf('Title of c'),
+      rowOf('Title of a'),
+    ];
+
+    for (const element of greyed) {
+      expect(element.classList.contains('stale')).toBe(true);
+      expect(element.getAttribute('title')).toBe(NOTE);
+    }
+
+    expect(rowOf('Already freed').classList.contains('stale')).toBe(false);
+    expect(rowOf('Already freed').getAttribute('title')).toBeNull();
+    expect(rowOf('Already freed').textContent).toContain('5.0 GB');
+    expect(screen.getByRole('heading', { name: 'Biggest wins' }).classList.contains('stale')).toBe(false);
+  });
+
+  it('keeps every figure on screen: nothing is removed or guessed', () => {
+    show({ stale: true });
+
+    expect(screen.getByText('Safe to clean').parentElement?.textContent).toContain('149 GB');
+    expect(screen.getByText('Needs your review').parentElement?.textContent).toContain('268 GB');
+    expect(document.querySelectorAll('.fill i')).toHaveLength(3);
   });
 });

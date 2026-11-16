@@ -52,6 +52,18 @@ export const group = (id: string, verdict: Verdict, gb: number): PlanGroupDto =>
   samplePaths: [`/home/demo/${id}`],
 });
 
+/** The group a plan of hand-marked items has: one rule id, `marked`, whatever was marked. */
+export const markedGroup = (gb: number, items = 2): PlanGroupDto => ({
+  ruleId: 'marked',
+  title: 'Marked in the Explorer',
+  verdict: 'review',
+  action: 'trash',
+  items,
+  allocated: gb * GB,
+  needsElevation: false,
+  samplePaths: ['/home/demo/Downloads/big.iso'],
+});
+
 export const planOf = (groups: PlanGroupDto[]): CleanupPlanDto => ({
   planId: 5,
   scanId: 1,
@@ -82,6 +94,7 @@ export async function fixture(): Promise<Fixture> {
         ids.map((id) => group(id, DATA.suggestions.find((item) => item.id === id)?.verdict ?? 'safe', 1)),
       ),
     ),
+    planMarkedCleanup: vi.fn<Api['planMarkedCleanup']>(async () => planOf([markedGroup(40)])),
     startCleanup: vi.fn<Api['startCleanup']>(async (_plan, onEvent) => {
       send = onEvent;
 

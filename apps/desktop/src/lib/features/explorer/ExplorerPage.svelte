@@ -1,17 +1,20 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { describeError } from '../../api/client';
-  import type { NodeId, ScanId } from '../../api/types';
+  import type { NodeDto, NodeId, ScanId } from '../../api/types';
   import Button from '../../components/ui/Button.svelte';
   import Card from '../../components/ui/Card.svelte';
   import Notice from '../../components/ui/Notice.svelte';
   import Spinner from '../../components/ui/Spinner.svelte';
   import { hooks } from '../../hooks';
+  import { cleanup } from '../../state/cleanup.svelte';
   import { delayed } from '../../state/delayed.svelte';
   import { fmt } from '../../state/fmt.svelte';
   import { scan } from '../../state/scan.svelte';
   import { settings, type ExplorerView } from '../../state/settings.svelte';
   import { ui } from '../../state/ui.svelte';
   import { baseName } from '../../format';
+  import ReviewDialog from '../overview/ReviewDialog.svelte';
   import ChildList from './ChildList.svelte';
   import ColumnsView from './ColumnsView.svelte';
   import DetailsCard from './DetailsCard.svelte';
@@ -20,8 +23,10 @@
   import ExplorerToolbar from './ExplorerToolbar.svelte';
   import FlatMap from './FlatMap.svelte';
   import MapMessage from './MapMessage.svelte';
+  import MarkedFooter from './MarkedFooter.svelte';
   import { layoutColumns, MAX_COLUMNS } from './layout/columns';
   import { linksOf } from './layout/chains';
+  import { markButton, markingOff, markOf, markTarget, safeTops } from './marking';
   import { childPath } from './path';
   import { ExplorerStore, type ExplorerStart } from './state/explorer.svelte';
 
@@ -44,6 +49,17 @@
     if (focus !== undefined) {
       ui.rememberExplorer(scanId, focus, store.focusColor ?? undefined);
     }
+  });
+
+  // The marks live in the one cleanup store, so they stay while the user moves between folders and views. A different
+  // scan forgets them. The suggestions tell which folders are kept and which are safe.
+  $effect.pre(() => {
+    const id = scanId;
+
+    untrack(() => {
+      cleanup.adopt(id);
+      void cleanup.ensureSuggestions(id);
+    });
   });
 
   let view = $state<ExplorerView>(hooks.ex ?? settings.explorerView);
@@ -91,6 +107,92 @@
   const detailColor = $derived(
     store.selectedNode && !store.groupSelected ? store.colorOf(store.selectedNode.id) : store.focusColor,
   );
+
+  // Marking. An item's place in the scan (the folders above it) comes from the folder on screen, so nothing can be
+  // marked while the list and the map belong to different folders.
+  const crumbIds = $derived(store.crumbs.map((crumb) => crumb.id));
+  const listReady = $derived(shown !== undefined && shown.focus === store.focus && store.pageCurrent);
+  const blockers = $derived({
+    busy: cleanup.busy,
+    outdated: cleanup.outdated,
+    loading: !listReady,
+    full: cleanup.markFull,
+  });
+  const marked = $derived(new Set(cleanup.marks.keys()));
+  const safe = $derived(
+    safeTops(
+      model,
+      cleanup.safeNodes,
+      crumbIds.some((id) => cleanup.safeNodes.has(id)),
+    ),
+  );
+  const insideMarked = $derived(crumbIds.some((id) => marked.has(id)));
+
+  // What the details card is about, with the folders above it: the open folder, a child, or a chain tile's last folder.
+  const target = $derived.by(() => {
+    const chosen = store.selectedNode;
+
+    if (!chosen || store.groupSelected) {
+      return markTarget(detail, crumbIds, undefined);
+    }
+
+    const tile = model?.children.find((child) => child.node.id === chosen.id);
+
+    return markTarget(detail, crumbIds, { links: linksOf(tile ?? { node: chosen }) });
+  });
+  const button = $derived(
+    markButton(target, {
+      groupSelected: store.groupSelected,
+      marked: target !== undefined && cleanup.isMarked(target.node.id),
+      kept: target !== undefined && cleanup.isKept(target.node.id, target.ancestors),
+      blockers,
+    }),
+  );
+
+  function toggleDetailMark(): void {
+    if (!target || button.off !== undefined) {
+      return;
+    }
+
+    if (cleanup.isMarked(target.node.id)) {
+      cleanup.unmark(target.node.id);
+    } else {
+      cleanup.mark(markOf(target.node, target.ancestors));
+    }
+  }
+
+  function markRow(node: NodeDto, on: boolean): void {
+    if (!listReady) {
+      return;
+    }
+
+    if (on) {
+      cleanup.mark(markOf(node, crumbIds));
+    } else {
+      cleanup.unmark(node.id);
+    }
+  }
+
+  // The `?mark=0,2` test hook: mark those children (0 is the biggest) once the list is on screen, as clicks would.
+  let marksHooked = false;
+
+  $effect(() => {
+    if (marksHooked || hooks.mark.length === 0 || !listReady) {
+      return;
+    }
+
+    marksHooked = true;
+
+    untrack(() => {
+      for (const index of hooks.mark) {
+        const child = store.sizedItems[index];
+
+        if (child) {
+          markRow(child, true);
+        }
+      }
+    });
+  });
 
   function setView(next: ExplorerView): void {
     view = next;
@@ -225,6 +327,8 @@
           onhover={(id) => store.hover(id)}
           onclear={() => store.select(null)}
           ongroup={(node, members) => store.chooseGroup(node, members)}
+          {marked}
+          {safe}
         />
       {:else if shown && columns}
         <ColumnsView
@@ -236,6 +340,8 @@
           onhover={(id) => store.hover(id)}
           onclear={() => store.select(null)}
           ongroup={(node, members) => store.chooseGroup(node, members)}
+          {marked}
+          {safe}
           onfail={fallBack}
         />
       {/if}
@@ -246,7 +352,7 @@
     </div>
 
     {#if notice}<Notice>{notice}</Notice>{/if}
-    <ExplorerLegend {view} omitted={columns?.omitted ?? 0} {boosted} />
+    <ExplorerLegend {view} omitted={columns?.omitted ?? 0} {boosted} {insideMarked} />
   </Card>
 
   <div class="side">
@@ -260,6 +366,9 @@
         canOpen={store.selectedTarget?.hasChildren === true}
         onopen={() => store.openSelected()}
         onreveal={reveal}
+        marked={target !== undefined && cleanup.isMarked(target.node.id)}
+        markOff={button.off}
+        onmark={toggleDetailMark}
       />
       <ChildList
         folder={store.focus}
@@ -291,10 +400,26 @@
         onhover={(id) => store.hover(id)}
         onmore={() => store.loadMore()}
         onretry={() => store.retry()}
-      />
+        {marked}
+        isKept={(id) => cleanup.isKept(id, crumbIds)}
+        markOff={markingOff(blockers)}
+        markFull={cleanup.markFull}
+        onmark={markRow}
+      >
+        {#snippet bottom()}
+          <MarkedFooter store={cleanup} />
+        {/snippet}
+      </ChildList>
     </div>
   </div>
 </div>
+
+<ReviewDialog
+  plan={cleanup.reviewing}
+  suggestions={cleanup.suggestions}
+  onconfirm={() => void cleanup.confirmReview()}
+  oncancel={() => cleanup.dismissReview()}
+/>
 
 <style>
   .wrap {

@@ -150,6 +150,45 @@ describe('the Cleanup view', () => {
     expect(steps().querySelectorAll('.dot svg')).toHaveLength(3);
   });
 
+  it('greys the figures of the old scan after a cleanup, in the Overview and here, until a rescan', async () => {
+    render(App);
+    await scanDisk();
+
+    const stale = (selector: string): boolean[] =>
+      [...main().querySelectorAll(selector)].map((element) => element.classList.contains('stale'));
+
+    // The Overview: the Reclaimable card and the Advisor's sums, current until something is cleaned.
+    await screen.findAllByText('Pacman package cache', undefined, { timeout: 3000 });
+    expect(stale('.rec, .recr, .gsum')).not.toContain(true);
+
+    await fireEvent.click(await screen.findByRole('button', { name: /^Clean safe ·/ }, { timeout: 3000 }));
+    await waitFor(() => expect(cleanup.phase.kind).toBe('done'), { timeout: 3000 });
+
+    expect(stale('.rec')).toEqual([true]);
+    expect(stale('.recr').filter(Boolean).length).toBeGreaterThanOrEqual(3);
+    expect(screen.getByText('Already freed').closest('.recr')?.classList.contains('stale')).toBe(false);
+    expect(stale('.gsum').every(Boolean)).toBe(true);
+
+    // The Cleanup view: the chart and the disk after the cleanup.
+    await fireEvent.click(nav('Cleanup'));
+    await screen.findByRole('heading', { name: 'Result' });
+
+    expect(screen.getByRole('group', { name: 'Cleanup chart' }).classList.contains('stale')).toBe(true);
+    expect(screen.getByText('Disk after cleanup').parentElement?.classList.contains('stale')).toBe(true);
+
+    // A new scan describes the disk again.
+    await fireEvent.click(within(main()).getByRole('button', { name: 'Scan again' }));
+    await waitFor(() => expect(currentStep()).toBe('Review'), { timeout: 3000 });
+    await screen.findByText('Selected to free');
+
+    expect(screen.getByRole('group', { name: 'Cleanup chart' }).classList.contains('stale')).toBe(false);
+
+    await fireEvent.click(nav('Overview'));
+    await screen.findAllByText('Pacman package cache', undefined, { timeout: 3000 });
+
+    expect(stale('.rec, .recr, .gsum')).not.toContain(true);
+  });
+
   it('shows its Scan step, without the list, while the scan runs', async () => {
     render(App);
     await fireEvent.click(await screen.findByRole('button', { name: /^\/\s/ }));

@@ -43,6 +43,7 @@ pub fn run() {
             commands::query::get_summary,
             commands::suggestions::get_suggestions,
             commands::cleanup::plan_cleanup,
+            commands::cleanup::plan_marked_cleanup,
             commands::cleanup::start_cleanup,
             commands::cleanup::cancel_cleanup,
             commands::cleanup::undo_cleanup,

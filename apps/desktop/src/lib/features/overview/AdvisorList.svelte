@@ -1,12 +1,13 @@
 <script module lang="ts">
-  import type { NodeId, ScanId, SuggestionsDto } from '../../api/types';
+  import type { NodeId, ScanId, SuggestionDto, SuggestionsDto } from '../../api/types';
   import type { CleanupStore } from '../../state/cleanup.svelte';
 
   /*
    * The Advisor's list and footer: the rows with their checkboxes, "Select Safe | All | None", the total, the status
    * text and the two Clean buttons, with the review dialog. It renders inside a `Card` with class `advisor`, a flex
    * column whose width is the box `cqw` is measured against. The Overview and the Cleanup view both show it, from
-   * the same store.
+   * the same store. A row is the label of its checkbox (a click on its text ticks it); opening the Explorer is a
+   * small button of its own under the size. After a cleanup the sizes are greyed out until a rescan.
    */
   export interface AdvisorListProps {
     /** Undefined until the first answer arrives. */
@@ -18,7 +19,7 @@
     loading: boolean;
     error: unknown;
     onretry: () => void;
-    /** A row was clicked: open the Explorer on its largest matched folder. */
+    /** A row's "Open in the Explorer" button was clicked: open the Explorer on its largest matched folder. */
     onopen: (nodeId: NodeId) => void;
   }
 </script>
@@ -26,6 +27,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import Checkbox from '../../components/ui/Checkbox.svelte';
+  import Icon from '../../components/ui/Icon.svelte';
   import Loading from '../../components/ui/Loading.svelte';
   import Segmented from '../../components/ui/Segmented.svelte';
   import Button from '../../components/ui/Button.svelte';
@@ -33,7 +35,7 @@
   import type { Action, SelectionChoice } from '../../state/cleanup.svelte';
   import { fmt } from '../../state/fmt.svelte';
   import { groupSuggestions, itemCount, reasonOf, suggestionCount } from './advisor';
-  import { footerStatus } from './cleanupText';
+  import { footerStatus, STALE_TEXT } from './cleanupText';
   import { visibleText } from './display';
   import RetryNote from './RetryNote.svelte';
   import ReviewDialog from './ReviewDialog.svelte';
@@ -62,6 +64,13 @@
   const locked = $derived(store.busy || store.outdated);
 
   const animatedSelected = countUp(() => store.selectedBytes, 300);
+
+  // A disabled button gets no click from a browser; this is the same rule for any other way a click can arrive.
+  function open(suggestion: SuggestionDto): void {
+    if (!locked && suggestion.nodes.length > 0) {
+      onopen(suggestion.nodes[0] as NodeId);
+    }
+  }
 
   function run(action: Action): void {
     if (action === 'cancel') {
@@ -99,36 +108,63 @@
         <section class="group" aria-label={group.title}>
           <h4 class="gh {group.verdict}">
             <span>{group.title}</span>
-            <span class="gsum num">{itemCount(group.suggestions.length)} · {fmt.size(group.allocated)}</span>
+            <span
+              class="gsum num"
+              class:stale={store.outdated}
+              title={store.outdated ? STALE_TEXT : undefined}
+            >
+              {itemCount(group.suggestions.length)} · {fmt.size(group.allocated)}
+            </span>
           </h4>
 
           {#each group.suggestions as suggestion (suggestion.id)}
-            <div class="sug" class:done={store.cleaned.has(suggestion.id)}>
-              {#if suggestion.verdict === 'keep'}
+            {@const kept = suggestion.verdict === 'keep'}
+            {@const done = store.cleaned.has(suggestion.id)}
+            {@const title = visibleText(suggestion.title)}
+
+            <!-- A kept row has no checkbox: it is no label, so a click on its text does nothing. -->
+            <svelte:element
+              this={kept ? 'div' : 'label'}
+              class="sug"
+              class:done
+              class:pick={!kept && !locked && !done}
+            >
+              {#if kept}
                 <span class="slot"></span>
               {:else}
                 <Checkbox
                   checked={store.isSelected(suggestion.id)}
-                  disabled={locked || store.cleaned.has(suggestion.id)}
-                  aria-label={visibleText(suggestion.title)}
+                  disabled={locked || done}
+                  aria-label={title}
                   onchange={() => store.toggle(suggestion.id)}
                 />
               {/if}
 
-              <button
-                type="button"
-                class="text"
-                disabled={suggestion.nodes.length === 0}
-                title="{visibleText(suggestion.path)}: open in the Explorer"
-                onclick={() => onopen(suggestion.nodes[0] as NodeId)}
-              >
-                <span class="t">{visibleText(suggestion.title)}</span>
+              <span class="text">
+                <span class="t">{title}</span>
                 <span class="p">{visibleText(suggestion.path)}</span>
                 <span class="why">{visibleText(reasonOf(suggestion))}</span>
-              </button>
+              </span>
 
-              <b class="num">{fmt.size(suggestion.allocated)}</b>
-            </div>
+              <span class="end">
+                <b
+                  class="num"
+                  class:stale={store.outdated && !done}
+                  title={store.outdated && !done ? STALE_TEXT : undefined}>{fmt.size(suggestion.allocated)}</b
+                >
+
+                <button
+                  type="button"
+                  class="go"
+                  disabled={locked || suggestion.nodes.length === 0}
+                  aria-label="Open {title} in the Explorer"
+                  title="{visibleText(suggestion.path)}: open in the Explorer"
+                  onclick={() => open(suggestion)}
+                >
+                  <Icon name="explorer" size={14} />
+                </button>
+              </span>
+            </svelte:element>
           {/each}
         </section>
       {/each}
@@ -297,16 +333,18 @@
     text-decoration: line-through;
   }
 
-  .text {
-    display: block;
-    min-width: 0;
-    padding: 0;
-    text-align: left;
+  /* Only a row that can be ticked answers to a click on its text. */
+  .sug.pick {
     cursor: pointer;
   }
 
-  .text:disabled {
-    cursor: default;
+  .sug.pick:hover .t {
+    color: #fff;
+  }
+
+  .text {
+    display: block;
+    min-width: 0;
   }
 
   .text > span {
@@ -317,8 +355,43 @@
     transition: color 0.15s;
   }
 
-  .text:hover:not(:disabled) .t {
-    color: #fff;
+  /*
+   * The size, and under it the button that opens the Explorer: one column that is as wide as the size, so the text
+   * never gets narrower, and both end at the row's right edge. The button's glyph is the square the edge is measured
+   * on; its click target is larger and takes no room.
+   */
+  .end {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
+
+  .go {
+    position: relative;
+    display: block;
+    width: 14px;
+    height: 14px;
+    color: var(--dim);
+    transition: color 0.15s;
+  }
+
+  .go::before {
+    content: '';
+    position: absolute;
+    inset: -6px;
+  }
+
+  .go :global(svg) {
+    display: block;
+  }
+
+  .go:hover:not(:disabled) {
+    color: var(--accent);
+  }
+
+  .go:disabled {
+    opacity: 0.4;
   }
 
   .p {

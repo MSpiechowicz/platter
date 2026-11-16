@@ -59,7 +59,7 @@
         <Bar
           size="thick"
           value={bars.after?.share ?? 0}
-          color="var(--accent)"
+          color="var(--green)"
           label={bars.after ? 'After the cleanup' : 'After the cleanup: not measured'}
         />
       </div>

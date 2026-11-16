@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { tick, untrack } from 'svelte';
+  import { untrack } from 'svelte';
   import { api } from '../../api';
-  import { hooks } from '../../hooks';
   import Card from '../../components/ui/Card.svelte';
   import { cleanup } from '../../state/cleanup.svelte';
   import { resource } from '../../state/resource.svelte';
@@ -41,28 +40,6 @@
   const wholeVolume = $derived(scan.volumeInfo?.exact ? scan.volumeInfo.volume : undefined);
   const basis = $derived(basisOf(wholeVolume, ready.totals.allocated));
   const finished = $derived(cleanup.phase.kind === 'done');
-
-  // Screenshots only (`?clean=`, see hooks.ts): the mock plays the click that a person would make.
-  let hooked = false;
-
-  $effect(() => {
-    if (hooked || !hooks.clean || !suggestions.data) {
-      return;
-    }
-
-    hooked = true;
-
-    void tick().then(() =>
-      untrack(() => {
-        if (hooks.clean === 'review') {
-          cleanup.select('all');
-          void cleanup.cleanSelected();
-        } else {
-          void cleanup.cleanSafe();
-        }
-      }),
-    );
-  });
 </script>
 
 <ChartCard store={cleanup} {basis} />

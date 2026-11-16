@@ -11,6 +11,9 @@ import { shownPath, visibleText } from './display';
 
 export const OUTDATED_TEXT = 'The disk changed. Rescan to clean again.';
 
+/** The tooltip of a figure greyed out because it describes the scan from before a cleanup. */
+export const STALE_TEXT = 'From the scan before the cleanup — rescan to update';
+
 /** Details listed under the status line are cut after this many; the rest is counted. */
 const MAX_LINES = 5;
 

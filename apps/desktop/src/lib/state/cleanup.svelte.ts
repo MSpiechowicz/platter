@@ -5,21 +5,25 @@ import type {
   CleanupEvent,
   CleanupId,
   CleanupPlanDto,
+  NodeId,
   OutcomeKind,
   PlanGroupDto,
   ScanId,
   SuggestionDto,
   SuggestionsDto,
+  Verdict,
 } from '../api/types';
 import { scan as defaultScan, type ScanStore } from './scan.svelte';
 
 /*
- * The cleanup flow of the Overview, with no knowledge of the interface: which suggestions are selected, planning,
- * the review step, running with progress, the result, undo.
+ * The cleanup flow, with no knowledge of the interface: which suggestions are selected (Overview, Cleanup view) or
+ * which items are marked (Explorer), planning, the review step, running with progress, the result, undo. Marked
+ * items and suggestions share the one flow: a marked plan is just another plan.
  *
  * The backend is the safety gate: it shows its own native confirmation for every plan. The review step here is a
- * summary the interface shows, never a gate. This store only sends rule ids of the user's own selection, starts a
- * cleanup only when a method is called (the interface calls them from a click), and never retries by itself.
+ * summary the interface shows, never a gate. This store only sends rule ids and node ids of the user's own
+ * selection and marks (never a path), starts a cleanup only when a method is called (the interface calls them from
+ * a click), and never retries by itself.
  */
 
 /** What the segmented control shows: the selection is exactly the safe ones, all of them, none, or something else. */
@@ -79,6 +83,11 @@ export type Action = 'cancel' | 'undo' | 'rescan';
 /** Where a rule of the running (or last) cleanup stands: not reached yet, finished cleanly, or finished with problems. */
 export type GroupState = 'queued' | 'done' | 'problem';
 
+/** The rule id the backend gives the group of a marked plan. */
+export const MARKED_RULE = 'marked';
+/** The most items one marked plan may name (the backend refuses more). */
+export const MAX_MARKS = 1000;
+
 const MAX_PROBLEMS = 20;
 const BAD_OUTCOMES: readonly OutcomeKind[] = ['skipped', 'failed'];
 
@@ -86,6 +95,15 @@ export const NOT_CLEANED = 'Not cleaned.';
 
 /** The scan store as the flow needs it. */
 export type ScanHost = Pick<ScanStore, 'state' | 'markOutdated' | 'rescan'>;
+
+/** An item the user marked in the Explorer. Only its id is ever sent; the rest is for totals and for nesting. */
+export interface Mark {
+  id: NodeId;
+  /** The bytes it holds, from the scan. */
+  allocated: number;
+  /** The folders above it, the scan root first. A mark with none is the scan root, which cannot be marked. */
+  ancestors: readonly NodeId[];
+}
 
 interface Run {
   plan: CleanupPlanDto;
@@ -108,9 +126,13 @@ export class CleanupStore {
   plan = $state<CleanupPlanDto | undefined>(undefined);
   /** Bytes freed by every cleanup of this session, from the backend's `freed`; 0 before any. */
   freedTotal = $state(0);
+  /** The hand-marked group of the running or last cleanup (`ruleId: "marked"`), when its plan had one. */
+  markedRun = $state<PlanGroupDto | undefined>(undefined);
 
   /** Rule ids the user ticked. */
   readonly selected = new SvelteSet<string>();
+  /** What the user marked in the Explorer, by node id. They belong to `scanId` and go with it. */
+  readonly marks = new SvelteMap<NodeId, Mark>();
   /** Rules a cleanup finished without problems: their rows are done. */
   readonly cleaned = new SvelteSet<string>();
   /**
@@ -136,6 +158,17 @@ export class CleanupStore {
   readonly selectedBytes = $derived(sum(this.selectedItems));
   readonly reviewBytes = $derived(sum(this.reviewSelected));
   readonly safeBytes = $derived(sum(this.safeItems));
+
+  /** The nodes a `keep` suggestion lists: what the Explorer shows as kept. */
+  readonly keptNodes: ReadonlySet<NodeId> = $derived(nodesOf(this.suggestions, 'keep'));
+  /** The nodes a `safe` suggestion lists: what the Explorer shows as safe to clean. */
+  readonly safeNodes: ReadonlySet<NodeId> = $derived(nodesOf(this.suggestions, 'safe'));
+
+  /** The marks that are not inside another mark: what a cleanup acts on, and what the total counts. */
+  readonly outermostMarks: Mark[] = $derived(
+    [...this.marks.values()].filter((mark) => !mark.ancestors.some((above) => this.marks.has(above))),
+  );
+  readonly markedBytes = $derived(this.outermostMarks.reduce((total, mark) => total + mark.allocated, 0));
 
   readonly choice: SelectionChoice = $derived.by(() => {
     if (this.selectedItems.length === 0) {
@@ -179,6 +212,30 @@ export class CleanupStore {
     return !this.busy && !this.outdated && this.scanId !== undefined && this.selectedItems.length > 0;
   }
 
+  /** Marks can change: nothing runs, the scan still describes the disk, and there is room for one more. */
+  get canMark(): boolean {
+    return !this.busy && !this.outdated && this.scanId !== undefined;
+  }
+
+  get canCleanMarked(): boolean {
+    return this.canMark && this.outermostMarks.length > 0;
+  }
+
+  /** The most items are marked: another one cannot be added until one is unmarked. */
+  get markFull(): boolean {
+    return this.marks.size >= MAX_MARKS;
+  }
+
+  /**
+   * The group of what the user marked by hand in the plan under review, or in the cleanup that runs or ran. The
+   * suggestions know nothing of it, so the Cleanup view draws it from here.
+   */
+  get markedGroup(): PlanGroupDto | undefined {
+    const plan = this.reviewing;
+
+    return plan ? markedGroupOf(plan) : this.markedRun;
+  }
+
   /** The plan the review dialog shows, while it is open. */
   get reviewing(): CleanupPlanDto | undefined {
     return this.phase.kind === 'review' ? this.phase.plan : undefined;
@@ -205,6 +262,84 @@ export class CleanupStore {
     return this.selected.has(id);
   }
 
+  isMarked(id: NodeId): boolean {
+    return this.marks.has(id);
+  }
+
+  /**
+   * Whether a keep suggestion covers an item: it lists the item, or a folder above it (`ancestors`, the scan root
+   * first). Conservative: a keep suggestion lists at most its 20 largest matches, so an item it covers but does not
+   * list is not found here, and the backend refuses it when it is planned. A folder that merely holds something kept
+   * is not covered either.
+   */
+  isKept(id: NodeId, ancestors: readonly NodeId[]): boolean {
+    return this.keptNodes.has(id) || ancestors.some((above) => this.keptNodes.has(above));
+  }
+
+  /**
+   * The Explorer shows this scan: marks of another scan are forgotten, and so is what an earlier look at the
+   * suggestions said ("Not cleaned.") when nothing is running: the footer is about the marks.
+   */
+  adopt(scanId: ScanId): void {
+    if (scanId !== this.scanId) {
+      this.load(scanId, undefined);
+    } else if (this.phase.kind === 'idle') {
+      this.notice = undefined;
+      this.plan = undefined;
+    }
+  }
+
+  /** Makes sure the suggestions of the scan are here (the Explorer needs the kept and the safe nodes). */
+  async ensureSuggestions(scanId: ScanId): Promise<void> {
+    if (this.scanId === scanId && this.#data !== undefined) {
+      return;
+    }
+
+    let data: SuggestionsDto;
+
+    try {
+      data = await this.#api.getSuggestions(scanId);
+    } catch {
+      // Nothing is shown as kept or safe; the backend still refuses what it must.
+      return;
+    }
+
+    // The scan may have been replaced, or the Overview may have loaded them meanwhile.
+    if (this.scanId === scanId && this.#data === undefined) {
+      this.load(scanId, data);
+    }
+  }
+
+  /** Marks an item for cleanup. Does nothing while a cleanup runs, once the scan is outdated, for a kept item or the scan root. */
+  mark(mark: Mark): void {
+    const known = this.marks.has(mark.id);
+
+    if (!this.canMark || mark.ancestors.length === 0 || this.isKept(mark.id, mark.ancestors)) {
+      return;
+    }
+
+    if (!known && this.markFull) {
+      return;
+    }
+
+    this.marks.set(mark.id, { ...mark, ancestors: [...mark.ancestors] });
+    this.#marksChanged();
+  }
+
+  unmark(id: NodeId): void {
+    if (this.canMark && this.marks.delete(id)) {
+      this.#marksChanged();
+    }
+  }
+
+  /** What was said about the last plan no longer fits the marks. */
+  #marksChanged(): void {
+    if (this.phase.kind === 'idle') {
+      this.notice = undefined;
+      this.plan = undefined;
+    }
+  }
+
   /**
    * The suggestions of a scan arrived (or arrived again). Safe rows are ticked, review rows are not; a new scan
    * forgets the result of the last cleanup. A run in progress is left alone.
@@ -223,6 +358,8 @@ export class CleanupStore {
     if (newScan) {
       this.cleaned.clear();
       this.groups.clear();
+      this.markedRun = undefined;
+      this.marks.clear();
 
       if (this.phase.kind !== 'running') {
         // A plan or an answer for another scan means nothing here.
@@ -280,7 +417,9 @@ export class CleanupStore {
     }
 
     this.select('safe');
-    await this.#begin(this.safeItems.map((item) => item.id));
+    const ids = this.safeItems.map((item) => item.id);
+
+    await this.#begin((scan) => this.#api.planCleanup(scan, ids));
   }
 
   async cleanSelected(): Promise<void> {
@@ -288,7 +427,23 @@ export class CleanupStore {
       return;
     }
 
-    await this.#begin(this.selectedItems.map((item) => item.id));
+    const ids = this.selectedItems.map((item) => item.id);
+
+    await this.#begin((scan) => this.#api.planCleanup(scan, ids));
+  }
+
+  /**
+   * Clean what is marked. Only the outermost marks are sent: one inside another is part of the outer one, and the
+   * backend would leave it out anyway.
+   */
+  async cleanMarked(): Promise<void> {
+    if (!this.canCleanMarked) {
+      return;
+    }
+
+    const nodes = this.outermostMarks.map((mark) => mark.id);
+
+    await this.#begin((scan) => this.#api.planMarkedCleanup(scan, nodes));
   }
 
   /** "Clean <total>" in the review dialog. */
@@ -375,10 +530,10 @@ export class CleanupStore {
     }
   }
 
-  async #begin(ruleIds: string[]): Promise<void> {
+  async #begin(planner: (scan: ScanId) => Promise<CleanupPlanDto>): Promise<void> {
     const scanId = this.scanId;
 
-    if (scanId === undefined || ruleIds.length === 0) {
+    if (scanId === undefined) {
       return;
     }
 
@@ -391,7 +546,7 @@ export class CleanupStore {
     let plan: CleanupPlanDto;
 
     try {
-      plan = await this.#api.planCleanup(scanId, ruleIds);
+      plan = await planner(scanId);
     } catch (error) {
       if (epoch === this.#epoch) {
         this.phase = { kind: 'idle' };
@@ -436,6 +591,7 @@ export class CleanupStore {
     this.#run = run;
     this.notice = undefined;
     this.groups.clear();
+    this.markedRun = markedGroupOf(plan);
 
     for (const group of plan.groups) {
       this.groups.set(group.ruleId, 'queued');
@@ -594,6 +750,13 @@ export class CleanupStore {
     };
   }
 }
+
+const markedGroupOf = (plan: CleanupPlanDto): PlanGroupDto | undefined =>
+  plan.groups.find((group) => group.ruleId === MARKED_RULE);
+
+const nodesOf = (items: SuggestionDto[], verdict: Verdict): Set<NodeId> =>
+  // A derived value, rebuilt when the suggestions change: not a reactive set.
+  new Set(items.filter((item) => item.verdict === verdict).flatMap((item) => item.nodes));
 
 const sum = (items: SuggestionDto[]): number => items.reduce((total, item) => total + item.allocated, 0);
 

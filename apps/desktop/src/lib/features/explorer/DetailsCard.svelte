@@ -6,6 +6,7 @@
   import { CATEGORY_META } from '../../categories';
   import { formatCount, formatDate } from '../../format';
   import { fmt } from '../../state/fmt.svelte';
+  import { visibleText } from '../overview/display';
   import { formatShare } from './layout/scale';
 
   interface Props {
@@ -20,9 +21,32 @@
     canOpen: boolean;
     onopen: () => void;
     onreveal: () => void;
+    /** The mark button says "Unmark" when what the card shows is marked. */
+    marked?: boolean;
+    /** Why the mark button is off; `undefined` when it can be clicked. The button is always there. */
+    markOff?: string | undefined;
+    onmark?: () => void;
   }
 
-  let { node, selected, path, share, color = null, canOpen, onopen, onreveal }: Props = $props();
+  let {
+    node,
+    selected,
+    path,
+    share,
+    color = null,
+    canOpen,
+    onopen,
+    onreveal,
+    marked = false,
+    markOff,
+    onmark,
+  }: Props = $props();
+
+  // Without a way to mark, the button is simply off.
+  const off = $derived(onmark === undefined ? 'Nothing to mark.' : markOff);
+
+  // A name can hold characters that hide or reorder what the user reads: they are made visible here.
+  const shownPath = $derived(visibleText(path));
 
   const meta = $derived.by(() => {
     if (!node) {
@@ -47,7 +71,7 @@
 
 <!-- Always the same height: the text lines have room reserved and both buttons are always there, only enabled or not. -->
 <Card title={selected ? 'Selected' : 'Current folder'} class="details">
-  <h2 class="path mono" title={path}><bdi>{path}</bdi></h2>
+  <h2 class="path mono" title={shownPath}><bdi>{shownPath}</bdi></h2>
   <div class="big num">{node ? fmt.size(node.allocated) : '—'}</div>
   <div class="tag">
     {#if color}<i class="dot" style="--c:{color}" aria-hidden="true"></i>{/if}
@@ -57,7 +81,25 @@
   <p class="meta">{meta}</p>
   <div class="actions">
     <Button disabled={!canOpen} onclick={onopen}>Open folder</Button>
-    <Button disabled={!node} onclick={onreveal}>Show in file manager</Button>
+    <Button
+      variant={marked ? 'default' : 'primary'}
+      disabled={off !== undefined}
+      title={off}
+      onclick={onmark}
+    >
+      {marked ? 'Unmark' : 'Mark for cleanup'}
+    </Button>
+    <Button
+      class="reveal"
+      disabled={!node}
+      title="Show in file manager"
+      aria-label="Show in file manager"
+      onclick={onreveal}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true"
+        ><path d="M2 4.5h4l1.5 1.5H14v6.5H2z" /><path d="M6.5 11l3-3M7.5 8h2v2" /></svg
+      >
+    </Button>
   </div>
 </Card>
 
@@ -113,11 +155,29 @@
     gap: 8px;
   }
 
-  /* "Open folder" and "Show in file manager" share the 286 px of the card. */
+  /* "Open folder" and "Mark for cleanup" share the card's width; the file manager has a small button of its own. */
   .actions :global(.btn) {
     flex: 1 1 auto;
     min-width: 0;
     padding: 8px 10px;
     font-size: 12.5px;
+  }
+
+  .actions :global(.btn.reveal) {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 36px;
+    padding: 8px 0;
+  }
+
+  .actions svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 </style>

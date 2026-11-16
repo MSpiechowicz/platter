@@ -2,7 +2,7 @@
 
 use platter_core::dto::Verdict;
 use platter_core::{EntryProbe, Environment, Tree};
-use platter_rules::{RuleSet, matches};
+use platter_rules::{RuleSet, matches, scan_is_kept};
 
 use crate::action::{CleanupAction, action_for};
 use crate::guard::{Guard, Refusal, VerifiedTarget};
@@ -204,6 +204,119 @@ pub fn plan_cleanup(
         }
     }
 
+    drop_nested(&mut plan);
+    plan.allocated = plan
+        .groups
+        .iter()
+        .fold(0u64, |sum, group| sum.saturating_add(group.allocated));
+    plan
+}
+
+/// The rule id of folders the user marked by hand in the Explorer.
+pub const MARKED: &str = "marked";
+
+/// Plans the cleanup of folders and files the user marked by hand. No rule vouches for them, so each is
+/// `review` and goes to the trash, never deleted directly. Each goes through the same guard as a rule's
+/// match (protected places, links, mounts, freshness), and is refused when a `keep` rule protects it, a
+/// folder inside it, or a folder around it. A marked entry inside another marked one is left to the
+/// outer one. Nothing is changed.
+pub fn plan_marked(
+    tree: &Tree,
+    env: &Environment,
+    rules: &RuleSet,
+    marked: &[platter_core::NodeId],
+    probe: &impl EntryProbe,
+) -> CleanupPlan {
+    let mut plan = CleanupPlan {
+        scan_root: tree.root_path().to_path_buf(),
+        root_depth: components(tree.root_path().as_os_str().as_encoded_bytes())
+            .map_or(0, |parts| parts.len()),
+        ..CleanupPlan::default()
+    };
+    let refuse = |plan: &mut CleanupPlan, node: platter_core::NodeId, reason: Refusal| {
+        plan.refused.push(Refused {
+            rule_id: MARKED,
+            path: display(&tree.path_bytes(node)),
+            reason,
+        });
+    };
+
+    let mut nodes: Vec<platter_core::NodeId> = marked
+        .iter()
+        .copied()
+        .filter(|&node| tree.contains(node))
+        .collect();
+    nodes.sort_unstable();
+    nodes.dedup();
+
+    let protected = Protected::for_environment(env).map(|mut protected| {
+        protected.learn_identities(probe);
+        protected
+    });
+    let root = owned(tree.root_path().as_os_str().as_encoded_bytes());
+    let (Some(protected), Some(root)) = (protected, root.clone()) else {
+        let reason = if root.is_none() {
+            Refusal::BadPath
+        } else {
+            Refusal::HomeUnknown
+        };
+        for node in nodes {
+            refuse(&mut plan, node, reason.clone());
+        }
+        return plan;
+    };
+
+    if scan_is_kept(tree, env, rules) {
+        for node in nodes {
+            refuse(&mut plan, node, Refusal::Kept);
+        }
+        return plan;
+    }
+
+    // Everything a keep rule protects, as chains of ancestors, to compare with each marked entry.
+    let kept: Vec<Vec<platter_core::NodeId>> = matches(tree, env, rules)
+        .into_iter()
+        .filter(|rule| rule.verdict == Verdict::Keep)
+        .flat_map(|rule| rule.nodes)
+        .map(|node| tree.ancestry(node))
+        .collect();
+
+    let guard = Guard {
+        tree,
+        root,
+        protected: &protected,
+        probe,
+    };
+    let mut group = PlanGroup {
+        rule_id: MARKED,
+        verdict: Verdict::Review,
+        action: CleanupAction::Trash,
+        targets: Vec::new(),
+        allocated: 0,
+    };
+
+    for node in nodes {
+        let chain = tree.ancestry(node);
+        let touches_kept = kept.iter().any(|kept_chain| {
+            chain.contains(kept_chain.last().unwrap_or(&node)) || kept_chain.contains(&node)
+        });
+        if touches_kept {
+            refuse(&mut plan, node, Refusal::Kept);
+            continue;
+        }
+
+        match guard.verify(node, Verdict::Review, false, &[]) {
+            Ok(target) => {
+                group.allocated = group.allocated.saturating_add(target.allocated());
+                group.targets.push(target);
+            }
+            Err(reason) => refuse(&mut plan, node, reason),
+        }
+    }
+
+    if !group.targets.is_empty() {
+        plan.groups.push(group);
+    }
     drop_nested(&mut plan);
     plan.allocated = plan
         .groups

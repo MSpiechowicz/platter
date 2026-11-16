@@ -94,6 +94,9 @@ export function createTauriApi(): Api {
     planCleanup: (scan: ScanId, suggestionIds: string[]) =>
       call<CleanupPlanDto>('plan_cleanup', { scan, suggestions: suggestionIds }),
 
+    planMarkedCleanup: (scan: ScanId, nodes: NodeId[]) =>
+      call<CleanupPlanDto>('plan_marked_cleanup', { scan, nodes }),
+
     startCleanup(plan: PlanId, onEvent: (event: CleanupEvent) => void): Promise<CleanupId> {
       const channel = new Channel<CleanupEvent>();
       channel.onmessage = onEvent;

@@ -23,7 +23,7 @@ mod resolve;
 mod rule;
 mod table;
 
-pub use evaluate::{RuleMatches, Suggestions, evaluate, matches};
+pub use evaluate::{RuleMatches, Suggestions, evaluate, matches, scan_is_kept};
 pub use found::MAX_NODES;
 pub use platter_core::dto::{SuggestionDto, SuggestionsDto, Verdict, VerdictTotals};
 pub use platter_core::{Environment, Os};

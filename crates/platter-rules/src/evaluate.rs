@@ -67,6 +67,11 @@ pub fn matches(tree: &Tree, env: &Environment, rules: &RuleSet) -> Vec<RuleMatch
         .collect()
 }
 
+/// Whether the scan starts inside a folder a `keep` rule protects: then nothing in it may be cleaned.
+pub fn scan_is_kept(tree: &Tree, env: &Environment, rules: &RuleSet) -> bool {
+    kept_root(tree, env, rules.rules()).is_some()
+}
+
 /// The single pass. `None` when the scan starts inside a kept folder, so nothing may be suggested.
 fn run(tree: &Tree, env: &Environment, rules: &RuleSet) -> Option<(Vec<Verdict>, Vec<Found>)> {
     if kept_root(tree, env, rules.rules()).is_some() {

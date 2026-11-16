@@ -3,6 +3,7 @@
   import { countUp } from '../../motion/countUp.svelte';
   import type { CleanupStore } from '../../state/cleanup.svelte';
   import { fmt } from '../../state/fmt.svelte';
+  import { STALE_TEXT } from '../overview/cleanupText';
   import FlowChart from './FlowChart.svelte';
   import { afterCleanup, chartItems, runBytes, type Basis } from './model';
 
@@ -15,6 +16,9 @@
 
   const phase = $derived(store.phase);
   const locked = $derived(store.busy || store.outdated);
+  /** After a cleanup the sizes are the scan's from before it: they stay on screen, greyed, until a rescan. */
+  const stale = $derived(store.outdated);
+  const marked = $derived(store.markedGroup);
 
   const items = $derived(
     chartItems({
@@ -22,6 +26,7 @@
       selected: store.selected,
       cleaned: store.cleaned,
       groups: store.groups,
+      marked,
       ran: phase.kind === 'running' || phase.kind === 'done',
       locked,
     }),
@@ -32,23 +37,29 @@
 
   // What the hero, the bars and the numbers say depends on how far the flow is. Nothing is shown as freed that the
   // backend did not report: until it does, the sizes are the scan's own, and the words say so.
-  const planned = $derived(
-    phase.kind === 'running' || phase.kind === 'done'
-      ? runBytes(store.suggestions, store.groups)
-      : store.selectedBytes,
-  );
+  const planned = $derived.by(() => {
+    if (phase.kind === 'running' || phase.kind === 'done') {
+      return runBytes(store.suggestions, store.groups, undefined, marked);
+    }
+
+    // A plan of what the user marked by hand stands alone: the selection is not part of it.
+    return phase.kind === 'review' && marked ? marked.allocated : store.selectedBytes;
+  });
 
   const hero = $derived.by(() => {
     if (phase.kind === 'running') {
-      return { label: 'Cleaned so far', bytes: runBytes(store.suggestions, store.groups, 'done') };
+      return { label: 'Cleaned so far', bytes: runBytes(store.suggestions, store.groups, 'done', marked) };
     }
 
     if (phase.kind === 'done') {
       return { label: 'Freed', bytes: phase.result.freed };
     }
 
-    return { label: 'Selected to free', bytes: store.selectedBytes };
+    return { label: 'Selected to free', bytes: planned };
   });
+
+  // "Freed" is what the backend measured after the run; "Selected to free" is a figure of the old scan.
+  const heroStale = $derived(stale && hero.label === 'Selected to free');
 
   /** How much is taken off the disk in the numbers on the right; undefined when that is not known. */
   const removed = $derived(phase.kind === 'done' ? phase.result.freed : planned);
@@ -67,7 +78,7 @@
   const freed = $derived.by(() => {
     if (phase.kind === 'done') {
       return phase.result.freed === undefined
-        ? { caption: 'CLEANED', value: fmt.size(runBytes(store.suggestions, store.groups, 'done')) }
+        ? { caption: 'CLEANED', value: fmt.size(runBytes(store.suggestions, store.groups, 'done', marked)) }
         : { caption: 'FREED', value: fmt.size(phase.result.freed) };
     }
 
@@ -84,20 +95,20 @@
 
 <Card class="viz" aria-label="What a cleanup would free">
   <div class="hero">
-    <div>
+    <div class:stale={heroStale} title={heroStale ? STALE_TEXT : undefined}>
       <div class="lab">{hero.label}</div>
       <b class="num" class:unknown={hero.bytes === undefined}>
         {hero.bytes === undefined ? 'Not measured' : fmt.size(animated.value)}
       </b>
     </div>
 
-    <div class="s">
+    <div class="s" class:stale title={stale ? STALE_TEXT : undefined}>
       <div class="lab">{subject} after cleanup</div>
       <b class="num">{afterText}</b>
     </div>
   </div>
 
-  <FlowChart {items} total={basis.used} {freed} {stays} ontoggle={(id) => store.toggle(id)} />
+  <FlowChart {items} total={basis.used} {freed} {stays} {stale} ontoggle={(id) => store.toggle(id)} />
 
   <div class="legend">
     <span><i style="background:var(--green)"></i>safe</span>

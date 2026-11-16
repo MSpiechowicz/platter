@@ -449,3 +449,43 @@ fn undo_waits_for_a_running_cleanup_and_quitting_does_not_wait_for_an_unanswered
         "the run will not start after the dialog"
     );
 }
+
+#[test]
+fn marked_items_are_planned_as_review_items_for_the_trash() {
+    let state = AppState::new();
+    let (_dir, root) = project();
+    let scan = scanned(&state, &root);
+    let tree = state.scans.tree(scan).unwrap();
+    let project_node = tree
+        .children(tree.root())
+        .find(|&child| tree.name(child) == b"p")
+        .unwrap();
+
+    let plan = tauri::async_runtime::block_on(plan_marked_nodes(&state, scan, vec![project_node])).unwrap();
+
+    assert_eq!(plan.groups.len(), 1);
+    let group = &plan.groups[0];
+    assert_eq!(group.rule_id, platter_cleanup::MARKED);
+    assert_eq!(group.title, "Marked in the Explorer");
+    assert_eq!((group.verdict, group.action), (Verdict::Review, ActionDto::Trash));
+    assert_eq!(group.sample_paths, [root.join("p").to_string_lossy()]);
+    assert!(plan.needs_confirmation);
+}
+
+#[test]
+fn a_marked_plan_takes_known_node_ids_only() {
+    let state = AppState::new();
+    let (_dir, root) = project();
+    let scan = scanned(&state, &root);
+    let marked = |nodes: Vec<NodeId>| tauri::async_runtime::block_on(plan_marked_nodes(&state, scan, nodes));
+
+    assert_eq!(marked(Vec::new()).unwrap_err().code(), ApiErrorCode::Invalid);
+    assert_eq!(
+        marked(vec![NodeId(1); 1001]).unwrap_err().code(),
+        ApiErrorCode::Invalid
+    );
+    assert_eq!(
+        marked(vec![NodeId(999_999)]).unwrap_err().code(),
+        ApiErrorCode::NotFound
+    );
+}

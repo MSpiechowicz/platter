@@ -28,15 +28,12 @@ export interface TestHooks {
   pick: number | null;
   /** Explorer: open on this node id. */
   focus: number | null;
+  /** Explorer: mark these children (0 is the biggest, `mark=0,2`) once the folder is shown, as a click would. */
+  mark: number[];
   /** The mock disk keeps nearly everything in one folder, and nearly all of that in one folder inside it. */
   dominant: boolean;
   /** The mock scan finishes with a warning (the mount table could not be read). */
   warn: boolean;
-  /**
-   * Overview and Cleanup, for screenshots: `review` selects every suggestion and opens the review dialog; `run`
-   * cleans the safe ones on the mock. Only the mock can ever run it (the hooks are off inside the Tauri window).
-   */
-  clean: 'review' | 'run' | null;
   /** With `view=scanning`: show the Cleanup view's Scan step instead of the plain progress screen. */
   cleanup: boolean;
 }
@@ -54,10 +51,10 @@ const NO_HOOKS: TestHooks = {
   overlays: false,
   ex: null,
   pick: null,
+  mark: [],
   focus: null,
   dominant: false,
   warn: false,
-  clean: null,
   cleanup: false,
 };
 
@@ -73,6 +70,14 @@ function wholeNumber(value: string | null): number | null {
   return Number(value);
 }
 
+/** `0,2` as numbers; anything that is not a whole number is left out. */
+function wholeNumbers(value: string | null): number[] {
+  return (value ?? '')
+    .split(',')
+    .map((part) => wholeNumber(part))
+    .filter((part): part is number => part !== null);
+}
+
 export function parseHooks(search: string, insideTauri: boolean = isInsideTauri()): TestHooks {
   if (insideTauri) {
     return { ...NO_HOOKS };
@@ -81,7 +86,6 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
   const params = new URLSearchParams(search);
   const view = params.get('view');
   const ex = params.get('ex');
-  const clean = params.get('clean');
 
   return {
     view: view !== null && VIEWS.includes(view) ? (view as HookView) : null,
@@ -94,10 +98,10 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
     overlays: params.has('overlays'),
     ex: ex === 'flat' || ex === '3d' ? ex : null,
     pick: wholeNumber(params.get('pick')),
+    mark: wholeNumbers(params.get('mark')),
     focus: wholeNumber(params.get('focus')),
     dominant: params.has('dominant'),
     warn: params.has('warn'),
-    clean: clean === 'review' || clean === 'run' ? clean : null,
     cleanup: params.has('cleanup'),
   };
 }

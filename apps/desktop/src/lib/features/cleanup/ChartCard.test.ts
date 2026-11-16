@@ -284,3 +284,179 @@ describe('ChartCard in the Clean step', () => {
     expect(ribbons()[3]?.getAttribute('fill-opacity')).toBe('0.16');
   });
 });
+
+const STALE = 'From the scan before the cleanup — rescan to update';
+const freedBar = (): Element => document.querySelector('rect.end.freed') as Element;
+const freedCaption = (): HTMLElement => document.querySelector('.cap.freed') as HTMLElement;
+
+describe('ChartCard: "Will be freed" is green', () => {
+  it('draws the bar and the caption of the freed side with the green token, not the accent', async () => {
+    const context = await fixture();
+
+    show(context);
+
+    expect(freedCaption().textContent).toBe('WILL BE FREED');
+    expect(freedBar().getAttribute('style')).toContain('var(--green)');
+    expect(freedCaption().getAttribute('style')).toContain('var(--green)');
+    expect(freedBar().getAttribute('style')).not.toContain('accent');
+    expect(freedCaption().getAttribute('style')).not.toContain('accent');
+  });
+
+  it('keeps them green while it runs and after it, and leaves the stay bar alone', async () => {
+    const context = await fixture();
+
+    show(context);
+    await context.store.cleanSelected();
+
+    expect(freedCaption().textContent).toBe('CLEANING');
+    expect(freedCaption().getAttribute('style')).toContain('var(--green)');
+
+    cleanGroup(context.send, 'target');
+    finish(context.send, context.scanId);
+    await Promise.resolve();
+
+    expect(freedCaption().textContent).toBe('FREED');
+    expect(freedBar().getAttribute('style')).toContain('var(--green)');
+    expect(document.querySelector('rect.end.stays')?.getAttribute('style')).toBeNull();
+  });
+});
+
+describe('ChartCard after a cleanup, until a rescan', () => {
+  const stale = (element: Element | null): boolean => element?.classList.contains('stale') ?? false;
+  const stat = (label: string): HTMLElement => screen.getByText(label).parentElement as HTMLElement;
+
+  it('shows the figures of the scan in full before anything ran', async () => {
+    const context = await fixture();
+
+    show(context);
+
+    expect(stale(stat('Selected to free'))).toBe(false);
+    expect(stale(stat('Disk after cleanup'))).toBe(false);
+    expect(stale(screen.getByRole('group', { name: 'Cleanup chart' }))).toBe(false);
+    expect(document.querySelector('.hero [title], .flow[title]')).toBeNull();
+  });
+
+  it('greys the hero figures and the chart, with a tooltip that says why, once the scan is outdated', async () => {
+    const context = await fixture();
+
+    show(context);
+    context.scan.markOutdated(context.scanId);
+    await Promise.resolve();
+
+    for (const element of [
+      stat('Selected to free'),
+      stat('Disk after cleanup'),
+      screen.getByRole('group', { name: 'Cleanup chart' }),
+    ]) {
+      expect(stale(element)).toBe(true);
+      expect(element.getAttribute('title')).toBe(STALE);
+    }
+
+    // The words of the legend are not figures of the scan.
+    expect(stale(document.querySelector('.legend'))).toBe(false);
+  });
+
+  it('greys the disk after the cleanup and the chart after a run, but not what the backend measured as freed', async () => {
+    const context = await fixture();
+
+    show(context);
+    await context.store.cleanSelected();
+    cleanGroup(context.send, 'target');
+    finish(context.send, context.scanId, { freed: 100 * GB });
+    await Promise.resolve();
+
+    expect(stale(stat('Freed'))).toBe(false);
+    expect(stale(stat('Disk after cleanup'))).toBe(true);
+    expect(stale(screen.getByRole('group', { name: 'Cleanup chart' }))).toBe(true);
+  });
+});
+
+describe('ChartCard with what the user marked in the Explorer', () => {
+  async function marked(): Promise<Fixture> {
+    const context = await fixture();
+
+    context.store.mark({ id: 500, allocated: 40 * GB, ancestors: [1] });
+
+    return context;
+  }
+
+  const rows = (): string[] =>
+    [...document.querySelectorAll('.rows .row')].map(
+      (item) => item.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+    );
+
+  it('shows no such group when nothing was marked or run', async () => {
+    const context = await fixture();
+
+    show(context);
+
+    expect(rows().some((text) => text.includes('Marked in the Explorer'))).toBe(false);
+  });
+
+  it('draws it as a group of its own in the review colour, not clickable, once its run starts', async () => {
+    const context = await marked();
+
+    show(context);
+    await context.store.cleanMarked();
+    await context.store.confirmReview();
+
+    expect(rows()).toContain('Marked in the Explorer 40 GB');
+    expect(document.querySelectorAll('.node.review')).toHaveLength(2);
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
+    expect(document.querySelector('.endtext')?.textContent).toContain('CLEANING 40 GB');
+  });
+
+  it('counts it in "Cleaned so far" and in what was cleaned, with the freed side showing it', async () => {
+    const context = await marked();
+
+    show(context);
+    await context.store.cleanMarked();
+    await context.store.confirmReview();
+
+    expect(within(hero()).getByText('Cleaned so far')).toBeTruthy();
+    expect(within(hero()).getByText('0 B')).toBeTruthy();
+
+    cleanGroup(context.send, 'marked');
+    await Promise.resolve();
+
+    expect(within(hero()).getByText('40 GB')).toBeTruthy();
+
+    finish(context.send, context.scanId, { freed: undefined });
+    await Promise.resolve();
+
+    // The backend could not measure what was freed: the figure is what was cleaned, from the plan.
+    expect(document.querySelector('.endtext')?.textContent).toContain('CLEANED 40 GB');
+  });
+
+  it('keeps it after the run, on the freed side, until another scan is loaded', async () => {
+    const context = await marked();
+
+    show(context);
+    await context.store.cleanMarked();
+    await context.store.confirmReview();
+    cleanGroup(context.send, 'marked');
+    finish(context.send, context.scanId, { freed: 0 });
+    await Promise.resolve();
+
+    expect(rows()).toContain('Marked in the Explorer 40 GB');
+    expect(within(hero()).getByText('Freed')).toBeTruthy();
+
+    context.store.load(context.scanId + 1, DATA);
+    await Promise.resolve();
+
+    expect(rows().some((text) => text.includes('Marked in the Explorer'))).toBe(false);
+  });
+
+  it('leaves it on the stay side when a cancelled run never reached it', async () => {
+    const context = await marked();
+
+    show(context);
+    await context.store.cleanMarked();
+    await context.store.confirmReview();
+    finish(context.send, context.scanId, { cancelled: true, freed: 0 });
+    await Promise.resolve();
+
+    expect(document.querySelector('.endtext')?.textContent).not.toContain('40 GB');
+    expect(rows()).toContain('Marked in the Explorer 40 GB');
+  });
+});

@@ -405,3 +405,142 @@ describe('undoCleanup', () => {
     await expect(api.undoCleanup(cleanup)).resolves.not.toHaveLength(0);
   });
 });
+
+/** The node at a path of the mock disk, found by name from the scan root. */
+async function nodeAt(api: Api, scan: ScanId, path: string): Promise<number> {
+  let at = 0;
+
+  for (const name of path.split('/').filter(Boolean)) {
+    const page = await api.getChildren(scan, at, 0, 50, 'nameAsc', name);
+    const child = page.items.find((item) => item.name === name);
+
+    if (!child) {
+      throw new Error(`no ${name} in ${path}`);
+    }
+
+    at = child.id;
+  }
+
+  return at;
+}
+
+describe('planMarkedCleanup', () => {
+  it('plans one review group that moves the marked items to the trash', async () => {
+    const api = createMockApi(FAST);
+    const id = await scan(api);
+    const downloads = await nodeAt(api, id, '/home/demo/Downloads');
+    const cache = await nodeAt(api, id, '/home/demo/.cache');
+    const plan = await api.planMarkedCleanup(id, [downloads, cache]);
+
+    expect(plan.scanId).toBe(id);
+    expect(plan.planId).toBeGreaterThan(0);
+    expect(plan.groups).toHaveLength(1);
+    expect(plan.groups[0]).toMatchObject({
+      ruleId: 'marked',
+      title: 'Marked in the Explorer',
+      verdict: 'review',
+      action: 'trash',
+      items: 2,
+      needsElevation: false,
+    });
+    expect(plan.groups[0]?.samplePaths.sort()).toEqual(['/home/demo/.cache', '/home/demo/Downloads']);
+    expect(plan.groups[0]).not.toHaveProperty('command');
+    expect(plan.allocated).toBe(plan.groups[0]?.allocated);
+    expect(plan.refused).toEqual([]);
+    expect(plan.needsConfirmation).toBe(true);
+  });
+
+  it('refuses what the backend refuses: the scan root, kept items, what holds or lies in them, and an item inside another', async () => {
+    const api = createMockApi(FAST);
+    const id = await scan(api);
+    const demo = await nodeAt(api, id, '/home/demo');
+    const downloads = await nodeAt(api, id, '/home/demo/Downloads');
+    const videos = await nodeAt(api, id, '/home/demo/Videos');
+    const local = await nodeAt(api, id, '/home/demo/.local');
+    const plan = await api.planMarkedCleanup(id, [0, videos, local, downloads, demo]);
+
+    const reason = (path: string) => plan.refused.find((item) => item.path === path)?.reason;
+
+    expect(reason('/')).toBe('it is the scanned folder itself');
+    expect(reason('/home/demo/Videos')).toBe('kept on purpose');
+    // Holds the Steam library, which a keep rule protects.
+    expect(reason('/home/demo/.local')).toBe('kept on purpose');
+    // The folder around everything that is left stays; the one inside it is left to it.
+    expect(reason('/home/demo')).toBe('kept on purpose');
+    expect(plan.refused.every((item) => item.ruleId === 'marked')).toBe(true);
+    expect(plan.groups.flatMap((group) => group.samplePaths)).toEqual(['/home/demo/Downloads']);
+  });
+
+  it('leaves an item inside another marked one to the outer', async () => {
+    const api = createMockApi(FAST);
+    const id = await scan(api);
+    const projekty = await nodeAt(api, id, '/home/demo/Projekty');
+    const inside = await nodeAt(api, id, '/home/demo/Projekty/web-shop');
+    const plan = await api.planMarkedCleanup(id, [inside, projekty]);
+
+    expect(plan.groups[0]?.samplePaths).toEqual(['/home/demo/Projekty']);
+    expect(plan.groups[0]?.items).toBe(1);
+    expect(plan.refused).toEqual([
+      { ruleId: 'marked', path: '/home/demo/Projekty/web-shop', reason: 'inside another item of the plan' },
+    ]);
+  });
+
+  it('counts an id named twice once', async () => {
+    const api = createMockApi(FAST);
+    const id = await scan(api);
+    const downloads = await nodeAt(api, id, '/home/demo/Downloads');
+    const plan = await api.planMarkedCleanup(id, [downloads, downloads]);
+
+    expect(plan.groups[0]?.items).toBe(1);
+  });
+
+  it('is invalid for no ids, for more than 1000, and for an outdated scan; unknown ids are not found', async () => {
+    const api = createMockApi(FAST);
+    const id = await scan(api);
+    const downloads = await nodeAt(api, id, '/home/demo/Downloads');
+
+    await expect(api.planMarkedCleanup(id, [])).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      api.planMarkedCleanup(
+        id,
+        Array.from({ length: 1001 }, () => downloads),
+      ),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    await expect(
+      api.planMarkedCleanup(
+        id,
+        Array.from({ length: 1000 }, () => downloads),
+      ),
+    ).resolves.toMatchObject({ groups: [{ items: 1 }] });
+    await expect(api.planMarkedCleanup(id, [downloads, 9_999_999])).rejects.toMatchObject({
+      code: 'notFound',
+    });
+    await expect(api.planMarkedCleanup(999, [downloads])).rejects.toMatchObject({ code: 'notFound' });
+
+    // A cleanup ran: the scan is outdated, and a plan for it is invalid.
+    const plan = await api.planMarkedCleanup(id, [downloads]);
+    await runPlan(api, plan);
+
+    await expect(api.planMarkedCleanup(id, [downloads])).rejects.toMatchObject({ code: 'invalid' });
+  });
+
+  it('is started, confirmed and undone like any plan: it trashes, frees nothing, and can be undone once', async () => {
+    const api = createMockApi(FAST);
+    const id = await scan(api);
+    const plan = await api.planMarkedCleanup(id, [await nodeAt(api, id, '/home/demo/Downloads')]);
+    const { id: cleanup, events, finished } = await runPlan(api, plan);
+
+    expect(events.find((event) => event.type === 'targetDone')).toMatchObject({
+      ruleId: 'marked',
+      path: '/home/demo/Downloads',
+      outcome: { kind: 'trashed' },
+    });
+    expect(finished).toMatchObject({ cleaned: 1, freed: 0, canUndo: true, outdatedScan: id });
+    await expect(api.startCleanup(plan.planId, () => {})).rejects.toMatchObject({ code: 'notFound' });
+
+    await expect(api.undoCleanup(cleanup)).resolves.toEqual([
+      { path: '/home/demo/Downloads', restored: true },
+    ]);
+    await expect(api.undoCleanup(cleanup)).rejects.toMatchObject({ code: 'notFound' });
+  });
+});

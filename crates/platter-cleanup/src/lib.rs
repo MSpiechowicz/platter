@@ -25,5 +25,5 @@ mod protect;
 pub use action::{CleanupAction, Tool, action_for};
 pub use execute::{CleanupEvent, CleanupReport, Disk, TargetOutcome, TargetResult, execute, undo};
 pub use guard::{Refusal, VerifiedTarget};
-pub use plan::{CleanupPlan, PlanGroup, Refused, plan_cleanup};
+pub use plan::{CleanupPlan, MARKED, PlanGroup, Refused, plan_cleanup, plan_marked};
 pub use protect::Protected;

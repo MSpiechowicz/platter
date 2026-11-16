@@ -45,6 +45,19 @@ describe('ResultPanel', () => {
     ]);
   });
 
+  it('draws the after bar in green, the freed space, and the before bar in the neutral colour', async () => {
+    const context = await ended({ freed: 252 * GB });
+
+    render(ResultPanel, { props: { store: context.store, basis } });
+
+    const fill = (name: string): string =>
+      screen.getByRole('progressbar', { name }).querySelector('i')?.getAttribute('style') ?? '';
+
+    expect(fill('After the cleanup')).toContain('--c: var(--green)');
+    expect(fill('Before the cleanup')).toContain('--c: var(--slate)');
+    expect(fill('After the cleanup')).not.toContain('accent');
+  });
+
   it('says so when the freed space could not be measured, and draws no after bar', async () => {
     const context = await ended({ freed: undefined });
 

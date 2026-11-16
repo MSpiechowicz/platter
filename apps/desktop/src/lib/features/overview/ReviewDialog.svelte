@@ -2,6 +2,7 @@
   import type { CleanupPlanDto, PlanGroupDto, SuggestionDto } from '../../api/types';
   import Button from '../../components/ui/Button.svelte';
   import Dialog from '../../components/ui/Dialog.svelte';
+  import { MARKED_RULE } from '../../state/cleanup.svelte';
   import { fmt } from '../../state/fmt.svelte';
   import { itemCount, reasonOf } from './advisor';
   import { actionText, planNotes } from './cleanupText';
@@ -25,7 +26,16 @@
   const safeBytes = $derived(safe.reduce((sum, group) => sum + group.allocated, 0));
   const notes = $derived(planNotes(plan, (id) => suggestions.find((item) => item.id === id)?.title ?? id));
 
+  // A group of rule matches is one item of the question; what the user marked is as many items as were marked.
+  const reviewItems = $derived(
+    review.reduce((total, group) => total + (group.ruleId === MARKED_RULE ? group.items : 1), 0),
+  );
+
   const reasonOfGroup = (group: PlanGroupDto): string | undefined => {
+    if (group.ruleId === MARKED_RULE) {
+      return 'You marked these yourself, so no rule vouches for them.';
+    }
+
     const suggestion = suggestions.find((item) => item.id === group.ruleId);
 
     return suggestion ? reasonOf(suggestion) : undefined;
@@ -47,7 +57,7 @@
 
 <Dialog
   open={plan !== undefined}
-  title="Clean {review.length} {review.length === 1 ? 'item that needs' : 'items that need'} review?"
+  title="Clean {reviewItems} {reviewItems === 1 ? 'item that needs' : 'items that need'} review?"
   description="These are not certain to be safe to remove. Check each one before you continue."
   onclose={oncancel}
 >
@@ -56,7 +66,16 @@
       <div class="di">
         <span class="what">
           {visibleText(group.title)}
-          <span class="mono" title={group.samplePaths.map(visibleText).join('\n')}>{where(group)}</span>
+          {#if group.ruleId === MARKED_RULE}
+            {#each group.samplePaths as path, index (index)}
+              <span class="mono path">{shownPath(path, 48)}</span>
+            {/each}
+            {#if group.items > group.samplePaths.length}
+              <span class="mono path">… and {group.items - group.samplePaths.length} more</span>
+            {/if}
+          {:else}
+            <span class="mono" title={group.samplePaths.map(visibleText).join('\n')}>{where(group)}</span>
+          {/if}
         </span>
         <b class="num">{fmt.size(group.allocated)}</b>
         <small>{reasonOfGroup(group) ?? itemCount(group.items)}</small>
@@ -114,6 +133,11 @@
   .di .mono {
     font-size: 11px;
     color: var(--dim);
+  }
+
+  /* The items the user marked are listed one under the other. */
+  .di .path {
+    display: block;
   }
 
   .di small {

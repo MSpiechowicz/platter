@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { COLLAPSED_NODE_ID } from '../../api/client';
   import type { NodeDto, NodeId } from '../../api/types';
   import Loading from '../../components/ui/Loading.svelte';
@@ -10,6 +11,7 @@
   import type { Column, ColumnsLayout } from './layout/columns';
   import { formatShare } from './layout/scale';
   import { fitTitle } from './layout/text';
+  import { tileMarked } from './marking';
   import MapMessage from './MapMessage.svelte';
   import { LabelLayer } from './three/labelLayer';
   import type { ColumnsScene, SceneFrame } from './three/scene';
@@ -28,11 +30,27 @@
     onclear: () => void;
     /** The "smaller items" column was chosen: the node it stands for and the items merged into it. */
     ongroup: (node: NodeDto, members: readonly NodeId[]) => void;
+    /** The folders the user marked for cleanup: the label of a column that stands for one has a dashed border. */
+    marked?: ReadonlySet<NodeId>;
+    /** The columns (by the id of their first folder) that are safe to clean: a green label border and a SAFE tag. */
+    safe?: ReadonlySet<NodeId>;
     /** The 3D engine could not start; the page falls back to the flat map. */
     onfail: (message: string) => void;
   }
 
-  let { layout, colors, selected, hovered, onchoose, onhover, onclear, ongroup, onfail }: Props = $props();
+  let {
+    layout,
+    colors,
+    selected,
+    hovered,
+    onchoose,
+    onhover,
+    onclear,
+    ongroup,
+    marked = new SvelteSet(),
+    safe = new SvelteSet(),
+    onfail,
+  }: Props = $props();
 
   let host: HTMLDivElement | undefined = $state();
   let connectors: SVGSVGElement | undefined = $state();
@@ -44,8 +62,12 @@
   /** The tooltip: the whole label, the size, and the true share of a column drawn larger than it is. */
   function tip(column: Column): string {
     const share = column.boosted ? ` · ${formatShare(column.share)} of this folder` : '';
+    const states = [
+      ...(safe.has(column.node.id) ? ['safe to clean'] : []),
+      ...(tileMarked(column, marked) ? ['marked for cleanup'] : []),
+    ];
 
-    return `${column.label} · ${fmt.size(column.node.allocated)}${share}`;
+    return [`${column.label} · ${fmt.size(column.node.allocated)}${share}`, ...states].join(' · ');
   }
 
   /** The label of a column: a chain is written whole when it fits, else by its first folder, cut at the end if need be. */
@@ -163,14 +185,20 @@
           class="lb"
           class:sel={column.top === selected}
           class:dim={selected !== null && column.top !== selected}
+          class:safe={safe.has(column.node.id)}
+          class:mk={tileMarked(column, marked)}
           aria-pressed={column.top === selected}
+          aria-label={tip(column)}
           title={tip(column)}
           use:track={column.top}
           onclick={() => onchoose(column.top)}
           onfocus={() => onhover(column.top)}
           onblur={() => onhover(null)}
         >
-          <b>{labelOf(column)}</b><span class="num">{fmt.size(column.node.allocated)}</span>
+          <b>{labelOf(column)}</b><span class="num"
+            >{#if safe.has(column.node.id)}<i class="tag">SAFE</i> ·
+            {/if}{fmt.size(column.node.allocated)}</span
+          >
         </button>
       {/if}
     {/each}
@@ -255,8 +283,26 @@
     opacity: 0.35;
   }
 
+  .lb.safe {
+    border-color: var(--green) !important;
+  }
+
   .lb.sel {
     border-color: #fff !important;
+  }
+
+  /* Marked for cleanup: a dashed border, over the others. */
+  .lb.mk {
+    border-style: dashed;
+    border-color: #fff !important;
+  }
+
+  .lb .tag {
+    font-style: normal;
+    font-weight: 700;
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    color: var(--green);
   }
 
   .lb:focus-visible {

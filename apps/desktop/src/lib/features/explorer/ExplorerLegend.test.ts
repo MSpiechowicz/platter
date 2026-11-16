@@ -27,3 +27,22 @@ describe('ExplorerLegend', () => {
     ).toBeTruthy();
   });
 });
+
+describe('ExplorerLegend keys', () => {
+  it('has "Safe to clean", "Marked for cleanup" and "Selected", in both views', () => {
+    for (const view of ['flat', '3d'] as const) {
+      const { unmount } = render(ExplorerLegend, { props: { view } });
+
+      expect(screen.getByText('Safe to clean')).toBeTruthy();
+      expect(screen.getByText('Marked for cleanup')).toBeTruthy();
+      expect(screen.getByText('Selected')).toBeTruthy();
+      unmount();
+    }
+  });
+
+  it('says so when the open folder is inside a marked one', () => {
+    render(ExplorerLegend, { props: { view: 'flat', insideMarked: true } });
+
+    expect(screen.getByText('This folder is inside one that is marked for cleanup')).toBeTruthy();
+  });
+});

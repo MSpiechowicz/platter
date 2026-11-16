@@ -200,12 +200,12 @@ describe('AdvisorCard', () => {
   it('shows the title, the path, the reason and the size of every suggestion', () => {
     show(context);
 
-    const row = screen.getByRole('button', { name: /Title of snapshots/ });
+    const row = screen.getByText('Title of snapshots').closest('.sug') as HTMLElement;
 
     expect(within(row).getByText('Title of snapshots')).toBeTruthy();
     expect(within(row).getByText('~/snapshots')).toBeTruthy();
     expect(within(row).getByText('Reason of snapshots.')).toBeTruthy();
-    expect(screen.getAllByText('268 GB').length).toBeGreaterThan(0);
+    expect(within(row).getByText('268 GB')).toBeTruthy();
   });
 
   it('gives each row that can be cleaned a checkbox: safe ticked, review not, kept none', () => {
@@ -278,23 +278,102 @@ describe('AdvisorCard', () => {
     expect(button('Clean safe · 105 GB').disabled).toBe(false);
   });
 
-  it('opens the Explorer on the largest matched node when a row is clicked', async () => {
+  it('ticks and unticks a row when its text is clicked: the whole row is the label of its checkbox', async () => {
+    show(context);
+
+    expect(checkbox('Title of snapshots').checked).toBe(false);
+
+    await fireEvent.click(screen.getByText('Title of snapshots'));
+    expect(checkbox('Title of snapshots').checked).toBe(true);
+    expect(screen.getByText('3 of 3 selected')).toBeTruthy();
+
+    await fireEvent.click(screen.getByText('Reason of snapshots.'));
+    expect(checkbox('Title of snapshots').checked).toBe(false);
+
+    await fireEvent.click(screen.getByText('~/target'));
+    expect(checkbox('Title of target').checked).toBe(false);
+  });
+
+  it('does nothing when the text of a kept row is clicked: it has no checkbox and does not open the Explorer', async () => {
     const onopen = vi.fn();
 
     show(context, { onopen });
 
-    await fireEvent.click(screen.getByRole('button', { name: /Title of target/ }));
-    await fireEvent.click(screen.getByRole('button', { name: /Title of steam/ }));
+    await fireEvent.click(screen.getByText('Title of steam'));
+    await fireEvent.click(screen.getByText('Reason of steam.'));
 
-    expect(onopen.mock.calls).toEqual([[11], [15]]);
+    expect(onopen).not.toHaveBeenCalled();
+    expect(screen.getByText('2 of 3 selected')).toBeTruthy();
   });
 
-  it('does not tick or untick a row when its text is clicked', async () => {
-    show(context);
+  it('opens the Explorer from a small button of its own on every row, on the largest matched node', async () => {
+    const onopen = vi.fn();
 
-    await fireEvent.click(screen.getByRole('button', { name: /Title of target/ }));
+    show(context, { onopen });
 
+    // Kept rows have one too: nothing is ticked or cleaned by it.
+    await fireEvent.click(screen.getByRole('button', { name: 'Open Title of target in the Explorer' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Open Title of steam in the Explorer' }));
+
+    expect(onopen.mock.calls).toEqual([[11], [15]]);
+    expect(screen.getAllByRole('button', { name: /in the Explorer$/ })).toHaveLength(4);
+  });
+
+  it('does not tick the row when its Explorer button is clicked, and does not open the Explorer from the text', async () => {
+    const onopen = vi.fn();
+
+    show(context, { onopen });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Open Title of snapshots in the Explorer' }));
+
+    expect(onopen).toHaveBeenCalledWith(14);
+    expect(checkbox('Title of snapshots').checked).toBe(false);
+
+    await fireEvent.click(screen.getByText('Title of snapshots'));
+
+    expect(onopen).toHaveBeenCalledOnce();
+    expect(checkbox('Title of snapshots').checked).toBe(true);
+  });
+
+  it('leaves a suggestion without a node nothing to open', () => {
+    show(context, {
+      suggestions: { ...DATA, suggestions: [suggestion('empty', 'safe', 1, [])], totals: DATA.totals },
+    });
+
+    expect((button('Open Title of empty in the Explorer') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('lets a disabled row neither tick nor open while a cleanup runs', async () => {
+    const context = await fixture(safePlan);
+    const onopen = vi.fn();
+
+    show(context, { onopen });
+    await fireEvent.click(button('Clean selected (2)'));
+    await waitFor(() => expect(context.api.startCleanup).toHaveBeenCalled());
+
+    await fireEvent.click(screen.getByText('Title of snapshots'));
+    await fireEvent.click(screen.getByText('Title of target'));
+    await fireEvent.click(screen.getByRole('button', { name: 'Open Title of target in the Explorer' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Open Title of steam in the Explorer' }));
+
+    expect(checkbox('Title of snapshots').checked).toBe(false);
     expect(checkbox('Title of target').checked).toBe(true);
+    expect((button('Open Title of target in the Explorer') as HTMLButtonElement).disabled).toBe(true);
+    expect(onopen).not.toHaveBeenCalled();
+  });
+
+  it('lets a disabled row neither tick nor open while the scan is outdated', async () => {
+    const onopen = vi.fn();
+
+    show(context, { onopen });
+    context.scan.markOutdated(context.scanId);
+    await waitFor(() => expect(checkbox('Title of target').disabled).toBe(true));
+
+    await fireEvent.click(screen.getByText('Title of snapshots'));
+    await fireEvent.click(screen.getByRole('button', { name: 'Open Title of snapshots in the Explorer' }));
+
+    expect(checkbox('Title of snapshots').checked).toBe(false);
+    expect(onopen).not.toHaveBeenCalled();
   });
 
   it('says so in one sentence when there is nothing to suggest, and keeps the footer, disabled', () => {
@@ -564,6 +643,74 @@ describe('AdvisorCard cleaning', () => {
     expect(button('Clean selected (2)').disabled).toBe(true);
     expect(checkbox('Title of target').disabled).toBe(true);
     expect(button('Rescan')).toBeTruthy();
+  });
+
+  it('greys out the group sums and the row sizes once the scan is outdated, with a tooltip, and nothing else', async () => {
+    const context = await fixture(safePlan);
+    const note = 'From the scan before the cleanup — rescan to update';
+
+    show(context);
+
+    const sizes = (): HTMLElement[] => [
+      screen.getByText('2 items · 105 GB'),
+      screen.getByText('88 GB'),
+      screen.getByText('268 GB', { selector: 'b' }),
+    ];
+
+    for (const element of sizes()) {
+      expect(element.classList.contains('stale')).toBe(false);
+      expect(element.getAttribute('title')).toBeNull();
+    }
+
+    context.scan.markOutdated(context.scanId);
+
+    await waitFor(() => expect(sizes()[0]?.classList.contains('stale')).toBe(true));
+
+    for (const element of sizes()) {
+      expect(element.classList.contains('stale')).toBe(true);
+      expect(element.getAttribute('title')).toBe(note);
+    }
+
+    for (const text of ['Title of target', '~/target', 'Reason of target.']) {
+      expect(screen.getByText(text).closest('.stale')).toBeNull();
+    }
+  });
+
+  it('does not grey a size twice when its row is already shown as cleaned', async () => {
+    const context = await fixture(safePlan);
+
+    show(context);
+    await fireEvent.click(button('Clean selected (2)'));
+    await waitFor(() => expect(context.api.startCleanup).toHaveBeenCalled());
+    context.send({ type: 'groupStarted', ruleId: 'target', targets: 1 });
+    context.send({
+      type: 'targetDone',
+      ruleId: 'target',
+      path: '/home/demo/target',
+      allocated: 1,
+      outcome: { kind: 'removed', problems: 0 },
+    });
+    context.send({ type: 'groupFinished', ruleId: 'target' });
+    context.send({
+      type: 'finished',
+      cleanupId: 77,
+      outdatedScan: context.scanId,
+      cleaned: 1,
+      withProblems: 0,
+      freed: 1,
+      cancelled: false,
+      toolsNotRun: [],
+      canUndo: false,
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText('Title of target').closest('.sug')?.classList).toContain('done'),
+    );
+
+    const done = screen.getByText('88 GB');
+
+    expect(done.classList.contains('stale')).toBe(false);
+    expect(screen.getByText('268 GB', { selector: 'b' }).classList.contains('stale')).toBe(true);
   });
 
   it('shows the refusals and the rules that matched nothing as plain text, not hidden', async () => {

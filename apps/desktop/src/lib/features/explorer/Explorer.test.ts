@@ -217,16 +217,19 @@ describe('the Explorer', () => {
     expect(screen.getByRole('heading', { name: 'Selected' })).toBeTruthy();
   });
 
-  it('shows nothing from the cleanup milestone', async () => {
+  it('has the marking controls from the start, off where they do not apply, and nothing marked', async () => {
     render(Explorer, { props: {} });
     await within(await screen.findByLabelText('Map of the open folder')).findByRole('button', {
       name: /^home \/ demo, /,
     });
-    await fireEvent.click(tile(/^home \/ demo, /));
 
-    expect(screen.queryByText(/safe to clean|marked for cleanup|mark for cleanup|unmark/i)).toBeNull();
-    expect(screen.queryByRole('checkbox')).toBeNull();
-    expect(screen.queryByRole('button', { name: /clean/i })).toBeNull();
+    // The scan root is never marked; both buttons are there all the same, so the card never changes.
+    expect((screen.getByRole('button', { name: 'Mark for cleanup' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByRole('button', { name: 'Open folder' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('MARKED FOR CLEANUP')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Clean' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('Selected', { selector: 'span' })).toBeTruthy();
   });
 
@@ -564,7 +567,7 @@ describe('the Explorer', () => {
       const footer = await screen.findByRole('button', { name: /items not counted/ });
 
       expect(footer.textContent).toContain('10 items not counted');
-      expect(screen.queryByText('0 B')).toBeNull();
+      expect(within(document.querySelector('.rows') as HTMLElement).queryByText('0 B')).toBeNull();
 
       await fireEvent.click(footer);
 
@@ -576,7 +579,7 @@ describe('the Explorer', () => {
       expect(why).toContainEqual(['root', 'no access']);
       expect(why).toContainEqual(['boot', 'other disk']);
       expect(why).toContainEqual(['srv', 'empty']);
-      expect(screen.queryByText('0 B')).toBeNull();
+      expect(within(document.querySelector('.rows') as HTMLElement).queryByText('0 B')).toBeNull();
     });
   });
 });

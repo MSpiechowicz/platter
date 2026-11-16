@@ -50,7 +50,7 @@ These come from the owner's feedback during design and the first build. Breaking
 **Design**
 
 - Match the mockup. If a feature is not built yet, leave its controls out; never show fake data or dead buttons. Do not rearrange an approved layout to fill a gap; ask.
-- Flat styling: no gradients, no glows. One accent colour (`--accent`). Green means "safe" and nothing else.
+- Flat styling: no gradients, no glows. One accent colour (`--accent`). Green means "safe", and "freed" (what safe and chosen items free; owner decision 2026-11-16); nothing else.
 - Cards in a row end at the same height. No empty space inside a card, and no stretching row spacing to fill one.
 - One left edge and one right edge per card: titles, inputs, dots, numbers and separators line up. Measure it.
 - No layout shift on hover, selection, or when a scrollbar appears.
@@ -204,7 +204,7 @@ Design decisions already made with the owner:
 - Add the "Already freed" row to the Reclaimable card.
 - Pixel rules from the mockup: checkbox, title, path and reason start on one vertical line; the segmented "Select" control is not clipped on the right; the status text is vertically centred against the total.
 - Compare against `screens/target-overview.png` and `target-overview-confirm.png`.
-- **Status (2026-11-16):** built. `state/cleanup.svelte.ts` (selection, plan, review dialog, run with events, cancel, undo, rescan, session total freed), `features/overview/{AdvisorCard,ReviewDialog,ReclaimableCard}.svelte`, `cleanupText.ts`, `display.ts` (control and bidi characters shown as `\u{…}`, paths shortened in the middle), `components/ui/Checkbox.svelte`, `Segmented` `size="sm"`. Measured in headless Chrome against the targets: one left edge for title, path and reason, one right edge, no layout shift between idle, running and done. Deviations: the row text still opens the Explorer (the checkbox ticks); the footer status area is 60 px; each dialog row says what its action does. URL hook `?clean=review|run` (ignored in the app window). Not checked in WebKitGTK; the native confirmation not yet seen by the owner.
+- **Status (2026-11-16):** built. `state/cleanup.svelte.ts` (selection, plan, review dialog, run with events, cancel, undo, rescan, session total freed), `features/overview/{AdvisorCard,ReviewDialog,ReclaimableCard}.svelte`, `cleanupText.ts`, `display.ts` (control and bidi characters shown as `\u{…}`, paths shortened in the middle), `components/ui/Checkbox.svelte`, `Segmented` `size="sm"`. Measured in headless Chrome against the targets: one left edge for title, path and reason, one right edge, no layout shift between idle, running and done. Deviations: the row text still opens the Explorer (the checkbox ticks); the footer status area is 60 px; each dialog row says what its action does. Not checked in WebKitGTK; the native confirmation not yet seen by the owner.
 
 #### C6. Cleanup view
 
@@ -215,6 +215,8 @@ Design decisions already made with the owner:
 - Port the flow layout from `docs/mockups/c-orb.html` (`drawFlow`) into a pure module with tests; thin groups get a minimum height so they can be read and clicked.
 - **Status (2026-11-16):** built. `features/cleanup/` (`flow.ts` ported from `drawFlow` with 30 tests; `FlowChart`, `ChartCard`, `StepBar`, `ScanStep`, `ResultPanel`, `CleanupPage`), `features/overview/AdvisorList.svelte` shared by the Overview and the Cleanup view (one store, so a run started in either shows in both), nav item "Cleanup". Measured in headless Chrome: the step bar is as wide as the right panel, card bottoms aligned, the chart fills its card; the Overview is pixel-identical apart from the new nav item. Deviations: "Will be freed" and the done steps use the accent colour, not green (green means safe only); the right-hand bars keep ribbon thickness. Open questions for the owner: green or accent for "Will be freed"; whether a finished run ticks all three steps. Not checked in WebKitGTK. Hooks: `view=cleanup`, `view=scanning&cleanup`.
 
+- **Owner decisions (2026-11-16), applied:** "Will be freed" (bar, caption, freed part of the result bars) is green: it is the space the safe and chosen items free, and green reads as "freed" at a glance; a finished run ticks all three steps (kept as built); clicking an Advisor row's text ticks it, as in the mockup, and opening the Explorer moves to its own small control; after a cleanup the Reclaimable figures and the Advisor sums are greyed out until a rescan (no guessed subtraction); the `?clean=` URL hook is removed.
+
 #### C7. Mark for cleanup in the Explorer
 
 - **From the audit:** mark by node id only; the backend derives the path, forces `review` and `trash`; the identity-based protected places (done) apply.
@@ -224,6 +226,7 @@ Design decisions already made with the owner:
 - Footer under the list: "Marked for cleanup", total, "Clean (n)", same review dialog.
 - A marked folder shows a dashed outline on the map; the legend gains "Marked for cleanup" and "Safe to clean" (green outline with a SAFE tag on the topmost fully safe folder).
 - Marking an arbitrary folder is not covered by a rule: its verdict is `review` and it always goes through the dialog and the trash.
+- **Status (2026-11-16):** built. Backend `platter_cleanup::plan_marked` and `plan_marked_cleanup` (the guard as for rules; kept items, items inside or holding them, and a scan inside a kept folder refused; nested marks reduced to the outer one). Explorer: "Mark for cleanup" / "Unmark" in the details card (disabled with a reason where it does not apply), a checkbox or a lock with KEPT per row, the "Marked for cleanup" footer with "Clean (n)" through the shared review dialog, confirmation, progress, undo and rescan; dashed outline for marked folders and a green outline with a SAFE tag for the topmost safe folder on the flat map (3D: labels only). "Show in file manager" is an icon so the card keeps its height. A folder that only holds something kept shows a checkbox and is refused after planning. Not checked in WebKitGTK.
 
 ---
 

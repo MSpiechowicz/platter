@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { motion } from '../../state/motion.svelte';
   import { fmt } from '../../state/fmt.svelte';
+  import { STALE_TEXT } from '../overview/cleanupText';
   import {
     blendLayouts,
     canBlend,
@@ -20,11 +21,13 @@
     /** The caption and the figure of each bar on the right. A missing figure is said so. */
     freed: { caption: string; value: string | undefined };
     stays: { caption: string; value: string | undefined };
+    /** The sizes are the scan's from before a cleanup: the chart is greyed out, with a tooltip that says so. */
+    stale?: boolean;
     /** A group was clicked: it moves to the other side. */
     ontoggle: (id: string) => void;
   }
 
-  let { items, total, freed, stays, ontoggle }: Props = $props();
+  let { items, total, freed, stays, stale = false, ontoggle }: Props = $props();
 
   /** The ribbons glide to their new places in this long when a group changes sides. */
   const GLIDE_MS = 380;
@@ -94,7 +97,15 @@
   }
 </script>
 
-<div class="flow" bind:clientWidth={width} bind:clientHeight={height} role="group" aria-label="Cleanup chart">
+<div
+  class="flow"
+  class:stale
+  title={stale ? STALE_TEXT : undefined}
+  bind:clientWidth={width}
+  bind:clientHeight={height}
+  role="group"
+  aria-label="Cleanup chart"
+>
   {#if shown.nodes.length > 0}
     <svg
       width={shown.width}
@@ -136,6 +147,7 @@
       {#if shown.freed}
         <rect
           class="end freed"
+          style="fill:var(--green)"
           x={shown.endX}
           y={shown.freed.y}
           width={shown.barW}
@@ -198,7 +210,7 @@
 
       {#if shown.freed}
         <div class="endtext" style="top:{endTop(shown.freed)}px;left:{shown.endX + shown.barW + 12}px">
-          <span class="cap freed">{freed.caption}</span>
+          <span class="cap freed" style="color:var(--green)">{freed.caption}</span>
           <b class="num">{freed.value ?? 'Not measured'}</b>
         </div>
       {/if}
@@ -258,11 +270,7 @@
     cursor: pointer;
   }
 
-  /* The bars where the ribbons end. "Will be freed" mixes safe and review groups, so it is not green. */
-  .end.freed {
-    fill: var(--accent);
-  }
-
+  /* The bars where the ribbons end. "Will be freed" is green (set on the element): the space that goes. */
   .end.stays {
     fill: var(--slate);
   }
@@ -336,10 +344,6 @@
     letter-spacing: 0.1em;
     font-weight: 600;
     color: var(--muted);
-  }
-
-  .cap.freed {
-    color: var(--accent);
   }
 
   .none {

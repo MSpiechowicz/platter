@@ -1,10 +1,14 @@
 <script lang="ts">
+  import { tick, type Snippet } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import type { NodeDto, NodeId, SortKey } from '../../api/types';
   import Card from '../../components/ui/Card.svelte';
+  import Checkbox from '../../components/ui/Checkbox.svelte';
   import Dropdown from '../../components/ui/Dropdown.svelte';
   import { formatCount } from '../../format';
   import { fmt } from '../../state/fmt.svelte';
+  import { visibleText } from '../overview/display';
+  import { FULL_TEXT, itemOff, KEPT_TEXT } from './marking';
   import { moveFocus } from './roving';
   import { countLabels, normalizeQuery, segments } from './search';
 
@@ -45,6 +49,18 @@
     allTotal?: number;
     /** How many of them are loaded, counted or not. */
     loaded?: number;
+    /** The items the user marked for cleanup. */
+    marked?: ReadonlySet<NodeId>;
+    /** A keep suggestion covers the item: it shows a lock and "KEPT" instead of a checkbox. */
+    isKept?: (id: NodeId) => boolean;
+    /** Why no item can be marked or unmarked now (a cleanup runs, the scan is outdated, ...); `undefined` when they can. */
+    markOff?: string;
+    /** The most items are marked: the ones that are not marked cannot be ticked. */
+    markFull?: boolean;
+    /** A checkbox was ticked or cleared. Without it the rows have no checkboxes. */
+    onmark?: (node: NodeDto, on: boolean) => void;
+    /** What goes under the rows, inside the card (the marked total and "Clean"). */
+    bottom?: Snippet;
     onquery?: (query: string) => void;
     onsort: (sort: SortKey) => void;
     onchoose: (id: NodeId) => void;
@@ -76,6 +92,12 @@
     groupTruncated = false,
     allTotal = 0,
     loaded = 0,
+    marked = new SvelteSet(),
+    isKept = () => false,
+    markOff,
+    markFull = false,
+    onmark,
+    bottom,
     onquery,
     onsort,
     onchoose,
@@ -265,6 +287,36 @@
   function onkeydown(event: KeyboardEvent): void {
     moveFocus(event, [...(list?.querySelectorAll<HTMLElement>('.row') ?? [])]);
   }
+
+  // Only one row's checkbox is in the tab order too: the one of the row that was focused last.
+  let focusedRow = $state<NodeId | null>(null);
+
+  const boxTab = (id: NodeId): number => (id === (focusedRow ?? tabbable) ? 0 : -1);
+
+  /** Why an item's checkbox is off, or `undefined`. A ticked box is always off while marking is, but never refused for being full. */
+  function boxOff(item: NodeDto): string | undefined {
+    if (markOff !== undefined) {
+      return markOff;
+    }
+
+    const never = itemOff(item);
+
+    if (never !== undefined) {
+      return never;
+    }
+
+    return markFull && !marked.has(item.id) ? FULL_TEXT : undefined;
+  }
+
+  async function tickBox(event: Event, item: NodeDto): Promise<void> {
+    const box = event.currentTarget as HTMLInputElement;
+
+    onmark?.(item, box.checked);
+
+    // The store may have said no: the box shows what is marked, not what was clicked.
+    await tick();
+    box.checked = marked.has(item.id);
+  }
 </script>
 
 <Card class="child-list" grow>
@@ -319,29 +371,65 @@
       {/if}
 
       {#each items as item (item.id)}
-        <button
-          type="button"
-          class="row"
+        {@const kept = isKept(item.id)}
+        {@const off = boxOff(item)}
+        <div
+          class="item"
           class:sel={item.id === selected || highlighted.has(item.id)}
           class:hot={item.id === hovered}
-          style="--c:{colorOf(item.id)}"
-          data-id={item.id}
-          aria-pressed={item.id === selected}
-          tabindex={item.id === tabbable ? 0 : -1}
-          onclick={() => onchoose(item.id)}
-          {onkeydown}
-          onmouseenter={() => onhover(item.id)}
-          onmouseleave={() => onhover(null)}
+          data-item={item.id}
+          onfocusin={() => (focusedRow = item.id)}
         >
-          <i class="dot"></i>
-          <span class="nm" title={item.name}
-            >{#each segments(item.name, needle) as part, index (index)}{#if part.hit}<mark>{part.text}</mark
-                >{:else}{part.text}{/if}{/each}</span
+          {#if kept}
+            <span class="lock" role="img" aria-label={KEPT_TEXT} title={KEPT_TEXT}>
+              <svg viewBox="0 0 16 16" aria-hidden="true"
+                ><rect x="3.5" y="7" width="9" height="6.5" rx="1.5" /><path
+                  d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"
+                /></svg
+              >
+            </span>
+          {:else if onmark}
+            <span class="box" title={off}>
+              <Checkbox
+                checked={marked.has(item.id)}
+                disabled={off !== undefined}
+                tabindex={boxTab(item.id)}
+                aria-label="Mark {visibleText(item.name)} for cleanup"
+                onchange={(event) => void tickBox(event, item)}
+              />
+            </span>
+          {:else}
+            <span class="box"></span>
+          {/if}
+
+          <button
+            type="button"
+            class="row"
+            class:sel={item.id === selected || highlighted.has(item.id)}
+            class:hot={item.id === hovered}
+            style="--c:{colorOf(item.id)}"
+            data-id={item.id}
+            aria-pressed={item.id === selected}
+            tabindex={item.id === tabbable ? 0 : -1}
+            onclick={() => onchoose(item.id)}
+            onmouseenter={() => onhover(item.id)}
+            onmouseleave={() => onhover(null)}
+            {onkeydown}
           >
-          <span class="bar" aria-hidden="true"><i style="width:{(item.allocated / largest) * 100}%"></i></span
-          >
-          <b class="num">{fmt.size(item.allocated)}</b>
-        </button>
+            <span class="name">
+              <span class="nm" title={visibleText(item.name)}
+                >{#each segments(visibleText(item.name), needle) as part, index (index)}{#if part.hit}<mark
+                      >{part.text}</mark
+                    >{:else}{part.text}{/if}{/each}</span
+              >
+              {#if kept}<span class="kept">Kept</span>{/if}
+            </span>
+            <span class="bar" aria-hidden="true"
+              ><i style="width:{(item.allocated / largest) * 100}%"></i></span
+            >
+            <b class="num">{fmt.size(item.allocated)}</b>
+          </button>
+        </div>
       {/each}
 
       {#if nothingFound}
@@ -367,8 +455,8 @@
             {#each uncounted as item (item.id)}
               <div class="row off" data-uncounted={item.id}>
                 <i class="dot"></i>
-                <span class="nm" title={item.name}
-                  >{#each segments(item.name, needle) as part, index (index)}{#if part.hit}<mark
+                <span class="nm" title={visibleText(item.name)}
+                  >{#each segments(visibleText(item.name), needle) as part, index (index)}{#if part.hit}<mark
                         >{part.text}</mark
                       >{:else}{part.text}{/if}{/each}</span
                 >
@@ -393,6 +481,8 @@
       {#if moreError}<p class="note">{moreError}</p>{/if}
     </div>
   </div>
+
+  {@render bottom?.()}
 </Card>
 
 <style>
@@ -579,25 +669,26 @@
     margin-left: 8px;
   }
 
-  .row {
+  /*
+   * One item: a column for the checkbox (or the lock), then the button that selects it. The checkbox is not inside the
+   * button (a button holds no other control), so the highlight is drawn by the item and reaches both.
+   */
+  .item {
     position: relative;
     isolation: isolate;
     display: grid;
-    grid-template-columns: 10px minmax(0, 1fr) 64px 56px;
+    grid-template-columns: 16px minmax(0, 1fr);
     gap: 10px;
     align-items: center;
-    width: 100%;
-    padding: 10px 0;
     font-size: 13px;
-    text-align: left;
   }
 
-  .row + .row {
+  .item + .item {
     border-top: 1px solid var(--line);
   }
 
   /* The highlight reaches 8 px past the content on both sides; the content does not move. */
-  .row::before {
+  .item::before {
     content: '';
     position: absolute;
     inset: 0 -8px;
@@ -605,19 +696,61 @@
     border-radius: 6px;
   }
 
-  .row:hover::before,
-  .row.hot::before,
-  .row.sel::before {
+  .item:hover::before,
+  .item.hot::before,
+  .item.sel::before {
     background: #ffffff0a;
+  }
+
+  .item:has(.row:focus-visible)::before {
+    background: #ffffff0a;
+    box-shadow: 0 0 0 1.5px var(--accent);
+  }
+
+  .box,
+  .lock {
+    display: grid;
+    align-items: center;
+    height: 14px;
+  }
+
+  /* The box is 14 px in a 16 px column; its left edge is the column's. */
+  .box :global(.chk-wrap) {
+    margin-left: 0;
+  }
+
+  .lock {
+    color: var(--dim);
+  }
+
+  /* The lock is drawn inside its square: it is moved out so that its stroke, not its square, is on the left edge. */
+  .lock svg {
+    width: 14px;
+    height: 14px;
+    margin-left: -2px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 64px 56px;
+    gap: 10px;
+    align-items: center;
+    min-width: 0;
+    padding: 10px 0;
+    font-size: 13px;
+    text-align: left;
+  }
+
+  .row.off + .row.off {
+    border-top: 1px solid var(--line);
   }
 
   .row:focus-visible {
     outline: none;
-  }
-
-  .row:focus-visible::before {
-    background: #ffffff0a;
-    box-shadow: 0 0 0 1.5px var(--accent);
   }
 
   .dot {
@@ -627,12 +760,29 @@
     background: var(--c);
   }
 
+  /* The name is cut at its end; "KEPT" after it always stays. */
+  .name {
+    display: flex;
+    align-items: baseline;
+    min-width: 0;
+  }
+
   .nm {
+    min-width: 0;
     font-family: var(--mono);
     font-size: 12.5px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .kept {
+    flex: none;
+    margin-left: 8px;
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
   }
 
   /* What was searched for: bold, and underlined in the accent colour. No background. */
@@ -664,9 +814,9 @@
     font-weight: 600;
   }
 
-  .row:hover .nm,
-  .row.hot .nm,
-  .row.sel .nm {
+  .item:hover .nm,
+  .item.hot .nm,
+  .item.sel .nm {
     color: #fff;
   }
 
@@ -703,7 +853,9 @@
 
   /* Rows with no size: dimmer than the rest, no bar, the reason where the size would be. */
   .row.off {
-    grid-template-columns: 10px minmax(0, 1fr) auto;
+    position: relative;
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
     cursor: default;
   }
 

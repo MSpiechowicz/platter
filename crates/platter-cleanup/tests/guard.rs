@@ -394,3 +394,122 @@ fn a_file_modified_after_the_scan_or_a_project_whose_marker_is_gone_is_refused()
         "{why:?}"
     );
 }
+
+mod marked {
+    use super::*;
+    use platter_cleanup::{MARKED, plan_marked};
+    use platter_core::NodeId;
+
+    fn node(tree: &Tree, path: &str) -> NodeId {
+        let mut current = tree.root();
+        for part in path.split('/').filter(|part| !part.is_empty()) {
+            current = tree
+                .children(current)
+                .find(|&child| tree.name(child) == part.as_bytes())
+                .expect("the path exists");
+        }
+        current
+    }
+
+    fn marked_fs() -> FakeFs {
+        let mut fs = FakeFs::new();
+        aged(&mut fs, "/home/u/old/stuff/a.bin", 100, 10);
+        aged(&mut fs, "/home/u/old/stuff/inner/b.bin", 50, 10);
+        aged(&mut fs, "/home/u/Documents/thesis/draft.odt", 10, 10);
+        aged(
+            &mut fs,
+            "/home/u/games/.local/share/Steam/steamapps/common/G/g.pak",
+            10,
+            10,
+        );
+        fs.symlink("/home/u/link", 1);
+        aged(&mut fs, "/home/u/.ssh/id_ed25519", 1, 10);
+        fs
+    }
+
+    #[test]
+    fn a_marked_folder_goes_to_the_trash_as_a_review_item() {
+        let fs = marked_fs();
+        let tree = scan_at(&fs, "/");
+
+        let plan = plan_marked(
+            &tree,
+            &env(),
+            &RuleSet::builtin(),
+            &[node(&tree, "home/u/old/stuff")],
+            &fs,
+        );
+
+        assert_eq!(plan.groups().len(), 1);
+        let group = &plan.groups()[0];
+        assert_eq!(
+            (group.rule_id(), group.verdict(), group.action()),
+            (MARKED, Verdict::Review, CleanupAction::Trash)
+        );
+        assert_eq!(paths(&plan), ["/home/u/old/stuff"]);
+        assert_eq!(plan.allocated, 150);
+    }
+
+    #[test]
+    fn protected_kept_linked_and_nested_marks_are_refused() {
+        let fs = marked_fs();
+        let tree = scan_at(&fs, "/");
+        let env = Environment {
+            home: Some(PathBuf::from("/home/u")),
+            ..env()
+        };
+        let marked = [
+            node(&tree, "home/u/Documents/thesis"),
+            node(&tree, "home/u"),
+            node(&tree, "home/u/link"),
+            node(&tree, "home/u/.ssh"),
+            node(&tree, "home/u/old/stuff"),
+            node(&tree, "home/u/old/stuff/inner"),
+            NodeId(999_999),
+        ];
+
+        let plan = plan_marked(&tree, &env, &RuleSet::builtin(), &marked, &fs);
+
+        assert_eq!(paths(&plan), ["/home/u/old/stuff"]);
+        let why = |path: &str| {
+            plan.refused
+                .iter()
+                .find(|refused| refused.path == path)
+                .map(|refused| refused.reason.clone())
+        };
+        // Documents is kept by a rule as well as protected; the keep check comes first.
+        assert_eq!(why("/home/u/Documents/thesis"), Some(Refusal::Kept));
+        assert_eq!(why("/home/u"), Some(Refusal::Kept), "it holds the kept Documents");
+        assert!(matches!(why("/home/u/.ssh"), Some(Refusal::Protected(_))));
+        assert_eq!(why("/home/u/link"), Some(Refusal::Symlink));
+        assert_eq!(why("/home/u/old/stuff/inner"), Some(Refusal::Nested));
+        assert_eq!(plan.refused.len(), 5, "an unknown id is ignored: {plan:#?}");
+    }
+
+    #[test]
+    fn a_folder_holding_or_inside_a_kept_one_is_refused() {
+        let mut fs = FakeFs::new();
+        aged(
+            &mut fs,
+            "/home/u/.local/share/Steam/steamapps/common/G/g.pak",
+            10,
+            10,
+        );
+        aged(&mut fs, "/home/u/.local/share/other/x", 10, 10);
+        let tree = scan_at(&fs, "/");
+        let marked = [
+            node(&tree, "home/u/.local/share/Steam"),
+            node(&tree, "home/u/.local/share/Steam/steamapps/common/G"),
+            node(&tree, "home/u/.local/share/other"),
+        ];
+
+        let plan = plan_marked(&tree, &env(), &RuleSet::builtin(), &marked, &fs);
+
+        assert_eq!(paths(&plan), ["/home/u/.local/share/other"]);
+        assert!(
+            plan.refused.iter().all(|refused| refused.reason == Refusal::Kept),
+            "{plan:#?}"
+        );
+        assert_eq!(plan.refused.len(), 2);
+    }
+}

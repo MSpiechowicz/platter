@@ -4,6 +4,7 @@
   import Loading from '../../components/ui/Loading.svelte';
   import { fmt } from '../../state/fmt.svelte';
   import { biggestWins, reclaimSegments, VERDICT_COLORS } from './advisor';
+  import { STALE_TEXT } from './cleanupText';
   import RetryNote from './RetryNote.svelte';
 
   interface Props {
@@ -16,9 +17,13 @@
     scanned: number;
     /** Bytes freed by the cleanups of this session; 0 before any. Not part of the bar, which shows the scan. */
     freed: number;
+    /** A cleanup ran since the scan: the bar, its rows and the wins describe the disk from before it, and are greyed. */
+    stale?: boolean;
   }
 
-  let { suggestions, loading, error, onretry, scanned, freed }: Props = $props();
+  let { suggestions, loading, error, onretry, scanned, freed, stale = false }: Props = $props();
+
+  const staleTitle = $derived(stale ? STALE_TEXT : undefined);
 
   const segments = $derived(reclaimSegments(suggestions, scanned));
   const wins = $derived(biggestWins(suggestions));
@@ -28,6 +33,8 @@
   {#if suggestions}
     <div
       class="rec"
+      class:stale
+      title={staleTitle}
       role="img"
       aria-label={segments.map((segment) => `${segment.label}: ${fmt.size(segment.allocated)}`).join(', ')}
     >
@@ -40,7 +47,7 @@
 
     <div class="rows">
       {#each segments as segment (segment.verdict)}
-        <div class="recr">
+        <div class="recr" class:stale title={staleTitle}>
           <i style="background:{segment.color}"></i>
           <span>{segment.label}</span>
           <span class="num">{fmt.size(segment.allocated)}</span>
@@ -57,7 +64,7 @@
         <h4 class="recsub">Biggest wins</h4>
 
         {#each wins as win (win.id)}
-          <div class="recr">
+          <div class="recr" class:stale title={staleTitle}>
             <i style="background:{VERDICT_COLORS[win.verdict]}"></i>
             <span class="name">{win.title}</span>
             <span class="num">{fmt.size(win.allocated)}</span>
