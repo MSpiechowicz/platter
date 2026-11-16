@@ -14,6 +14,8 @@ const ALL_OFF = {
   pick: null,
   focus: null,
   dominant: false,
+  warn: false,
+  clean: null,
 };
 
 describe('parseHooks', () => {
@@ -37,6 +39,11 @@ describe('parseHooks', () => {
       mounts: true,
     });
     expect(parseHooks('?view=start', false)).toMatchObject({ ready: false, mounts: false });
+  });
+
+  it('reads the scan warning hook, outside Tauri only', () => {
+    expect(parseHooks('?view=overview&warn', false).warn).toBe(true);
+    expect(parseHooks('?view=overview&warn', true).warn).toBe(false);
   });
 
   it('reads the dominant disk hook, outside Tauri only', () => {
@@ -79,5 +86,12 @@ describe('parseHooks', () => {
     } finally {
       delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
     }
+  });
+
+  it('reads the cleanup hook, and ignores any other value', () => {
+    expect(parseHooks('?clean=review', false).clean).toBe('review');
+    expect(parseHooks('?clean=run', false).clean).toBe('run');
+    expect(parseHooks('?clean=everything', false).clean).toBeNull();
+    expect(parseHooks('?clean=run', true).clean).toBeNull();
   });
 });

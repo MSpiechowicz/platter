@@ -1,0 +1,1007 @@
+//! Cleanup over IPC (C4). The web view never names a path, an action or a program: it asks for a plan
+//! of a scan's suggestions by rule id, gets back a description of that plan and its id, and starts the
+//! plan by id. The plan itself stays here.
+//!
+//! - A plan belongs to one scan, is used once, and expires after [`PLAN_LIFETIME`]. A scan that a
+//!   cleanup has run on is outdated: no new plan is made for it, and an older plan of it is refused.
+//! - Only one cleanup runs at a time.
+//! - Before any plan runs, moving to the trash included, the backend asks the user in a native dialog
+//!   that it builds from its own plan.
+//! - `undo_cleanup` puts back what one run moved to the trash, from the results that run recorded.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use platter_cleanup::{
+    CleanupAction, CleanupEvent, CleanupPlan, CleanupReport, Disk, TargetOutcome, TargetResult, execute,
+    plan_cleanup as make_plan, undo,
+};
+use platter_core::CancelToken;
+use platter_core::dto::{ScanId, Verdict};
+use platter_platform::environment::home_trash;
+use platter_rules::RuleSet;
+use serde::Serialize;
+use tauri::State;
+use tauri::ipc::Channel;
+
+use crate::error::{CommandError, CommandResult};
+use crate::state::AppState;
+
+pub type PlanId = u64;
+pub type CleanupId = u64;
+
+/// How long a plan may wait to be started.
+pub const PLAN_LIFETIME: Duration = Duration::from_secs(10 * 60);
+/// Plans kept at once; making another drops the oldest.
+const MAX_PLANS: usize = 4;
+/// Finished runs kept for `undo_cleanup`.
+const MAX_DONE: usize = 4;
+/// Rule ids one plan may name.
+const MAX_RULES: usize = 64;
+/// Refusals listed in a plan.
+const MAX_REFUSED: usize = 200;
+/// Longest path shown in the confirmation, in characters; longer ones are shortened in the middle.
+const SHOWN_PATH_CHARS: usize = 120;
+/// Longest confirmation text, in characters.
+const QUESTION_CHARS: usize = 6000;
+/// Paths listed per group in a plan and in the confirmation.
+const SAMPLE_PATHS: usize = 20;
+/// The largest integer a JavaScript number holds exactly; sizes are clamped to it on the wire.
+const MAX_SAFE: u64 = 9_007_199_254_740_991;
+
+/// Asks the user to approve a cleanup that cannot be undone. Shown by the backend, never by the web
+/// view, so a compromised page cannot approve on the user's behalf.
+pub trait Confirm: Send + Sync {
+    fn confirm(&self, question: &Question) -> bool;
+}
+
+/// What a confirmation shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    pub title: String,
+    pub text: String,
+}
+
+/// Plans waiting to be started, the running cleanup, and finished runs that can be undone.
+#[derive(Default)]
+pub struct CleanupRegistry {
+    inner: Mutex<Inner>,
+    /// Set while a plan is made: one at a time, so the web view cannot fill the blocking pool.
+    planning: AtomicBool,
+}
+
+#[derive(Default)]
+struct Inner {
+    last_plan: PlanId,
+    plans: HashMap<PlanId, Stored>,
+    last_cleanup: CleanupId,
+    running: Option<(CleanupId, CancelToken)>,
+    /// The running cleanup got past its confirmation and is acting on the disk.
+    acting: bool,
+    done: Vec<(CleanupId, Vec<TargetResult>)>,
+    /// When the user last declined a confirmation: a new one is not shown right away.
+    declined: Option<Instant>,
+}
+
+struct Stored {
+    scan: ScanId,
+    plan: Arc<CleanupPlan>,
+    made: Instant,
+}
+
+/// The single running slot, held from the moment a plan is taken until its run ends. Dropping it
+/// frees the slot, so no early return, refusal or panic can leave it taken.
+pub struct Reservation {
+    registry: Arc<CleanupRegistry>,
+    pub cleanup: CleanupId,
+    pub cancel: CancelToken,
+    pub scan: ScanId,
+    pub plan: Arc<CleanupPlan>,
+    pub made: Instant,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut inner = self.registry.lock();
+        if inner.running.as_ref().is_some_and(|(id, _)| *id == self.cleanup) {
+            inner.running = None;
+        }
+    }
+}
+
+/// The one plan being made; dropping it lets the next one start.
+struct Planning<'a>(&'a AtomicBool);
+
+impl<'a> Planning<'a> {
+    fn begin(registry: &'a CleanupRegistry) -> Option<Self> {
+        registry
+            .planning
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| Self(&registry.planning))
+    }
+}
+
+impl Drop for Planning<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// How long after a declined confirmation a new one is refused (no rapid re-asking).
+const DECLINE_PAUSE: Duration = Duration::from_secs(2);
+
+impl CleanupRegistry {
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn store(&self, scan: ScanId, plan: CleanupPlan) -> PlanId {
+        let mut inner = self.lock();
+        inner.last_plan += 1;
+        let id = inner.last_plan;
+
+        inner
+            .plans
+            .retain(|_, stored| stored.made.elapsed() < PLAN_LIFETIME);
+        while inner.plans.len() >= MAX_PLANS {
+            let oldest = inner.plans.keys().copied().min().unwrap_or(id);
+            inner.plans.remove(&oldest);
+        }
+        inner.plans.insert(
+            id,
+            Stored {
+                scan,
+                plan: Arc::new(plan),
+                made: Instant::now(),
+            },
+        );
+        id
+    }
+
+    /// Takes a plan out (it can be started once) and reserves the single running slot for it. A busy
+    /// slot is `invalid` and leaves the plan in place; an unknown or used plan is `notFound`.
+    fn take_and_reserve(self: &Arc<Self>, id: PlanId) -> CommandResult<Reservation> {
+        let mut inner = self.lock();
+        if inner.running.is_some() {
+            return Err(CommandError::invalid("a cleanup is already running"));
+        }
+        if !inner.plans.contains_key(&id) {
+            return Err(CommandError::not_found(format!(
+                "plan {id} does not exist or was used"
+            )));
+        }
+        // Checked before the plan is taken: a request right after a refusal leaves the plan usable.
+        if inner.declined.is_some_and(|at| at.elapsed() < DECLINE_PAUSE) {
+            return Err(CommandError::invalid(
+                "a cleanup was just declined; wait a moment",
+            ));
+        }
+        let stored = inner
+            .plans
+            .remove(&id)
+            .ok_or_else(|| CommandError::not_found(format!("plan {id} does not exist or was used")))?;
+        if stored.made.elapsed() >= PLAN_LIFETIME {
+            return Err(CommandError::invalid("the plan has expired; make a new one"));
+        }
+
+        inner.last_cleanup += 1;
+        let cleanup = inner.last_cleanup;
+        let cancel = CancelToken::new();
+        inner.running = Some((cleanup, cancel.clone()));
+        inner.acting = false;
+        Ok(Reservation {
+            registry: Arc::clone(self),
+            cleanup,
+            cancel,
+            scan: stored.scan,
+            plan: stored.plan,
+            made: stored.made,
+        })
+    }
+
+    /// The run passed its confirmation and is about to act on the disk.
+    fn acting(&self, cleanup: CleanupId) {
+        let mut inner = self.lock();
+        if inner.running.as_ref().is_some_and(|(id, _)| *id == cleanup) {
+            inner.acting = true;
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        self.lock().running.is_some()
+    }
+
+    fn declined(&self) {
+        self.lock().declined = Some(Instant::now());
+    }
+
+    /// Keeps a run's results for undo. A run that touched nothing keeps no record (it would only push
+    /// a real one out); a run that emptied the trash makes every older record useless.
+    fn record(&self, cleanup: CleanupId, results: Vec<TargetResult>, emptied_trash: bool) {
+        let mut inner = self.lock();
+        if emptied_trash {
+            inner.done.clear();
+        }
+        if results
+            .iter()
+            .any(|result| matches!(result.outcome, TargetOutcome::Trashed(_)))
+        {
+            inner.done.push((cleanup, results));
+            if inner.done.len() > MAX_DONE {
+                inner.done.remove(0);
+            }
+        }
+    }
+
+    fn cancel(&self, cleanup: CleanupId) {
+        if let Some((id, cancel)) = &self.lock().running
+            && *id == cleanup
+        {
+            cancel.cancel();
+        }
+    }
+
+    /// For quitting the app: asks the running cleanup to stop after the target in progress and waits
+    /// up to `limit` for it, so no recursive delete is cut off half-way by the process ending.
+    pub fn stop_for_exit(&self, limit: Duration) {
+        let started = Instant::now();
+        {
+            let inner = self.lock();
+            let Some((_, cancel)) = &inner.running else {
+                return;
+            };
+            cancel.cancel();
+            // Still waiting for the user's answer: nothing is acting on the disk, nothing to wait for
+            // (and the dialog itself needs the main thread this runs on).
+            if !inner.acting {
+                return;
+            }
+        }
+        while self.lock().running.is_some() && started.elapsed() < limit {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// The results of a finished run, taken out: a run is undone once.
+    fn take_done(&self, cleanup: CleanupId) -> CommandResult<Vec<TargetResult>> {
+        let mut inner = self.lock();
+        let position = inner
+            .done
+            .iter()
+            .position(|(id, _)| *id == cleanup)
+            .ok_or_else(|| CommandError::not_found(format!("cleanup {cleanup} cannot be undone")))?;
+        Ok(inner.done.remove(position).1)
+    }
+
+    /// Puts back the results whose undo failed, so it can be tried again.
+    fn keep_for_retry(&self, cleanup: CleanupId, results: Vec<TargetResult>) {
+        if !results.is_empty() {
+            self.lock().done.push((cleanup, results));
+        }
+    }
+}
+
+// ---- Wire types (sent only; nothing here is ever read back from the web view) ----
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActionDto {
+    Delete,
+    EmptyFolder,
+    EmptyTrash,
+    Trash,
+    RunTool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanGroupDto {
+    pub rule_id: String,
+    pub title: String,
+    pub verdict: Verdict,
+    pub action: ActionDto,
+    pub items: u64,
+    pub allocated: u64,
+    /// The command a tool runs, as text; absent for other actions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    pub needs_elevation: bool,
+    /// The first few paths, for showing.
+    pub sample_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefusedDto {
+    pub rule_id: String,
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupPlanDto {
+    pub plan_id: PlanId,
+    pub scan_id: ScanId,
+    pub groups: Vec<PlanGroupDto>,
+    /// At most [`MAX_REFUSED`] refusals; `refused_more` counts the rest.
+    pub refused: Vec<RefusedDto>,
+    pub refused_more: u64,
+    pub not_found: Vec<String>,
+    pub allocated: u64,
+    /// Starting it asks the user first (something cannot be undone).
+    pub needs_confirmation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OutcomeKind {
+    Removed,
+    Trashed,
+    ByTool,
+    Skipped,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutcomeDto {
+    pub kind: OutcomeKind,
+    /// Why it was skipped or failed, or the command a tool ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Problems inside the target (entries that could not be removed, mounts left alone).
+    pub problems: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum CleanupEventDto {
+    GroupStarted {
+        rule_id: String,
+        targets: u64,
+    },
+    TargetDone {
+        rule_id: String,
+        path: String,
+        allocated: u64,
+        outcome: OutcomeDto,
+    },
+    GroupFinished {
+        rule_id: String,
+    },
+    Finished {
+        cleanup_id: CleanupId,
+        /// The scan the cleanup ran on is outdated now: rescan to see the disk as it is.
+        outdated_scan: ScanId,
+        cleaned: u64,
+        with_problems: u64,
+        /// Free space after minus before (absent when it could not be measured).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        freed: Option<i64>,
+        cancelled: bool,
+        tools_not_run: Vec<String>,
+        /// Something was moved to the trash and can be put back with `undo_cleanup`.
+        can_undo: bool,
+    },
+    Failed {
+        message: String,
+        /// The scan the cleanup ran on is outdated now (as after `finished`).
+        outdated_scan: ScanId,
+        /// What reached the trash before it stopped can be put back with `undo_cleanup`.
+        can_undo: bool,
+        cleanup_id: CleanupId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoDto {
+    pub path: String,
+    pub restored: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ---- Commands ----
+
+/// Plans the cleanup of `suggestions` (rule ids from `get_suggestions`) of a finished scan.
+#[tauri::command]
+pub async fn plan_cleanup(
+    state: State<'_, AppState>,
+    scan: ScanId,
+    suggestions: Vec<String>,
+) -> CommandResult<CleanupPlanDto> {
+    plan(&state, scan, suggestions).await
+}
+
+/// Starts a plan (once). Asks for confirmation first when something cannot be undone; a refused
+/// confirmation is the error `cancelled`. Events arrive on `on_event`, the last one `finished` or
+/// `failed`.
+#[tauri::command]
+pub async fn start_cleanup(
+    state: State<'_, AppState>,
+    plan: PlanId,
+    on_event: Channel<CleanupEventDto>,
+) -> CommandResult<CleanupId> {
+    let emit: Emit = Arc::new(move |event| {
+        let _ = on_event.send(event);
+    });
+    start(&state, plan, emit).await
+}
+
+/// Stops a running cleanup after the target in progress. Unknown or ended ids are not an error.
+#[tauri::command]
+pub fn cancel_cleanup(state: State<'_, AppState>, cleanup: CleanupId) -> CommandResult<()> {
+    state.cleanups.cancel(cleanup);
+    Ok(())
+}
+
+/// Puts back what a finished cleanup moved to the trash (once).
+#[tauri::command]
+pub async fn undo_cleanup(state: State<'_, AppState>, cleanup: CleanupId) -> CommandResult<Vec<UndoDto>> {
+    undo_run(&state, cleanup).await
+}
+
+pub async fn undo_run(state: &AppState, cleanup: CleanupId) -> CommandResult<Vec<UndoDto>> {
+    // Not while a cleanup runs: it could be emptying the trash that is being restored from.
+    if state.cleanups.is_running() {
+        return Err(CommandError::invalid(
+            "a cleanup is running; undo when it has finished",
+        ));
+    }
+    let results = state.cleanups.take_done(cleanup)?;
+    let kept = results.clone();
+    let platform = Arc::clone(&state.platform);
+
+    let worked = tauri::async_runtime::spawn_blocking(move || {
+        let undone = undo(&results, &platform.entry_remover);
+        // What could not be put back stays, so undo can be tried again.
+        let failed: Vec<TargetResult> = results
+            .into_iter()
+            .filter(|result| matches!(result.outcome, TargetOutcome::Trashed(_)))
+            .zip(&undone)
+            .filter(|(_, (_, outcome))| outcome.is_err())
+            .map(|(result, _)| result)
+            .collect();
+        (undone, failed)
+    })
+    .await;
+    let Ok((undone, failed)) = worked else {
+        // Some entries may be back already: the disk changed, and every entry stays for a retry
+        // (one that is back is refused next time, since its trash record is gone).
+        state.cleanups.keep_for_retry(cleanup, kept);
+        state.scans.disk_changed();
+        return Err(CommandError::io("putting things back stopped unexpectedly"));
+    };
+
+    state.cleanups.keep_for_retry(cleanup, failed);
+    // Putting things back changed the disk too.
+    state.scans.disk_changed();
+
+    Ok(undone
+        .into_iter()
+        .map(|(path, outcome)| UndoDto {
+            path,
+            restored: outcome.is_ok(),
+            error: outcome.err(),
+        })
+        .collect())
+}
+
+pub type Emit = Arc<dyn Fn(CleanupEventDto) + Send + Sync>;
+
+pub async fn plan(state: &AppState, scan: ScanId, suggestions: Vec<String>) -> CommandResult<CleanupPlanDto> {
+    let rules = RuleSet::builtin();
+    if suggestions.is_empty() || suggestions.len() > MAX_RULES {
+        return Err(CommandError::invalid(format!(
+            "choose between 1 and {MAX_RULES} suggestions"
+        )));
+    }
+    if let Some(unknown) = suggestions
+        .iter()
+        .find(|id| !rules.rules().iter().any(|rule| rule.id == id.as_str()))
+    {
+        return Err(CommandError::invalid(format!("{unknown} is not a rule")));
+    }
+    if state.scans.is_outdated(scan) {
+        return Err(CommandError::invalid(
+            "the disk changed since this scan; rescan first",
+        ));
+    }
+
+    let tree = state.scans.tree(scan)?;
+    let Some(_planning) = Planning::begin(&state.cleanups) else {
+        return Err(CommandError::invalid(
+            "a plan is being made; try again in a moment",
+        ));
+    };
+    let platform = Arc::clone(&state.platform);
+    let plan = tauri::async_runtime::spawn_blocking(move || {
+        let env = platform.environment_for(tree.root_path());
+        let ids: Vec<&str> = suggestions.iter().map(String::as_str).collect();
+        make_plan(&tree, &env, &rules, &ids, &platform.entry_probe)
+    })
+    .await?;
+
+    let dto = describe(&plan, scan, 0);
+    let id = state.cleanups.store(scan, plan);
+    Ok(CleanupPlanDto { plan_id: id, ..dto })
+}
+
+pub async fn start(state: &AppState, plan_id: PlanId, emit: Emit) -> CommandResult<CleanupId> {
+    // From here on the slot is released when `reservation` is dropped, however this function ends.
+    let reservation = state.cleanups.take_and_reserve(plan_id)?;
+    let scan = reservation.scan;
+    let plan = Arc::clone(&reservation.plan);
+
+    if plan.groups().is_empty() {
+        return Err(CommandError::invalid("the plan has nothing to clean"));
+    }
+    still_current(state, &reservation)?;
+
+    // Every plan that does something is confirmed by the user in the backend's own dialog, also one
+    // that only moves things to the trash (what is in the trash is one "Empty the trash" from gone).
+    let Some(question) = question(&plan) else {
+        return Err(CommandError::invalid("the plan has nothing to clean"));
+    };
+    let confirm = state.confirm();
+    let approved = tauri::async_runtime::spawn_blocking(move || confirm.confirm(&question))
+        .await
+        .unwrap_or(false);
+    if !approved {
+        state.cleanups.declined();
+        return Err(CommandError::new(
+            platter_core::dto::ApiErrorCode::Cancelled,
+            "the cleanup was not confirmed",
+        ));
+    }
+    // The dialog may have been open for a long time.
+    still_current(state, &reservation)?;
+
+    let cleanup = reservation.cleanup;
+    state.cleanups.acting(cleanup);
+    let platform = Arc::clone(&state.platform);
+    let scans = Arc::clone(&state.scans);
+    let cleanups = Arc::clone(&state.cleanups);
+    let spawned = thread::Builder::new()
+        .name(format!("platter-cleanup-{cleanup}"))
+        .spawn(move || {
+            let reservation = reservation;
+            let results = Mutex::new(Vec::new());
+            let emptied_trash = plan
+                .groups()
+                .iter()
+                .any(|group| group.action() == CleanupAction::EmptyTrash);
+
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let trash = home_trash(platform.environment().home.as_deref());
+                let disk = Disk {
+                    probe: &platform.entry_probe,
+                    remover: &platform.entry_remover,
+                    trash_dir: trash.as_deref(),
+                    tools: Some(&platform.tool_runner),
+                };
+                execute(&plan, &disk, &reservation.cancel, &mut |event| {
+                    if let CleanupEvent::TargetDone(result) = &event {
+                        lock(&results).push(result.clone());
+                    }
+                    emit(event_dto(event));
+                })
+            }));
+
+            // Whatever happened, the disk may have changed: no scan describes it any more.
+            scans.disk_changed();
+            // Kept for undo even after a panic: what reached the trash so far can still be put back.
+            let results = std::mem::take(&mut *lock(&results));
+            let event = match &outcome {
+                Ok(report) => finished_dto(cleanup, scan, report),
+                Err(_) => CleanupEventDto::Failed {
+                    message: "the cleanup stopped unexpectedly".to_owned(),
+                    outdated_scan: scan,
+                    can_undo: results
+                        .iter()
+                        .any(|result| matches!(result.outcome, TargetOutcome::Trashed(_))),
+                    cleanup_id: cleanup,
+                },
+            };
+            cleanups.record(cleanup, results, emptied_trash);
+            // The slot is free before the UI hears the run ended, so it can start the next one.
+            drop(reservation);
+            emit(event);
+        });
+
+    // A failed spawn drops the closure, and with it the reservation.
+    spawned?;
+    Ok(cleanup)
+}
+
+/// The plan is still young enough, and its scan still exists and still describes the disk.
+fn still_current(state: &AppState, reservation: &Reservation) -> CommandResult<()> {
+    if reservation.made.elapsed() >= PLAN_LIFETIME {
+        return Err(CommandError::invalid("the plan has expired; make a new one"));
+    }
+    if state.scans.is_outdated(reservation.scan) || state.scans.tree(reservation.scan).is_err() {
+        return Err(CommandError::invalid(
+            "the disk changed since this plan was made; rescan first",
+        ));
+    }
+    Ok(())
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+// ---- Describing plans, questions and events ----
+
+fn action_dto(action: CleanupAction) -> ActionDto {
+    match action {
+        CleanupAction::Delete => ActionDto::Delete,
+        CleanupAction::EmptyFolder => ActionDto::EmptyFolder,
+        CleanupAction::EmptyTrash => ActionDto::EmptyTrash,
+        CleanupAction::Trash => ActionDto::Trash,
+        CleanupAction::RunTool(_) => ActionDto::RunTool,
+    }
+}
+
+fn command_text(action: CleanupAction) -> Option<(String, bool)> {
+    match action {
+        CleanupAction::RunTool(tool) => Some((
+            format!("{} {}", tool.program(), tool.args().join(" ")),
+            tool.needs_elevation(),
+        )),
+        _ => None,
+    }
+}
+
+fn title_of(rule_id: &str) -> String {
+    RuleSet::builtin()
+        .rules()
+        .iter()
+        .find(|rule| rule.id == rule_id)
+        .map_or_else(|| rule_id.to_owned(), |rule| rule.title.to_owned())
+}
+
+fn clamp(value: u64) -> u64 {
+    value.min(MAX_SAFE)
+}
+
+/// The wire description of `plan`.
+pub fn describe(plan: &CleanupPlan, scan: ScanId, plan_id: PlanId) -> CleanupPlanDto {
+    let groups = plan
+        .groups()
+        .iter()
+        .map(|group| {
+            let command = command_text(group.action());
+            PlanGroupDto {
+                rule_id: group.rule_id().to_owned(),
+                title: title_of(group.rule_id()),
+                verdict: group.verdict(),
+                action: action_dto(group.action()),
+                items: group.targets().len() as u64,
+                allocated: clamp(group.allocated()),
+                needs_elevation: command.as_ref().is_some_and(|(_, elevated)| *elevated),
+                command: command.map(|(text, _)| text),
+                sample_paths: group
+                    .targets()
+                    .iter()
+                    .take(SAMPLE_PATHS)
+                    .map(|target| target.display_path())
+                    .collect(),
+            }
+        })
+        .collect();
+
+    CleanupPlanDto {
+        plan_id,
+        scan_id: scan,
+        groups,
+        refused_more: plan.refused.len().saturating_sub(MAX_REFUSED) as u64,
+        refused: plan
+            .refused
+            .iter()
+            .take(MAX_REFUSED)
+            .map(|refused| RefusedDto {
+                rule_id: refused.rule_id.to_owned(),
+                path: refused.path.clone(),
+                reason: refused.reason.to_string(),
+            })
+            .collect(),
+        not_found: plan.not_found.clone(),
+        allocated: clamp(plan.allocated),
+        needs_confirmation: question(plan).is_some(),
+    }
+}
+
+/// The confirmation a plan needs: every plan with something to do is confirmed. `None` for an empty
+/// plan.
+///
+/// What each group does comes first, with counts and sizes, so it stays in view whatever the paths
+/// look like; then up to [`SAMPLE_PATHS`] paths. Paths are shown safely: control and invisible
+/// formatting characters (a newline, a right-to-left override) are written as `\u{...}`, a name that
+/// is not valid text is marked, long paths are shortened in the middle, and the whole text is capped.
+pub fn question(plan: &CleanupPlan) -> Option<Question> {
+    let groups = plan.groups();
+    if groups.is_empty() {
+        return None;
+    }
+
+    let lasting = groups.iter().any(|group| group.action() != CleanupAction::Trash);
+    let mut lines = vec![
+        if lasting {
+            "Platter is about to do the following. Some of it cannot be undone.".to_owned()
+        } else {
+            "Platter is about to move the following to the trash. It can be put back from there.".to_owned()
+        },
+        String::new(),
+    ];
+
+    for group in groups {
+        let title = title_of(group.rule_id());
+        let count = group.targets().len();
+        let size = human_bytes(group.allocated());
+        lines.push(match group.action() {
+            CleanupAction::Delete => format!("• Delete for good: {title}, {count} items, {size}"),
+            CleanupAction::EmptyFolder => format!("• Empty for good: {title}, {count} folders, {size}"),
+            CleanupAction::EmptyTrash => {
+                format!("• Empty the trash for good: everything in it, {size} when scanned")
+            }
+            CleanupAction::Trash => format!("• Move to the trash: {title}, {count} items, {size}"),
+            CleanupAction::RunTool(tool) => format!(
+                "• Run{}: {} {}",
+                if tool.needs_elevation() {
+                    " as administrator"
+                } else {
+                    ""
+                },
+                tool.program(),
+                tool.args().join(" ")
+            ),
+        });
+    }
+
+    let paths: Vec<&platter_cleanup::VerifiedTarget> = groups
+        .iter()
+        .filter(|group| !matches!(group.action(), CleanupAction::RunTool(_)))
+        .flat_map(|group| group.targets())
+        .collect();
+    if !paths.is_empty() {
+        lines.push(String::new());
+        lines.push("Items:".to_owned());
+        for target in paths.iter().take(SAMPLE_PATHS) {
+            lines.push(format!("    {}", shown_path(&target.display_path())));
+        }
+        if paths.len() > SAMPLE_PATHS {
+            lines.push(format!("    … and {} more", paths.len() - SAMPLE_PATHS));
+        }
+    }
+
+    let mut text = lines.join("\n");
+    if text.chars().count() > QUESTION_CHARS {
+        text = text.chars().take(QUESTION_CHARS).collect();
+        text.push_str("\n…");
+    }
+
+    Some(Question {
+        title: "Clean up?".to_owned(),
+        text,
+    })
+}
+
+/// A path as the confirmation shows it (see [`question`]).
+fn shown_path(path: &str) -> String {
+    // Shortened first, by characters, then escaped: an escape is never cut in half.
+    let chars: Vec<char> = path.chars().collect();
+    let kept: Vec<char> = if chars.len() > SHOWN_PATH_CHARS {
+        let half = SHOWN_PATH_CHARS / 2 - 2;
+        let mut kept = chars[..half].to_vec();
+        kept.extend(" … ".chars());
+        kept.extend_from_slice(&chars[chars.len() - half..]);
+        kept
+    } else {
+        chars
+    };
+
+    let mut shown = String::with_capacity(path.len());
+    for c in kept {
+        if c.is_control() || is_invisible_format(c) {
+            shown.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+        } else {
+            shown.push(c);
+        }
+    }
+    if path.contains('\u{fffd}') {
+        shown.push_str("  (a name here is not valid text)");
+    }
+    shown
+}
+
+/// Characters that change how text is laid out, or break a line, without being seen: bidirectional
+/// controls, joiners, soft hyphens, line and paragraph separators, variation selectors and blank
+/// fillers.
+fn is_invisible_format(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x00AD | 0x034F | 0x061C | 0x115F | 0x1160 | 0x17B4 | 0x17B5 | 0x180B..=0x180F | 0x200B..=0x200F
+            | 0x2028..=0x202E | 0x2060..=0x2064 | 0x2066..=0x206F | 0x2800 | 0x3000 | 0x3164 | 0xFE00..=0xFE0F
+            | 0xFEFF | 0xFFA0 | 0xFFF9..=0xFFFB | 0x1D173..=0x1D17A | 0xE0001 | 0xE0020..=0xE007F
+            | 0xE0100..=0xE01EF
+    )
+}
+
+/// Bytes for people: `286.1 MiB`.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn outcome_dto(outcome: &TargetOutcome) -> OutcomeDto {
+    let (kind, detail, problems) = match outcome {
+        TargetOutcome::Removed(removed) => (
+            OutcomeKind::Removed,
+            None,
+            removed.errors.len() as u64 + removed.more_errors + removed.skipped_mounts,
+        ),
+        TargetOutcome::Trashed(_) => (OutcomeKind::Trashed, None, 0),
+        TargetOutcome::ByTool(command) => (OutcomeKind::ByTool, Some(command.clone()), 0),
+        TargetOutcome::Skipped(why) => (OutcomeKind::Skipped, Some(why.clone()), 0),
+        TargetOutcome::Failed(why) => (OutcomeKind::Failed, Some(why.clone()), 0),
+    };
+    OutcomeDto {
+        kind,
+        detail,
+        problems,
+    }
+}
+
+fn event_dto(event: CleanupEvent) -> CleanupEventDto {
+    match event {
+        CleanupEvent::GroupStarted { rule_id, targets } => CleanupEventDto::GroupStarted {
+            rule_id: rule_id.to_owned(),
+            targets: targets as u64,
+        },
+        CleanupEvent::TargetDone(result) => CleanupEventDto::TargetDone {
+            rule_id: result.rule_id.to_owned(),
+            path: result.path.clone(),
+            allocated: clamp(result.allocated),
+            outcome: outcome_dto(&result.outcome),
+        },
+        CleanupEvent::GroupFinished { rule_id } => CleanupEventDto::GroupFinished {
+            rule_id: rule_id.to_owned(),
+        },
+    }
+}
+
+fn finished_dto(cleanup: CleanupId, scan: ScanId, report: &CleanupReport) -> CleanupEventDto {
+    let clean = |outcome: &OutcomeDto| {
+        matches!(
+            outcome.kind,
+            OutcomeKind::Removed | OutcomeKind::Trashed | OutcomeKind::ByTool
+        ) && outcome.problems == 0
+    };
+    let cleaned = report
+        .results
+        .iter()
+        .filter(|result| clean(&outcome_dto(&result.outcome)))
+        .count() as u64;
+
+    CleanupEventDto::Finished {
+        cleanup_id: cleanup,
+        outdated_scan: scan,
+        cleaned,
+        with_problems: report.results.len() as u64 - cleaned,
+        freed: report
+            .freed
+            .map(|freed| freed.clamp(-(MAX_SAFE as i128), MAX_SAFE as i128) as i64),
+        cancelled: report.cancelled,
+        tools_not_run: report.tools_not_run.iter().map(|id| (*id).to_owned()).collect(),
+        can_undo: report
+            .results
+            .iter()
+            .any(|result| matches!(result.outcome, TargetOutcome::Trashed(_))),
+    }
+}
+
+/// The confirmation elsewhere than Linux: the dialog plugin's native message dialog.
+#[cfg(not(target_os = "linux"))]
+pub struct NativeConfirm<R: tauri::Runtime> {
+    pub app: tauri::AppHandle<R>,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl<R: tauri::Runtime> Confirm for NativeConfirm<R> {
+    fn confirm(&self, question: &Question) -> bool {
+        use tauri::Manager;
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+        let mut dialog = self
+            .app
+            .dialog()
+            .message(question.text.clone())
+            .title(question.title.clone())
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Clean up".to_owned(),
+                "Cancel".to_owned(),
+            ));
+        // Attached to Platter's window, so it opens over the app rather than wherever the pointer is.
+        if let Some(window) = self.app.get_webview_window("main") {
+            dialog = dialog.parent(&window);
+        }
+        dialog.blocking_show()
+    }
+}
+
+/// The confirmation on Linux: a GTK message dialog over the app window. The window title is the app's
+/// name and the heading is the question, said once; Cancel is the default, so Enter does not clean;
+/// the text is plain (never markup).
+#[cfg(target_os = "linux")]
+pub struct GtkConfirm<R: tauri::Runtime> {
+    pub app: tauri::AppHandle<R>,
+}
+
+#[cfg(target_os = "linux")]
+impl<R: tauri::Runtime> Confirm for GtkConfirm<R> {
+    fn confirm(&self, question: &Question) -> bool {
+        use gtk::prelude::*;
+        use tauri::Manager;
+
+        let (answer, answered) = std::sync::mpsc::channel();
+        let window = self.app.get_webview_window("main");
+        let question = question.clone();
+
+        // GTK lives on the main thread; this call blocks only the cleanup's own worker.
+        let posted = self.app.run_on_main_thread(move || {
+            let parent = window.and_then(|window| window.gtk_window().ok());
+            let dialog = gtk::MessageDialog::new(
+                parent.as_ref(),
+                gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+                gtk::MessageType::Warning,
+                gtk::ButtonsType::None,
+                &question.title,
+            );
+            dialog.set_title("Platter");
+            dialog.set_secondary_use_markup(false);
+            dialog.set_secondary_text(Some(&question.text));
+            dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+            dialog.add_button("Clean up", gtk::ResponseType::Accept);
+            dialog.set_default_response(gtk::ResponseType::Cancel);
+            if let Some(cancel) = dialog.widget_for_response(gtk::ResponseType::Cancel) {
+                cancel.grab_focus();
+            }
+
+            let response = dialog.run();
+            dialog.close();
+            let _ = answer.send(response == gtk::ResponseType::Accept);
+        });
+
+        posted.is_ok() && answered.recv().unwrap_or(false)
+    }
+}
+
+/// Used until the app has set up its dialog, and in tests that do not set one: nothing is approved.
+pub struct RefuseAll;
+
+impl Confirm for RefuseAll {
+    fn confirm(&self, _question: &Question) -> bool {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests;

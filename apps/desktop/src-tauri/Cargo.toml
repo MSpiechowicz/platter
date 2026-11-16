@@ -25,10 +25,17 @@ tauri-build.workspace = true
 platter-core.workspace = true
 platter-platform.workspace = true
 platter-rules.workspace = true
+platter-cleanup.workspace = true
 serde.workspace = true
 tauri.workspace = true
 tauri-plugin-dialog.workspace = true
 tauri-plugin-opener.workspace = true
+
+
+# The cleanup confirmation is built with the GTK that Tauri already runs on (same version, no new
+# library): it can name its own window title, attach to the app window and default to Cancel.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
 
 [dev-dependencies]
 platter-core = { workspace = true, features = ["testing"] }

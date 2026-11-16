@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use platter_core::dto::Verdict;
 use platter_core::{Environment, NodeId, NodeKind, Tree};
 
 use crate::resolve::locate;
@@ -44,11 +45,8 @@ impl Plan {
             }
 
             match &rule.matcher {
-                Matcher::Fixed(path) => {
-                    push_anchor(&mut anchors, tree, Path::new(path), index, Role::Claim);
-                }
-                Matcher::Home(relative) => {
-                    if let Some(path) = under_home(env, relative) {
+                Matcher::Fixed(_) | Matcher::Home(_) | Matcher::UserDir(_) => {
+                    if let Some(path) = claimed_path(rule, env) {
                         push_anchor(&mut anchors, tree, &path, index, Role::Claim);
                     }
                 }
@@ -93,6 +91,31 @@ impl Plan {
 
 fn under_home(env: &Environment, relative: &str) -> Option<PathBuf> {
     env.home.as_ref().map(|home| home.join(relative))
+}
+
+/// The folder a path rule (fixed, home or personal folder) is about, when it is known.
+pub(crate) fn claimed_path(rule: &Rule, env: &Environment) -> Option<PathBuf> {
+    match &rule.matcher {
+        Matcher::Fixed(path) => Some(PathBuf::from(path)),
+        Matcher::Home(relative) => under_home(env, relative),
+        Matcher::UserDir(dir) => env.user_dir(*dir),
+        Matcher::Named(_) | Matcher::Files(_) => None,
+    }
+}
+
+/// The `keep` rule whose folder holds the whole scan, when the scan starts inside one. A scan of the
+/// kept folder itself is not "inside": the root is then matched like any other node.
+pub(crate) fn kept_root(tree: &Tree, env: &Environment, rules: &[Rule]) -> Option<usize> {
+    let root = tree.root_path();
+
+    rules.iter().enumerate().find_map(|(index, rule)| {
+        if rule.verdict != Verdict::Keep || rule.os.is_some_and(|os| os != env.os) {
+            return None;
+        }
+
+        let kept = claimed_path(rule, env)?;
+        (root != kept && root.starts_with(&kept)).then_some(index)
+    })
 }
 
 /// Anchors `rule` at the directory at `path`, when the scan contains one.

@@ -1,5 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { NodeDto } from '../../api/types';
+import { fmt } from '../../state/fmt.svelte';
 import { scan } from '../../state/scan.svelte';
 import { settings } from '../../state/settings.svelte';
 import { ui } from '../../state/ui.svelte';
@@ -292,6 +294,35 @@ describe('the Explorer', () => {
     expect(document.querySelector('.details .share')?.textContent).toMatch(/^\d+(\.\d)?% of this folder$/);
     // The tooltip has the whole path.
     expect(tile(/^home \/ demo, /).querySelector('title')?.textContent).toContain('home / demo');
+  });
+
+  it('describes a selected chain tile by its last folder only: path, size and "Show in file manager"', async () => {
+    const { api } = await import('../../api');
+    const scanId = scan.state.status === 'ready' ? scan.state.scanId : 0;
+    const home = (await api.getLod(scanId, 0, 20, 1)).children.find((child) => child.node.name === 'home')
+      ?.node as NodeDto;
+    const demo = (await api.getChildren(scanId, home.id, 0, 20, 'sizeDesc')).items.find(
+      (child) => child.name === 'demo',
+    ) as NodeDto;
+
+    render(Explorer, { props: {} });
+    await within(await screen.findByLabelText('Map of the open folder')).findByRole('button', {
+      name: /^home \/ demo, /,
+    });
+    await fireEvent.click(tile(/^home \/ demo, /));
+
+    expect(screen.getByText('/home/demo')).toBeTruthy();
+    expect(document.querySelector('.details .big')?.textContent).toBe(fmt.size(demo.allocated));
+    expect(document.querySelector('.details .meta')?.textContent).toContain(
+      `apparent ${fmt.size(demo.apparent)}`,
+    );
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Show in file manager' }));
+    expect(openInFileManager).toHaveBeenCalledWith(scanId, demo.id);
+
+    // The same folder that "Open folder" goes to.
+    await fireEvent.click(screen.getByRole('button', { name: 'Open folder' }));
+    await waitFor(() => expect(crumbs()).toEqual(['/', 'home', 'demo']));
   });
 
   it('gives the share of the folder in the details of every selection, and not for the open folder', async () => {

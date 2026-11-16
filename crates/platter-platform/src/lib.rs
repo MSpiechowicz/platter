@@ -4,6 +4,7 @@
 //! - [`generic`]: `DirSource` on plain `std::fs`; works everywhere.
 //! - `linux` (Linux only): the fast `DirSource` plus default exclusions.
 //! - [`volumes`]: `VolumeProvider` on `sysinfo`.
+//! - [`localtime`]: the local time zone's UTC offset, from the system's TZif files.
 //! - [`memory`]: a scan memory budget that fits the memory the machine has.
 //! - [`paths`]: the exact OS path of a scanned node, including names that are not valid UTF-8.
 //! - [`root`]: resolving the folder a scan starts from, with the identity to pin it to.
@@ -17,6 +18,7 @@ pub mod environment;
 pub mod generic;
 #[cfg(target_os = "linux")]
 pub mod linux;
+pub mod localtime;
 pub mod memory;
 pub mod paths;
 mod pseudo;
@@ -52,6 +54,18 @@ pub type DefaultDirSource = linux::LinuxDirSource;
 #[cfg(not(target_os = "linux"))]
 pub type DefaultDirSource = generic::GenericDirSource;
 
+/// The probe that looks at a path before cleanup acts on it.
+#[cfg(target_os = "linux")]
+pub type DefaultEntryProbe = linux::probe::TimedEntryProbe;
+
+/// What cleanup acts on the disk through.
+#[cfg(target_os = "linux")]
+pub type DefaultEntryRemover = linux::remove::LinuxEntryRemover;
+
+/// What runs the tools that own a cache.
+#[cfg(target_os = "linux")]
+pub type DefaultToolRunner = linux::tools::LinuxToolRunner;
+
 /// Everything an app needs from the OS, in one value.
 #[derive(Debug, Default)]
 pub struct Platform {
@@ -59,6 +73,15 @@ pub struct Platform {
     pub dir_source: DefaultDirSource,
     /// Implements `platter_core::VolumeProvider`.
     pub volumes: SystemVolumes,
+    /// Implements `platter_core::EntryProbe`.
+    #[cfg(target_os = "linux")]
+    pub entry_probe: DefaultEntryProbe,
+    /// Implements `platter_core::EntryRemover`.
+    #[cfg(target_os = "linux")]
+    pub entry_remover: DefaultEntryRemover,
+    /// Implements `platter_core::ToolRunner`.
+    #[cfg(target_os = "linux")]
+    pub tool_runner: DefaultToolRunner,
 }
 
 impl Platform {
@@ -70,5 +93,52 @@ impl Platform {
     /// The home directory, clock and OS right now, for judging a finished scan.
     pub fn environment(&self) -> platter_core::Environment {
         current_environment()
+    }
+
+    /// [`Platform::environment`] as seen from a scan of `scan_root` (see
+    /// [`environment::environment_for_scan`]): use this for a scan's suggestions and cleanup.
+    pub fn environment_for(&self, scan_root: &std::path::Path) -> platter_core::Environment {
+        environment::environment_for_scan(&current_environment(), scan_root)
+    }
+}
+
+/// Reads at most `cap` bytes of the regular file at `path`. A FIFO, device or folder is refused, and on
+/// Linux the open itself never blocks (a FIFO in `TZ` or `XDG_CONFIG_HOME` cannot hang the caller).
+pub(crate) fn read_regular_file(path: &std::path::Path, cap: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+    }
+
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    file.take(cap).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod read_tests {
+    #[test]
+    fn a_fifo_is_refused_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("zone");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status().unwrap();
+        assert!(made.success());
+
+        let error = super::read_regular_file(&fifo, 1024).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

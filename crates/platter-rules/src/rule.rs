@@ -1,7 +1,7 @@
 //! What a rule is: plain data. Adding a rule is one entry in `table.rs`; nothing here does anything.
 
 use platter_core::dto::Verdict;
-use platter_core::{Category, Os};
+use platter_core::{Category, Os, UserDir};
 
 const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -40,6 +40,13 @@ pub struct Named {
     pub names: &'static [&'static str],
     /// The directory's parent must contain a file with this name (`Cargo.toml` next to `target`).
     pub sibling: Option<&'static str>,
+    /// The parent must also hold a file with one of these names (a lockfile next to `node_modules`).
+    pub sibling_any: &'static [&'static str],
+    /// No folder on the way down to the directory, scan root included, has one of these names: tools
+    /// install their own copies there (`~/.vscode/extensions/*/node_modules`).
+    pub not_inside: &'static [&'static str],
+    /// The directory is not below one of these absolute paths (`/usr`, `/opt`).
+    pub not_below: &'static [&'static str],
     pub age: Option<Age>,
 }
 
@@ -48,8 +55,29 @@ impl Named {
         Self {
             names,
             sibling: None,
+            sibling_any: &[],
+            not_inside: &[],
+            not_below: &[],
             age: None,
         }
+    }
+
+    /// Only when the parent directory also holds a file with one of these names.
+    pub const fn next_to_any(mut self, markers: &'static [&'static str]) -> Self {
+        self.sibling_any = markers;
+        self
+    }
+
+    /// Never inside a folder with one of these names.
+    pub const fn not_inside(mut self, names: &'static [&'static str]) -> Self {
+        self.not_inside = names;
+        self
+    }
+
+    /// Never below one of these absolute paths.
+    pub const fn not_below(mut self, paths: &'static [&'static str]) -> Self {
+        self.not_below = paths;
+        self
     }
 
     /// Only when the parent directory holds a file called `marker`.
@@ -116,6 +144,8 @@ pub enum Matcher {
     Fixed(&'static str),
     /// The directory at this path below the home directory (`.cache`, `.local/share/Trash`).
     Home(&'static str),
+    /// One of the user's personal folders, wherever the desktop put it and whatever it is called.
+    UserDir(UserDir),
     /// A directory by name, anywhere.
     Named(Named),
     /// Files by age, category and size below a home folder.
@@ -128,7 +158,7 @@ impl Matcher {
         let age = match self {
             Matcher::Named(named) => named.age,
             Matcher::Files(files) => files.age,
-            Matcher::Fixed(_) | Matcher::Home(_) => None,
+            Matcher::Fixed(_) | Matcher::Home(_) | Matcher::UserDir(_) => None,
         };
 
         match age {

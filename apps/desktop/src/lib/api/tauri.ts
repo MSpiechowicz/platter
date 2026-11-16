@@ -3,17 +3,22 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { ApiRequestError, isApiError, type Api } from './client';
 import type {
   ChildrenPage,
+  CleanupEvent,
+  CleanupId,
+  CleanupPlanDto,
   ExternalLink,
   LodNode,
   NodeDto,
   NodeId,
   PathDto,
+  PlanId,
   ScanEvent,
   ScanId,
   ScanOptions,
   SortKey,
   SuggestionsDto,
   SummaryDto,
+  UndoDto,
   VolumeDto,
 } from './types';
 
@@ -67,8 +72,15 @@ export function createTauriApi(): Api {
 
     getNode: (scan: ScanId, node: NodeId) => call<NodeDto>('get_node', { scan, node }),
 
-    getChildren: (scan: ScanId, node: NodeId, offset: number, limit: number, sort: SortKey) =>
-      call<ChildrenPage>('get_children', { scan, node, offset, limit, sort }),
+    getChildren: (scan: ScanId, node: NodeId, offset: number, limit: number, sort: SortKey, query?: string) =>
+      call<ChildrenPage>('get_children', {
+        scan,
+        node,
+        offset,
+        limit,
+        sort,
+        ...(query ? { query } : {}),
+      }),
 
     getLod: (scan: ScanId, node: NodeId, maxNodes: number, maxDepth: number) =>
       call<LodNode>('get_lod', { scan, node, maxNodes, maxDepth }),
@@ -78,6 +90,20 @@ export function createTauriApi(): Api {
     getSummary: (scan: ScanId, node: NodeId) => call<SummaryDto>('get_summary', { scan, node }),
 
     getSuggestions: (scan: ScanId) => call<SuggestionsDto>('get_suggestions', { scan }),
+
+    planCleanup: (scan: ScanId, suggestionIds: string[]) =>
+      call<CleanupPlanDto>('plan_cleanup', { scan, suggestions: suggestionIds }),
+
+    startCleanup(plan: PlanId, onEvent: (event: CleanupEvent) => void): Promise<CleanupId> {
+      const channel = new Channel<CleanupEvent>();
+      channel.onmessage = onEvent;
+
+      return call<CleanupId>('start_cleanup', { plan, onEvent: channel });
+    },
+
+    cancelCleanup: (cleanup: CleanupId) => callVoid('cancel_cleanup', { cleanup }),
+
+    undoCleanup: (cleanup: CleanupId) => call<UndoDto[]>('undo_cleanup', { cleanup }),
 
     openInFileManager: (scan: ScanId, node: NodeId) => callVoid('open_in_file_manager', { scan, node }),
 

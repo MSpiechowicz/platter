@@ -30,7 +30,10 @@ pub use budget::{BudgetLimits, EntryBudget, Lease, LimitHit};
 pub use error::{QueryError, ScanError, ScanLimit};
 pub use model::{
     Category, EntryKind, Environment, NodeId, NodeKind, Os, Progress, ScanWarning, SkipReason, Totals, Tree,
-    Volume,
+    UserDir, Volume,
 };
-pub use ports::{DirListing, DirSource, EntryMeta, RawEntry, RootInfo, SourceOptions, VolumeProvider};
+pub use ports::{
+    DirListing, DirSource, EntryMeta, EntryProbe, EntryRemover, ExpectedEntry, ProbedEntry, RawEntry,
+    RemoveMode, Removed, RootInfo, SourceOptions, ToolCommand, ToolFailure, ToolRunner, VolumeProvider,
+};
 pub use scan::{CancelToken, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_MEMORY_BYTES, ProgressFn, ScanConfig, scan};

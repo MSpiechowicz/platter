@@ -11,7 +11,7 @@ mod volume;
 mod warning;
 
 pub use category::Category;
-pub use environment::{Environment, Os};
+pub use environment::{Environment, Os, UserDir};
 pub use id::NodeId;
 pub use kind::{EntryKind, NodeKind, SkipReason};
 pub use totals::{Progress, Totals};

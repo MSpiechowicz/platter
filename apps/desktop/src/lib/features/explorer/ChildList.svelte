@@ -6,15 +6,17 @@
   import { formatCount } from '../../format';
   import { fmt } from '../../state/fmt.svelte';
   import { moveFocus } from './roving';
-  import { countLabels, matches, normalizeQuery, segments, SEARCH_LIMIT } from './search';
+  import { countLabels, normalizeQuery, segments } from './search';
 
   interface Props {
     /** The folder shown; the not-counted rows fold up again when it changes. */
     folder: NodeId;
-    /** The rows that have a size. */
+    /** The rows that have a size: with a query, the ones the backend found. */
     items: readonly NodeDto[];
-    /** How many items have a size (the most it can be while pages are still on their way). */
+    /** How many items of the folder have a size (the most it can be while pages are still on their way). */
     total: number;
+    /** With a query: how many of them match, once that is known. */
+    matched?: number;
     /** The rows with no size (not read, empty, another disk), by name. */
     uncounted: readonly NodeDto[];
     /** How many there are in all, or `undefined` while that is not known yet. */
@@ -37,13 +39,11 @@
     moreError: string | null;
     /** What the list is filtered by (applied, not what is being typed); `''` for no filter. */
     query?: string;
-    /** The search is still loading pages in the background. */
-    searching?: boolean;
-    /** The folder has more items than the search looks through. */
-    searchTruncated?: boolean;
-    /** How many items of the folder are in all, counted or not: the search's progress is out of this. */
+    /** The rows of the selected "smaller items" tile are not all loaded, and the list stopped loading by itself. */
+    groupTruncated?: boolean;
+    /** How many items the list has in all, counted or not (with a query, the matches): "Load more" is out of this. */
     allTotal?: number;
-    /** How many of them are loaded. */
+    /** How many of them are loaded, counted or not. */
     loaded?: number;
     onquery?: (query: string) => void;
     onsort: (sort: SortKey) => void;
@@ -57,6 +57,7 @@
     folder,
     items,
     total,
+    matched,
     uncounted,
     uncountedTotal,
     sort,
@@ -72,8 +73,7 @@
     moreDisabled = false,
     moreError,
     query = '',
-    searching = false,
-    searchTruncated = false,
+    groupTruncated = false,
     allTotal = 0,
     loaded = 0,
     onquery,
@@ -94,25 +94,26 @@
   // The Dropdown knows the four choices; the API's ascending size order is not offered.
   const sortValue = $derived(sort === 'sizeAsc' ? 'sizeDesc' : sort);
 
-  // The filter: rows whose name contains the query, still in the list's order.
+  // With a query the rows are the ones the backend found; the query is only what is underlined in their names.
   const needle = $derived(normalizeQuery(query));
   const filtering = $derived(needle !== '');
-  const shown = $derived(filtering ? items.filter((item) => matches(item.name, needle)) : items);
-  const shownUncounted = $derived(
-    filtering ? uncounted.filter((item) => matches(item.name, needle)) : uncounted,
-  );
-  const uncountedCount = $derived(filtering ? shownUncounted.length : (uncountedTotal ?? 0));
+  // The rows loaded without a size are never hidden: the count is at least their number. It is the whole number when
+  // the list is known to the end (or its total is), and otherwise only what has been seen so far.
+  const uncountedCount = $derived(Math.max(uncountedTotal ?? 0, uncounted.length));
+  const uncountedKnown = $derived(!hasMore || uncountedTotal !== undefined);
 
   const largest = $derived(items.reduce((most, item) => Math.max(most, item.allocated), 0) || 1);
-  const footer = $derived(
-    uncountedCount === 1 ? '1 item not counted' : `${formatCount(uncountedCount)} items not counted`,
-  );
+  const footer = $derived.by(() => {
+    const phrase = uncountedCount === 1 ? '1 item' : `${formatCount(uncountedCount)} items`;
+
+    return `${phrase} not counted${uncountedKnown ? '' : ' so far'}`;
+  });
   const nothingFound = $derived(
-    filtering && shown.length === 0 && shownUncounted.length === 0 && !searching && !loading,
+    filtering && items.length === 0 && uncounted.length === 0 && !loading && !error,
   );
 
   // The count: the longest text that fits next to the title and the sort. Every text is measured in a hidden copy.
-  const labels = $derived(countLabels(total, filtering ? shown.length : undefined));
+  const labels = $derived(countLabels(total, filtering ? matched : undefined));
   const GAP = 8;
   /** The space between the title and the count, and between the count and the sort; the middle one is spare. */
   const GAPS = 2;
@@ -156,24 +157,18 @@
     queueMicrotask(measure);
   });
 
-  // The search field: what is typed is applied after a short pause.
-  const DEBOUNCE_MS = 120;
+  // The search field: what is typed goes to the store as it is typed; the store waits for a pause before it asks.
   let field: HTMLInputElement | undefined = $state();
   let draft = $state('');
-  let timer: ReturnType<typeof setTimeout> | undefined;
 
   function type(): void {
-    clearTimeout(timer);
-    timer = setTimeout(() => onquery?.(draft), DEBOUNCE_MS);
+    onquery?.(draft);
   }
 
   function clear(): void {
-    clearTimeout(timer);
     draft = '';
     onquery?.('');
   }
-
-  $effect(() => () => clearTimeout(timer));
 
   function clearAndFocus(): void {
     clear();
@@ -212,7 +207,6 @@
   // The search starts again with each folder.
   $effect(() => {
     void folder;
-    clearTimeout(timer);
     draft = '';
   });
 
@@ -266,7 +260,7 @@
   });
 
   // One row is in the tab order; the arrow keys move between rows.
-  const tabbable = $derived(shown.find((item) => item.id === selected)?.id ?? shown[0]?.id);
+  const tabbable = $derived(items.find((item) => item.id === selected)?.id ?? items[0]?.id);
 
   function onkeydown(event: KeyboardEvent): void {
     moveFocus(event, [...(list?.querySelectorAll<HTMLElement>('.row') ?? [])]);
@@ -298,6 +292,7 @@
       data-explorer-search
       placeholder="Search in this folder"
       aria-label="Search in this folder"
+      maxlength="255"
       autocomplete="off"
       spellcheck="false"
       oninput={type}
@@ -310,9 +305,7 @@
     {/if}
   </div>
 
-  <div class="progress" class:on={searching} aria-hidden={!searching}>
-    <i style="width:{allTotal > 0 ? Math.min(100, (loaded / allTotal) * 100) : 0}%"></i>
-  </div>
+  <div class="progress" class:on={filtering && loading} aria-hidden={!(filtering && loading)}><i></i></div>
 
   <div class="rows" bind:this={list} aria-busy={loading}>
     <div class="inner">
@@ -321,15 +314,11 @@
           The list could not be read: {error}
           <button type="button" class="more" onclick={onretry}>Try again</button>
         </p>
-      {:else if items.length === 0 && !loading && !uncountedTotal}
+      {:else if !filtering && items.length === 0 && uncounted.length === 0 && !hasMore && !loading}
         <p class="note">Nothing in this folder.</p>
       {/if}
 
-      {#if searching}
-        <p class="note" role="status">Searching… {formatCount(loaded)} of {formatCount(allTotal)}</p>
-      {/if}
-
-      {#each shown as item (item.id)}
+      {#each items as item (item.id)}
         <button
           type="button"
           class="row"
@@ -375,7 +364,7 @@
 
         {#if expanded}
           <div id="uncounted-rows">
-            {#each shownUncounted as item (item.id)}
+            {#each uncounted as item (item.id)}
               <div class="row off" data-uncounted={item.id}>
                 <i class="dot"></i>
                 <span class="nm" title={item.name}
@@ -390,13 +379,16 @@
         {/if}
       {/if}
 
-      {#if hasMore && !filtering}
+      {#if hasMore}
         <button type="button" class="more" disabled={loadingMore || moreDisabled} onclick={onmore}>
-          {loadingMore ? 'Loading…' : `Load more (${formatCount(total - items.length)} left)`}
+          {loadingMore ? 'Loading…' : `Load more (${formatCount(Math.max(0, allTotal - loaded))} left)`}
         </button>
       {/if}
-      {#if searchTruncated}
-        <p class="note">Searched the first {formatCount(SEARCH_LIMIT)} of {formatCount(allTotal)} items</p>
+      {#if groupTruncated}
+        <p class="note">
+          Only the first {formatCount(loaded)} of {formatCount(allTotal)} items are shown, so some of the smaller
+          items are not highlighted
+        </p>
       {/if}
       {#if moreError}<p class="note">{moreError}</p>{/if}
     </div>
@@ -546,7 +538,7 @@
     stroke-linecap: round;
   }
 
-  /* A thin line under the field while pages are still arriving; it keeps its place when it is not shown. */
+  /* A thin line under the field while the matches are on their way; it keeps its place when it is not shown. */
   .progress {
     height: 2px;
     margin-bottom: 4px;
@@ -562,9 +554,9 @@
 
   .progress i {
     display: block;
+    width: 100%;
     height: 100%;
     background: var(--accent);
-    transition: width 0.2s;
   }
 
   /*

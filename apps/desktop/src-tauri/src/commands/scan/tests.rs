@@ -291,3 +291,22 @@ fn the_finished_event_carries_the_warnings_of_the_scan() {
     };
     assert!(warnings.is_empty());
 }
+
+#[test]
+fn a_picked_folder_that_is_no_longer_the_same_folder_is_refused() {
+    let state = AppState::new();
+    let dir = sample_dir();
+    let emit: EmitFn = Arc::new(|_| {});
+
+    let swapped = tauri::async_runtime::block_on(start_pinned(
+        &state,
+        options(dir.path()),
+        Some((0, 0)),
+        Arc::clone(&emit),
+    ))
+    .unwrap_err();
+    assert_eq!(swapped.code(), ApiErrorCode::Invalid);
+
+    let real = platter_platform::root::resolve_root(dir.path()).unwrap().identity;
+    assert!(tauri::async_runtime::block_on(start_pinned(&state, options(dir.path()), real, emit)).is_ok());
+}

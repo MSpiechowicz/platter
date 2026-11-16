@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { SuggestionDto, SuggestionsDto, Verdict } from '../../api/types';
-import { biggestWins, groupSuggestions, itemCount, reclaimSegments, suggestionCount } from './advisor';
+import {
+  biggestWins,
+  groupSuggestions,
+  itemCount,
+  reasonOf,
+  reclaimSegments,
+  suggestionCount,
+} from './advisor';
 
 const GB = 1_000_000_000;
 
@@ -36,6 +43,22 @@ const DATA = response(
   suggestion('docker', 'review', 54),
   suggestion('steam', 'keep', 142),
 );
+
+describe('reasonOf', () => {
+  it("is the rule's reason when nothing inside is hard-linked", () => {
+    expect(reasonOf(suggestion('a', 'safe', 1))).toBe('Because of a.');
+    expect(reasonOf({ ...suggestion('a', 'safe', 1), sharedFiles: 0 })).toBe('Because of a.');
+  });
+
+  it('says that the space freed can differ when files are hard-linked', () => {
+    expect(reasonOf({ ...suggestion('a', 'safe', 1), sharedFiles: 1 })).toBe(
+      'Because of a. 1 file is also linked from elsewhere, so the space freed can differ.',
+    );
+    expect(reasonOf({ ...suggestion('a', 'safe', 1), sharedFiles: 12_345 })).toBe(
+      'Because of a. 12,345 files are also linked from elsewhere, so the space freed can differ.',
+    );
+  });
+});
 
 describe('groupSuggestions', () => {
   it('groups by verdict in the order safe, review, kept, with the size and rows of each', () => {

@@ -144,6 +144,47 @@ describe('scanning', () => {
     expect(crossed?.allocated).toBeGreaterThan(0);
   });
 
+  it('says why a mount was not entered, only on mounts, and always whether a folder could be read', async () => {
+    const api = createMockApi(FAST);
+    const stay = await scan(api, '/real', true);
+    const kids = await allChildren(api, stay.id, stay.rootId);
+    const mounts = Object.fromEntries(
+      kids.filter((kid) => kid.kind === 'mount').map((kid) => [kid.name, kid.skipped]),
+    );
+
+    // The backend never enters a virtual filesystem and enters another disk only when the scan leaves it.
+    expect(mounts).toEqual({
+      boot: 'otherDisk',
+      dev: 'system',
+      proc: 'system',
+      run: 'system',
+      sys: 'system',
+      tmp: 'system',
+      mnt: 'otherDisk',
+    });
+    expect(kids.filter((kid) => kid.kind !== 'mount').every((kid) => !('skipped' in kid))).toBe(true);
+    expect(kids.every((kid) => typeof kid.unreadable === 'boolean')).toBe(true);
+    expect(kids.find((kid) => kid.name === 'root')?.unreadable).toBe(true);
+    expect(kids.find((kid) => kid.name === 'home')?.unreadable).toBe(false);
+
+    const cross = await scan(api, '/real', false);
+    const crossed = await allChildren(api, cross.id, cross.rootId);
+
+    expect(crossed.filter((kid) => kid.kind === 'mount').map((kid) => kid.name)).toEqual([
+      'dev',
+      'proc',
+      'run',
+      'sys',
+      'tmp',
+    ]);
+    expect(crossed.find((kid) => kid.name === 'mnt')?.kind).toBe('dir');
+    expect(await api.getNode(cross.id, crossed.find((kid) => kid.name === 'proc')?.id ?? 0)).toMatchObject({
+      kind: 'mount',
+      skipped: 'system',
+      unreadable: false,
+    });
+  });
+
   it('emits cancelled, nothing after it, and frees the scan', async () => {
     const api = createMockApi({ durationMs: 500, tickMs: 5, now: () => NOW });
     const events: ScanEvent[] = [];
@@ -261,6 +302,82 @@ describe('getChildren', () => {
     }
   });
 
+  describe('with a name filter', () => {
+    it('lists only the children whose name contains it, ignoring case, and counts them as the total', async () => {
+      const api = createMockApi(FAST);
+      const { id, rootId } = await scan(api, '/home/demo');
+      const everything = await allChildren(api, id, rootId);
+      const word = (everything.find((child) => /[a-z]{3}/i.test(child.name))?.name ?? '').slice(0, 3);
+      const expected = everything.filter((child) => child.name.toLowerCase().includes(word.toLowerCase()));
+
+      expect(expected.length).toBeGreaterThan(0);
+
+      for (const query of [word.toLowerCase(), word.toUpperCase()]) {
+        const page = await api.getChildren(id, rootId, 0, 1000, 'sizeDesc', query);
+
+        expect(page.total).toBe(expected.length);
+        expect(page.items.map((item) => item.id)).toEqual(expected.map((item) => item.id));
+      }
+    });
+
+    it('pages through the matches in the requested order, with the total of the matches on every page', async () => {
+      const api = createMockApi(FAST);
+      const { id, rootId } = await scan(api, '/home/demo');
+      const everything = await allChildren(api, id, rootId, 'nameAsc');
+      const query = 'e';
+      const expected = everything.filter((child) => child.name.toLowerCase().includes(query));
+      const seen: number[] = [];
+
+      expect(expected.length).toBeGreaterThan(2);
+      expect(expected.length).toBeLessThan(everything.length);
+
+      for (let offset = 0; offset < expected.length; offset += 2) {
+        const page = await api.getChildren(id, rootId, offset, 2, 'nameAsc', query);
+
+        expect(page.total).toBe(expected.length);
+        seen.push(...page.items.map((item) => item.id));
+      }
+
+      expect(seen).toEqual(expected.map((item) => item.id));
+      expect((await api.getChildren(id, rootId, 1000, 2, 'nameAsc', query)).items).toEqual([]);
+    });
+
+    it('has no matches for a name that is not there', async () => {
+      const api = createMockApi(FAST);
+      const { id, rootId } = await scan(api, '/home/demo');
+
+      expect(await api.getChildren(id, rootId, 0, 10, 'sizeDesc', 'no such name \u2603')).toMatchObject({
+        total: 0,
+        items: [],
+      });
+    });
+
+    it('filters nothing for a blank query', async () => {
+      const api = createMockApi(FAST);
+      const { id, rootId } = await scan(api, '/home/demo');
+      const all = await api.getChildren(id, rootId, 0, 1000, 'sizeDesc');
+
+      for (const query of ['', '   ']) {
+        expect(await api.getChildren(id, rootId, 0, 1000, 'sizeDesc', query)).toEqual(all);
+      }
+    });
+
+    it('refuses a query longer than 1024 bytes, counting bytes and not characters', async () => {
+      const api = createMockApi(FAST);
+      const { id, rootId } = await scan(api, '/home/demo');
+
+      // 512 two-byte letters are exactly 1024 bytes; one more is over.
+      await expect(api.getChildren(id, rootId, 0, 10, 'sizeDesc', 'a'.repeat(1025))).rejects.toMatchObject({
+        code: 'invalid',
+      });
+      await expect(
+        api.getChildren(id, rootId, 0, 10, 'sizeDesc', '\u00e9'.repeat(513)),
+      ).rejects.toMatchObject({ code: 'invalid' });
+      expect((await api.getChildren(id, rootId, 0, 10, 'sizeDesc', '\u00e9'.repeat(512))).total).toBe(0);
+      expect((await api.getChildren(id, rootId, 0, 10, 'sizeDesc', 'a'.repeat(1024))).total).toBe(0);
+    });
+  });
+
   it('rejects unknown nodes and negative paging', async () => {
     const api = createMockApi(FAST);
     const { id, rootId } = await scan(api);
@@ -322,6 +439,18 @@ describe('getLod', () => {
     expect(shown.map((child) => child.node.id)).toEqual(all.slice(0, shown.length).map((n) => n.id));
     const rest = all.slice(shown.length).reduce((sum, node) => sum + node.allocated, 0);
     expect(collapsed?.node.allocated).toBe(rest);
+
+    // It takes the category that holds most of the merged bytes, not a fixed one.
+    const bytes = new Map<string, number>();
+
+    for (const node of all.slice(shown.length)) {
+      bytes.set(node.category, (bytes.get(node.category) ?? 0) + node.allocated);
+    }
+
+    const heaviest = [...bytes].sort((x, y) => y[1] - x[1])[0]?.[0];
+
+    expect(collapsed?.node.category).toBe(heaviest);
+    expect(collapsed?.node.unreadable).toBe(false);
   });
 
   it('does not merge when everything fits, and expands the largest directories first', async () => {
@@ -329,21 +458,71 @@ describe('getLod', () => {
     const { id, rootId } = await scan(api);
     const all = await allChildren(api, id, rootId);
 
-    const lod = await api.getLod(id, rootId, all.length + 1, 1);
-    expect(lod.children.map((child) => child.node.id)).toEqual(all.map((n) => n.id));
+    // Children come largest first; equal sizes go by id (the children list goes by name), like the backend's LOD.
+    const lod = await api.getLod(id, rootId, all.length + 2, 1);
+    expect(lod.children.map((child) => child.node.id).sort((a, b) => a - b)).toEqual(
+      all.map((n) => n.id).sort((a, b) => a - b),
+    );
+    expect(lod.children.map((child) => child.node.allocated)).toEqual(all.map((n) => n.allocated));
 
     // With room for the root's children and a handful more, the biggest directory is the one that opens.
-    const deeper = await api.getLod(id, rootId, all.length + 6, 2);
+    const deeper = await api.getLod(id, rootId, all.length + 8, 2);
     const opened = deeper.children.filter((child) => child.children.length > 0);
     expect(opened.length).toBeGreaterThan(0);
     expect(opened[0]?.node.id).toBe(all[0]?.id);
+  });
+
+  it('names one merged child "1 smaller item", also when it could have been shown', async () => {
+    const api = createMockApi(FAST);
+    const { id, rootId } = await scan(api);
+    const all = await allChildren(api, id, rootId);
+
+    // Like the backend: the loop stops when the budget is used up, before the last sibling takes the placeholder's place.
+    const lod = await api.getLod(id, rootId, all.length + 1, 1);
+    const collapsed = lod.children.at(-1)?.node;
+
+    expect(lod.children).toHaveLength(all.length);
+    expect(collapsed).toMatchObject({ id: COLLAPSED_NODE_ID, kind: 'collapsed', name: '1 smaller item' });
+    expect(collapsed?.allocated).toBe(all.at(-1)?.allocated);
+  });
+
+  it('spends the budget on the largest nodes anywhere, so a directory shows only some of its children', async () => {
+    const api = createMockApi(FAST);
+    const { id, rootId } = await scan(api);
+    const lod = await api.getLod(id, rootId, 40, 4);
+    const partial: LodNode[] = [];
+    const visit = (node: LodNode): void => {
+      if (node !== lod && node.children.some((child) => child.node.kind === 'collapsed')) {
+        partial.push(node);
+      }
+
+      node.children.forEach(visit);
+    };
+
+    visit(lod);
+
+    expect(count(lod)).toBeLessThanOrEqual(40);
+    expect(partial.length).toBeGreaterThan(1);
+
+    for (const node of partial) {
+      const shown = node.children.filter((child) => child.node.kind !== 'collapsed');
+      const hidden = Number(/^(\d+) smaller items?$/.exec(node.children.at(-1)?.node.name ?? '')?.[1]);
+      const total = (await api.getChildren(id, node.node.id, 0, 1, 'sizeDesc')).total;
+
+      expect(shown.length).toBeGreaterThan(0);
+      expect(shown.length + hidden).toBe(total);
+    }
   });
 
   it('rejects impossible limits', async () => {
     const api = createMockApi(FAST);
     const { id, rootId } = await scan(api);
 
-    await expect(api.getLod(id, rootId, 0, 2)).rejects.toMatchObject({ code: 'invalid' });
+    await expect(api.getLod(id, rootId, -1, 2)).rejects.toMatchObject({ code: 'invalid' });
+    await expect(api.getLod(id, rootId, 10, -1)).rejects.toMatchObject({ code: 'invalid' });
+
+    // The backend takes unsigned numbers and still returns the root when it is given no room.
+    expect((await api.getLod(id, rootId, 0, 2)).children).toEqual([]);
   });
 });
 
@@ -382,34 +561,58 @@ describe('getSummary', () => {
     expect(sizes).toEqual([...sizes].sort((a, b) => b - a));
   });
 
-  it('lists the 8 largest directories among children and grandchildren, without a directory its own child dominates', async () => {
+  it('lists the largest directories like the backend: a dominated folder is replaced by its children, ties go by id', async () => {
     const api = createMockApi(FAST);
     const { id, rootId } = await scan(api);
-    const summary = await api.getSummary(id, rootId);
+    const { largestDirs } = await api.getSummary(id, rootId);
 
-    const dirs = async (node: number): Promise<NodeDto[]> =>
-      (await allChildren(api, id, node)).filter((kid) => kid.kind === 'dir');
-    const children = await dirs(rootId);
-    const grandchildren = (await Promise.all(children.map((child) => dirs(child.id)))).flat();
-    const dominated = new Set<number>();
+    // /home holds all of its bytes in /home/demo and .snapshots 86% in its old half, so those two drop out.
+    expect(largestDirs.map((dir) => dir.name)).toEqual([
+      'demo',
+      'older than 30 days',
+      'var',
+      'recent',
+      'usr',
+      'swap',
+      'srv',
+      'opt',
+    ]);
+    expect(largestDirs.map((dir) => dir.allocated)).toEqual(
+      [...largestDirs.map((dir) => dir.allocated)].sort((a, b) => b - a),
+    );
+    expect(largestDirs.every((dir) => dir.kind === 'dir' && dir.allocated > 0)).toBe(true);
+  });
 
-    for (const child of children) {
-      const inside = await dirs(child.id);
+  it('on a disk shaped like a real one (97% in /home) lists the one big folder, then the small ones', async () => {
+    const api = createMockApi(FAST);
+    const { id, rootId } = await scan(api, '/real');
+    const { largestDirs, node } = await api.getSummary(id, rootId);
 
-      if (inside.some((kid) => kid.allocated * 100 >= child.allocated * 80)) {
-        dominated.add(child.id);
-      }
-    }
+    // /home is dominated by its only child, so `sam` stands in for it; it holds 97% of the disk. Nothing is
+    // expanded after that, because eight candidates remain: the rest of the list is `/var`, `/usr`, `/opt`, a
+    // 17 MB `/etc` and the first three of fourteen items of 8 KB.
+    expect(largestDirs.map((dir) => dir.name)).toEqual([
+      'sam',
+      'var',
+      'usr',
+      'opt',
+      'etc',
+      'stub-1',
+      'stub-2',
+      'stub-3',
+    ]);
+    expect((largestDirs[0]?.allocated ?? 0) / node.allocated).toBeGreaterThan(0.97);
+  });
 
-    const expected = [...children.filter((child) => !dominated.has(child.id)), ...grandchildren]
-      .sort((a, b) => b.allocated - a.allocated || a.id - b.id)
-      .slice(0, 8)
-      .map((node) => node.id);
+  it('keeps /home in the list when its biggest child holds less than 80% of it', async () => {
+    const api = createMockApi(FAST);
+    const { id, rootId } = await scan(api, '/skew');
+    const { largestDirs, node } = await api.getSummary(id, rootId);
 
-    expect(dominated.size).toBeGreaterThan(0);
-    expect(summary.largestDirs).toHaveLength(8);
-    expect(summary.largestDirs.map((dir) => dir.id)).toEqual(expected);
-    expect(summary.largestDirs.every((dir) => dir.kind === 'dir')).toBe(true);
+    // vm-images is a folder of 18 files and holds 68% of /home, so /home stays; no mount, empty or unreadable folder is listed.
+    expect(largestDirs.map((dir) => dir.name).slice(0, 5)).toEqual(['home', 'var', 'usr', 'opt', 'etc']);
+    expect((largestDirs[0]?.allocated ?? 0) / node.allocated).toBeGreaterThan(0.97);
+    expect(largestDirs.every((dir) => dir.kind === 'dir' && dir.allocated > 0)).toBe(true);
   });
 
   it('lists /home/demo but not /home, which is all demo', async () => {
@@ -545,26 +748,141 @@ describe('getSuggestions', () => {
     }
   });
 
-  it('finds the demo disk folders at the paths it says', async () => {
+  it('finds the demo disk folders at the paths it says, with the backend rule ids', async () => {
     const api = createMockApi(FAST);
     const { id } = await scan(api, '/');
     const { suggestions } = await api.getSuggestions(id);
     const byId = new Map(suggestions.map((entry) => [entry.id, entry]));
 
     const pacman = byId.get('pacman-cache');
-    const targets = byId.get('cargo-target');
+    const targets = byId.get('rust-target');
 
-    expect(pacman?.path).toBe('/var/cache/pacman/pkg');
+    expect(pacman).toMatchObject({
+      path: '/var/cache/pacman/pkg',
+      title: 'Pacman package cache',
+      verdict: 'review',
+    });
     expect((await api.getPath(id, pacman?.nodes[0] ?? 0)).path).toBe('/var/cache/pacman/pkg');
     expect(targets?.path).toBe('~/Projekty/**/target');
     expect(targets?.items).toBe(2);
+    expect(targets?.reason).toBe(
+      'Build output that cargo creates again on the next build. 2 projects with nothing modified in over 30 days.',
+    );
 
     for (const node of targets?.nodes ?? []) {
       expect((await api.getPath(id, node)).path).toMatch(/^\/home\/demo\/Projekty\/[^/]+\/target$/);
     }
 
-    expect(byId.get('snapshots')?.verdict).toBe('review');
+    expect(byId.get('btrfs-snapshots')?.verdict).toBe('review');
     expect(byId.get('steam-library')?.verdict).toBe('keep');
+    expect(byId.get('trash')).toMatchObject({ path: '~/.local/share/Trash', verdict: 'safe' });
+  });
+
+  it('gives the verdicts of the backend table: pacman cache, journal, caches and Docker data are review', async () => {
+    const api = createMockApi(FAST);
+    const { id } = await scan(api, '/');
+    const { suggestions } = await api.getSuggestions(id);
+    const verdict = (rule: string): string | undefined =>
+      suggestions.find((entry) => entry.id === rule)?.verdict;
+
+    expect(
+      ['pacman-cache', 'journal', 'app-cache', 'docker-data', 'btrfs-snapshots', 'old-downloads'].map(
+        verdict,
+      ),
+    ).toEqual(Array(6).fill('review'));
+    expect(
+      ['rust-target', 'node-modules', 'trash', 'npm-cache', 'cargo-registry', 'coredumps'].map(verdict),
+    ).toEqual(Array(6).fill('safe'));
+    expect(['steam-library', 'videos', 'pictures', 'music', 'documents'].map(verdict)).toEqual(
+      Array(5).fill('keep'),
+    );
+
+    // Not in the table: the old mock's own ids.
+    expect(suggestions.map((entry) => entry.id)).not.toContain('user-cache');
+    expect(suggestions.map((entry) => entry.id)).not.toContain('system-journal');
+  });
+
+  it('splits Rust projects and node_modules by age: not touched for a while is safe, touched lately is review', async () => {
+    const api = createMockApi(FAST);
+    const { id } = await scan(api, '/');
+    const { suggestions } = await api.getSuggestions(id);
+    const byId = new Map(suggestions.map((entry) => [entry.id, entry]));
+    const nameOf = async (node: number): Promise<string> => (await api.getPath(id, node)).path;
+
+    const idle = await Promise.all((byId.get('rust-target')?.nodes ?? []).map(nameOf));
+    const recent = byId.get('rust-target-recent');
+
+    expect(idle.sort()).toEqual([
+      '/home/demo/Projekty/ocpp-bridge/target',
+      '/home/demo/Projekty/rust-playground/target',
+    ]);
+    expect(recent).toMatchObject({ verdict: 'review', path: '~/Projekty/platter/target', items: 1 });
+    expect(recent?.reason).toBe(
+      '1 project touched in the last 30 days, so you are probably still working on them. Removing the build output means a full rebuild.',
+    );
+    expect(byId.get('node-modules-recent')).toMatchObject({
+      verdict: 'review',
+      path: '~/Projekty/platter/node_modules',
+    });
+    expect(byId.get('node-modules')?.items).toBe(2);
+  });
+
+  it('counts the files that are hard-linked from elsewhere, so the Advisor can warn that the space freed differs', async () => {
+    const api = createMockApi(FAST);
+    const { id } = await scan(api, '/');
+    const { suggestions } = await api.getSuggestions(id);
+
+    // Every suggestion carries the count, like the backend's; node_modules (as pnpm makes it) has some, the rest none.
+    expect(suggestions.every((entry) => Number.isInteger(entry.sharedFiles))).toBe(true);
+    expect(suggestions.find((entry) => entry.id === 'node-modules')?.sharedFiles).toBeGreaterThan(0);
+    expect(suggestions.find((entry) => entry.id === 'node-modules-recent')?.sharedFiles).toBeGreaterThan(0);
+    expect(suggestions.find((entry) => entry.id === 'pacman-cache')?.sharedFiles).toBe(0);
+  });
+
+  it('keeps what the owner keeps untouched: nothing inside a kept folder is suggested, and a scan inside one gets nothing', async () => {
+    const api = createMockApi(FAST);
+    const { id } = await scan(api, '/home/demo');
+    const { suggestions } = await api.getSuggestions(id);
+    const kept = suggestions.filter((entry) => entry.verdict === 'keep');
+
+    expect(kept.map((entry) => entry.path).sort()).toEqual([
+      '~/.local/share/Steam/steamapps/common',
+      '~/Documents',
+      '~/Music',
+      '~/Pictures',
+      '~/Videos',
+    ]);
+
+    // A scan of the kept folder itself is matched as a whole; one that starts below it gets nothing at all.
+    const itself = await scan(api, '/home/demo/Videos');
+
+    expect((await api.getSuggestions(itself.id)).suggestions.map((entry) => entry.id)).toEqual(['videos']);
+
+    const inside = await scan(api, '/home/demo/Videos/recordings');
+
+    expect(await api.getSuggestions(inside.id)).toEqual({
+      suggestions: [],
+      totals: { safe: 0, review: 0, keep: 0 },
+    });
+  });
+
+  it('reads old files in Downloads and big disk images as separate file rules, with a glob for the path', async () => {
+    const api = createMockApi(FAST);
+    const { id } = await scan(api, '/');
+    const { suggestions } = await api.getSuggestions(id);
+    const old = suggestions.find((entry) => entry.id === 'old-downloads');
+    const images = suggestions.find((entry) => entry.id === 'disk-images');
+
+    expect(old?.path).toBe('~/Downloads/**');
+    expect(old?.reason).toMatch(/^\d+ files in Downloads not modified for 365 days or more\./);
+    expect(images?.reason).toMatch(/^\d+ images of 1 GiB or more in your home folder\./);
+
+    for (const node of old?.nodes ?? []) {
+      const dto = await api.getNode(id, node);
+
+      expect(dto.kind).toBe('file');
+      expect(NOW - dto.mtime).toBeGreaterThanOrEqual(365 * 86_400);
+    }
   });
 
   it('lists up to 20 matched nodes, largest first, and never counts a byte twice', async () => {
@@ -606,13 +924,23 @@ describe('getSuggestions', () => {
     const second = await scan(api, '/home/demo');
     const { suggestions } = await api.getSuggestions(first.id);
 
+    // Safe, then review, then keep; largest first within each.
     expect(suggestions.map((entry) => entry.id)).toEqual([
-      'cargo-target',
+      'rust-target',
       'node-modules',
-      'user-cache',
+      'steam-shader-cache',
       'trash',
-      'downloads',
+      'npm-cache',
+      'cargo-registry',
+      'rust-target-recent',
+      'app-cache',
+      'old-downloads',
+      'node-modules-recent',
+      'videos',
       'steam-library',
+      'pictures',
+      'music',
+      'documents',
     ]);
     expect(await api.getSuggestions(second.id)).toEqual(await api.getSuggestions(first.id));
   });
@@ -623,7 +951,7 @@ describe('getSuggestions', () => {
     const { suggestions } = await api.getSuggestions(id);
 
     expect(suggestions.length).toBeGreaterThanOrEqual(5);
-    expect(suggestions.find((entry) => entry.id === 'user-cache')?.path).toBe('~/.cache');
+    expect(suggestions.find((entry) => entry.id === 'app-cache')?.path).toBe('~/.cache');
   });
 
   it('rejects a scan that does not exist', async () => {

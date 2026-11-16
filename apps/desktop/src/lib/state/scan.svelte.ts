@@ -1,6 +1,6 @@
 import { api as defaultApi } from '../api';
 import { describeError, isApiError, type Api } from '../api/client';
-import type { NodeId, ScanEvent, ScanId, ScanOptions, Totals, VolumeDto } from '../api/types';
+import type { NodeId, ScanEvent, ScanId, ScanOptions, ScanWarning, Totals, VolumeDto } from '../api/types';
 
 export interface ScanProgress {
   files: number;
@@ -20,6 +20,10 @@ export type ScanState =
       rootId: NodeId;
       totals: Totals;
       elapsedMs: number;
+      /** What the scan could not do properly; empty when it went well. */
+      warnings: ScanWarning[];
+      /** A cleanup ran on this scan: it no longer describes the disk, so rescan to see it as it is. */
+      outdated: boolean;
     }
   | { status: 'cancelled'; options: ScanOptions }
   | { status: 'failed'; options: ScanOptions; message: string };
@@ -173,6 +177,13 @@ export class ScanStore {
     }
   }
 
+  /** A cleanup ran on `scanId`. Only the ready scan with that id is marked; a rescan starts clean. */
+  markOutdated(scanId: ScanId): void {
+    if (this.state.status === 'ready' && this.state.scanId === scanId) {
+      this.state = { ...this.state, outdated: true };
+    }
+  }
+
   /** Back to the start screen, freeing the scan. */
   reset(): void {
     if (this.state.status === 'scanning') {
@@ -210,6 +221,8 @@ export class ScanStore {
           rootId: event.rootId,
           totals: event.totals,
           elapsedMs: event.elapsedMs,
+          warnings: event.warnings ?? [],
+          outdated: false,
         };
         break;
 

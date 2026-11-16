@@ -24,6 +24,7 @@ pub fn scan_at(fs: &FakeFs, root: &str, one_file_system: bool) -> Tree {
 pub fn env_with_home(home: Option<&str>) -> Environment {
     Environment {
         home: home.map(PathBuf::from),
+        user_dirs: Vec::new(),
         now: NOW,
         os: Os::Linux,
     }

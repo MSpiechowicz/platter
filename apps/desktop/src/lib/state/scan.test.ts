@@ -82,6 +82,21 @@ describe('scan lifecycle', () => {
     expect(store.volumeInfo).toMatchObject({ exact: true, volume: { id: 'nvme0n1p2' } });
   });
 
+  it('keeps the warnings of a finished scan, and none when the event has none', async () => {
+    const warned = new ScanStore(
+      createMockApi({ durationMs: 0, now: () => NOW, warnings: ['mountTableUnavailable'] }),
+    );
+    const clean = new ScanStore(createMockApi({ durationMs: 0, now: () => NOW }));
+
+    await warned.start(ROOT);
+    await clean.start(ROOT);
+    await vi.waitFor(() => expect(warned.state.status).toBe('ready'));
+    await vi.waitFor(() => expect(clean.state.status).toBe('ready'));
+
+    expect(warned.state.status === 'ready' && warned.state.warnings).toEqual(['mountTableUnavailable']);
+    expect(clean.state.status === 'ready' && clean.state.warnings).toEqual([]);
+  });
+
   it('accepts a finished event that carries fields it does not know, and ignores them', async () => {
     const mock = createMockApi({ durationMs: 0, now: () => NOW });
     const totals = { allocated: 740, apparent: 700, files: 2000, dirs: 300, errors: 1 };
@@ -211,6 +226,47 @@ describe('scan lifecycle', () => {
 
     expect(store.options).toEqual(ROOT);
     await expect(api.getNode(first, 0)).rejects.toMatchObject({ code: 'notFound' });
+  });
+
+  it('is not outdated when a scan finishes, and marks only the ready scan with that id', async () => {
+    const { store } = setup(30);
+
+    await store.start(ROOT);
+    await vi.waitFor(() => expect(status(store)()).toBe('ready'));
+
+    if (store.state.status !== 'ready') {
+      throw new Error('expected ready');
+    }
+
+    const { scanId } = store.state;
+
+    expect(store.state.outdated).toBe(false);
+
+    store.markOutdated(scanId + 1);
+    expect(store.state.status === 'ready' && store.state.outdated).toBe(false);
+
+    store.markOutdated(scanId);
+    expect(store.state).toMatchObject({ status: 'ready', scanId, outdated: true });
+  });
+
+  it('ignores markOutdated when nothing is ready, and a rescan starts not outdated', async () => {
+    const { store } = setup(30);
+
+    store.markOutdated(1);
+    expect(store.state).toEqual({ status: 'idle' });
+
+    await store.start(ROOT);
+    await vi.waitFor(() => expect(status(store)()).toBe('ready'));
+    store.markOutdated(store.state.status === 'ready' ? store.state.scanId : -1);
+    expect(store.state.status === 'ready' && store.state.outdated).toBe(true);
+
+    await store.rescan();
+    expect(store.state.status).toBe('scanning');
+    store.markOutdated(1);
+    expect(store.state.status).toBe('scanning');
+
+    await vi.waitFor(() => expect(status(store)()).toBe('ready'));
+    expect(store.state.status === 'ready' && store.state.outdated).toBe(false);
   });
 
   it('goes back to idle on reset and frees the scan, but not while scanning', async () => {

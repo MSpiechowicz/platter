@@ -72,12 +72,40 @@ describe('CapacityCard', () => {
     render(CapacityCard, { props: { totals } });
 
     expect(screen.getByText('Scanned')).toBeTruthy();
-    expect(screen.getByText('SCANNED')).toBeTruthy();
+    expect(screen.getByText('ON DISK')).toBeTruthy();
+    expect(screen.queryByText('SCANNED')).toBeNull();
     expect(screen.getByText('740 GB')).toBeTruthy();
     expect(screen.getByText('2,000')).toBeTruthy();
     expect(screen.getByText('300')).toBeTruthy();
     expect(screen.queryByText('USED')).toBeNull();
     expect(screen.queryByText('free')).toBeNull();
+  });
+
+  it('names a file size only when it differs from the space on disk, else the share of the disk', () => {
+    settings.reduceMotion = true;
+
+    // 700 GB of files on 740 GB of disk: more than 5% apart, worth showing.
+    const differs = render(CapacityCard, { props: { totals, container: volume } });
+    expect(screen.getByText('file size')).toBeTruthy();
+    expect(screen.getByText('700 GB')).toBeTruthy();
+    differs.unmount();
+
+    const same = { ...totals, apparent: totals.allocated };
+    const onDisk = render(CapacityCard, { props: { totals: same, container: volume } });
+    expect(screen.queryByText('file size')).toBeNull();
+    expect(screen.getByText('of its disk')).toBeTruthy();
+    expect(screen.getByText('74%')).toBeTruthy();
+    onDisk.unmount();
+
+    const tiny = { ...same, allocated: 25_000_000, apparent: 25_000_000 };
+    const small = render(CapacityCard, { props: { totals: tiny, container: volume } });
+    expect(screen.getByText('<0.1%')).toBeTruthy();
+    small.unmount();
+
+    // Nothing more to say: files and folders only, no repeated size.
+    render(CapacityCard, { props: { totals: same } });
+    expect(screen.queryByText('file size')).toBeNull();
+    expect(screen.queryByText('of its disk')).toBeNull();
   });
 
   it('ignores fields of the totals and of the volume that it does not know', () => {
@@ -90,5 +118,32 @@ describe('CapacityCard', () => {
 
     expect(screen.getByText('74%')).toBeTruthy();
     expect(screen.getByText('260 GB')).toBeTruthy();
+  });
+
+  it('says that blocks are shared when a btrfs scan counts more than the disk uses', () => {
+    settings.reduceMotion = true;
+    const NOTE = /share disk blocks/;
+
+    const { unmount } = render(CapacityCard, {
+      props: { volume, totals: { ...totals, allocated: 900 * GB } },
+    });
+    expect(screen.queryByText(NOTE)).toBeTruthy();
+    unmount();
+
+    // Exactly what the disk uses, or less: nothing to explain.
+    const exact = render(CapacityCard, { props: { volume, totals } });
+    expect(screen.queryByText(NOTE)).toBeNull();
+    exact.unmount();
+
+    // Another filesystem: more than used is not explained by shared blocks, so the line is not shown.
+    const ext4 = render(CapacityCard, {
+      props: { volume: { ...volume, fsType: 'ext4' }, totals: { ...totals, allocated: 900 * GB } },
+    });
+    expect(screen.queryByText(NOTE)).toBeNull();
+    ext4.unmount();
+
+    // A folder scan has no disk to compare with.
+    render(CapacityCard, { props: { totals: { ...totals, allocated: 900 * GB } } });
+    expect(screen.queryByText(NOTE)).toBeNull();
   });
 });

@@ -41,11 +41,11 @@ pub(crate) fn child_named(tree: &Tree, dir: NodeId, name: &[u8]) -> Option<NodeI
     None
 }
 
-/// Whether the parent of `node` holds a file (not a folder) called `marker`.
+/// Whether the parent of `node` holds a regular file called `marker` (not a folder, link or mount).
 pub(crate) fn has_sibling_file(tree: &Tree, node: NodeId, marker: &str) -> bool {
     let Some(parent) = tree.parent(node) else {
         return false;
     };
 
-    child_named(tree, parent, marker.as_bytes()).is_some_and(|sibling| tree.kind(sibling) != NodeKind::Dir)
+    child_named(tree, parent, marker.as_bytes()).is_some_and(|sibling| tree.kind(sibling) == NodeKind::File)
 }

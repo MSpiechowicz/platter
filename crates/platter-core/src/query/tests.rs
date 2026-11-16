@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::dto::{AgeBucket, LodNode, SortKey};
 use crate::error::QueryError;
 use crate::model::{Category, NodeId, NodeKind, Tree};
-use crate::query::{children, lod, node, path, summary};
+use crate::query::{NameFilter, children, children_matching, lod, node, path, summary};
 use crate::scan::{CancelToken, ScanConfig, scan};
 use crate::testing::{FakeFs, NOW, scan_fake};
 
@@ -70,6 +70,58 @@ fn children_page_with_offset_and_limit() {
 
     let none = children(&tree, dir, 0, 0, SortKey::SizeDesc).unwrap();
     assert!(none.items.is_empty());
+}
+
+#[test]
+fn a_name_filter_keeps_matching_children_ignoring_case_and_counts_only_them() {
+    let tree = scan_fake(&paging_fs(), false);
+    let dir = find(&tree, "dir");
+    let filter = NameFilter::new("TXT").unwrap();
+
+    let page = children_matching(&tree, dir, Some(&filter), 1, 2, SortKey::SizeDesc).unwrap();
+
+    assert_eq!(page.total, 4, "total counts the matches, not the folder");
+    assert_eq!(names(&page.items), ["b.txt", "d.txt"]);
+
+    let a = NameFilter::new("a.").unwrap();
+    let only_a = children_matching(&tree, dir, Some(&a), 0, 10, SortKey::NameAsc).unwrap();
+    assert_eq!(names(&only_a.items), ["A.txt"]);
+
+    let none = NameFilter::new("zzz").unwrap();
+    let empty = children_matching(&tree, dir, Some(&none), 0, 10, SortKey::NameAsc).unwrap();
+    assert_eq!((empty.total, empty.items.len()), (0, 0));
+}
+
+#[test]
+fn a_blank_name_filter_filters_nothing() {
+    assert_eq!(NameFilter::new(""), None);
+    assert_eq!(NameFilter::new("   "), None);
+}
+
+#[test]
+fn a_name_filter_ignores_case_beyond_ascii_and_reads_invalid_utf8_as_shown() {
+    let filter = NameFilter::new("ŻÓŁ").unwrap();
+    assert!(filter.matches("zażółć".as_bytes()));
+    assert!(!filter.matches(b"zazolc"));
+
+    let replacement = NameFilter::new("a\u{fffd}b").unwrap();
+    assert!(replacement.matches(b"xa\xffbx"));
+    assert!(NameFilter::new("A").unwrap().matches(b"\xffa"));
+}
+
+#[test]
+fn a_name_filter_finds_a_match_among_many_children() {
+    let mut fs = FakeFs::new();
+    for i in 0..5000 {
+        fs.file(&format!("/big/file-{i:05}"), 1);
+    }
+    fs.file("/big/Needle.txt", 1);
+    let tree = scan_fake(&fs, false);
+    let filter = NameFilter::new("needle").unwrap();
+
+    let page = children_matching(&tree, find(&tree, "big"), Some(&filter), 0, 10, SortKey::SizeDesc).unwrap();
+
+    assert_eq!((page.total, names(&page.items)), (1, vec!["Needle.txt"]));
 }
 
 #[test]

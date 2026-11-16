@@ -1,14 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { abbreviateCount, countLabels, matches, normalizeQuery, segments } from './search';
+import { abbreviateCount, countLabels, normalizeQuery, segments } from './search';
 
-describe('matches', () => {
-  it('finds a part of a name, whatever the case', () => {
-    expect(matches('Node_Modules', 'modules')).toBe(true);
-    expect(matches('Node_Modules', 'NODE_')).toBe(true);
-    expect(matches('node_modules', 'cache')).toBe(false);
-    expect(matches('anything', '')).toBe(true);
-  });
-
+describe('normalizeQuery', () => {
   it('takes a query of only spaces for no query', () => {
     expect(normalizeQuery('   ')).toBe('');
     expect(normalizeQuery(' a ')).toBe(' a ');

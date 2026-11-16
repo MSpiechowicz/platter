@@ -20,6 +20,11 @@ fn app() -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
             commands::scan::cancel_scan,
             commands::scan::drop_scan,
             commands::suggestions::get_suggestions,
+            commands::query::get_children,
+            commands::cleanup::plan_cleanup,
+            commands::cleanup::start_cleanup,
+            commands::cleanup::cancel_cleanup,
+            commands::cleanup::undo_cleanup,
         ])
         .build(tauri::generate_context!())
         .expect("the app builds");
@@ -77,6 +82,10 @@ fn cancelling_an_unknown_scan_succeeds() {
 fn a_scan_with_a_channel_starts_and_can_be_cancelled_twice() {
     let (_app, window) = app();
     let dir = tempfile::tempdir().unwrap();
+    // As if the folder dialog had returned it.
+    window
+        .state::<AppState>()
+        .allow_roots([dir.path().to_string_lossy().into_owned()]);
 
     let started = invoke(
         &window,
@@ -162,10 +171,10 @@ fn a_finished_scan_gets_labelled_suggestions_and_asking_again_gives_the_same_ans
     let second = invoke(&window, "get_suggestions", json!({ "scan": scan })).expect("suggestions");
 
     assert_eq!(first, second, "the stored result is returned again");
-    assert_eq!(first["totals"], json!({ "safe": 5000, "review": 0, "keep": 0 }));
+    assert_eq!(first["totals"], json!({ "safe": 0, "review": 5000, "keep": 0 }));
     let suggestion = &first["suggestions"][0];
     assert_eq!(suggestion["id"], "pacman-cache");
-    assert_eq!(suggestion["verdict"], "safe");
+    assert_eq!(suggestion["verdict"], "review");
     assert_eq!(suggestion["path"], "/var/cache/pacman/pkg");
     assert_eq!(
         (&suggestion["allocated"], &suggestion["items"]),
@@ -184,4 +193,76 @@ fn suggestions_go_away_with_the_scan() {
 
     let error = invoke(&window, "get_suggestions", json!({ "scan": scan })).expect_err("dropped");
     assert_eq!(error["code"], "notFound");
+}
+
+#[test]
+fn children_can_be_filtered_by_name_and_a_huge_filter_is_refused() {
+    let (_app, window) = app();
+    let mut fs = platter_core::testing::FakeFs::new();
+    fs.file("/r/Report.pdf", 10)
+        .file("/r/notes.txt", 20)
+        .file("/r/report-old.pdf", 30);
+    let scan = finished_scan(&window, &fs);
+    let args = |query: Value| json!({ "scan": scan, "node": 1, "offset": 0, "limit": 10, "sort": "nameAsc", "query": query });
+
+    let filtered = invoke(&window, "get_children", args(json!("REPORT"))).expect("a page");
+    let names: Vec<&str> = filtered["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["report-old.pdf", "Report.pdf"]);
+    assert_eq!(filtered["total"], 2);
+
+    let unfiltered = invoke(&window, "get_children", args(Value::Null)).expect("a page");
+    assert_eq!(unfiltered["total"], 3);
+
+    let error = invoke(&window, "get_children", args(json!("x".repeat(1025)))).expect_err("too long");
+    assert_eq!(error["code"], "invalid");
+}
+
+#[test]
+fn a_scan_root_the_backend_did_not_offer_is_refused() {
+    let (_app, window) = app();
+    let dir = tempfile::tempdir().unwrap();
+
+    let refused = invoke(
+        &window,
+        "start_scan",
+        json!({
+            "options": { "root": dir.path(), "oneFileSystem": false },
+            "onEvent": "__CHANNEL__:7",
+        }),
+    )
+    .expect_err("an unknown root is refused");
+
+    assert_eq!(refused["code"], "invalid");
+}
+
+#[test]
+fn cleanup_commands_take_ids_only_and_refuse_what_they_do_not_know() {
+    let (_app, window) = app();
+
+    let unknown_scan = invoke(
+        &window,
+        "plan_cleanup",
+        json!({ "scan": 41, "suggestions": ["rust-target"] }),
+    )
+    .expect_err("no such scan");
+    let unknown_plan = invoke(
+        &window,
+        "start_cleanup",
+        json!({ "plan": 41, "onEvent": "__CHANNEL__:8" }),
+    )
+    .expect_err("no such plan");
+    let unknown_run = invoke(&window, "undo_cleanup", json!({ "cleanup": 41 })).expect_err("no such run");
+
+    assert_eq!(unknown_scan["code"], "notFound");
+    assert_eq!(unknown_plan["code"], "notFound");
+    assert_eq!(unknown_run["code"], "notFound");
+    assert_eq!(
+        invoke(&window, "cancel_cleanup", json!({ "cleanup": 41 })),
+        Ok(Value::Null)
+    );
 }

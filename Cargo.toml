@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/platter-core", "crates/platter-platform", "crates/platter-rules", "crates/platter-cli", "apps/desktop/src-tauri"]
+members = ["crates/platter-core", "crates/platter-platform", "crates/platter-rules", "crates/platter-cleanup", "crates/platter-cli", "apps/desktop/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,6 +19,7 @@ all = { level = "warn", priority = -1 }
 platter-core = { path = "crates/platter-core" }
 platter-platform = { path = "crates/platter-platform" }
 platter-rules = { path = "crates/platter-rules" }
+platter-cleanup = { path = "crates/platter-cleanup" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

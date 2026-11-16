@@ -30,6 +30,13 @@ export interface TestHooks {
   focus: number | null;
   /** The mock disk keeps nearly everything in one folder, and nearly all of that in one folder inside it. */
   dominant: boolean;
+  /** The mock scan finishes with a warning (the mount table could not be read). */
+  warn: boolean;
+  /**
+   * Overview, for screenshots: `review` selects every suggestion and opens the review dialog; `run` cleans the safe
+   * ones on the mock. Only the mock can ever run it (the hooks are off inside the Tauri window).
+   */
+  clean: 'review' | 'run' | null;
 }
 
 const VIEWS: readonly string[] = ['start', 'scanning', 'overview', 'explorer', 'settings'];
@@ -47,6 +54,8 @@ const NO_HOOKS: TestHooks = {
   pick: null,
   focus: null,
   dominant: false,
+  warn: false,
+  clean: null,
 };
 
 function isInsideTauri(): boolean {
@@ -69,6 +78,7 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
   const params = new URLSearchParams(search);
   const view = params.get('view');
   const ex = params.get('ex');
+  const clean = params.get('clean');
 
   return {
     view: view !== null && VIEWS.includes(view) ? (view as HookView) : null,
@@ -83,6 +93,8 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
     pick: wholeNumber(params.get('pick')),
     focus: wholeNumber(params.get('focus')),
     dominant: params.has('dominant'),
+    warn: params.has('warn'),
+    clean: clean === 'review' || clean === 'run' ? clean : null,
   };
 }
 

@@ -175,30 +175,57 @@ impl Tree {
         loop {
             count += self.shared_in(level.clone());
 
-            let mut next: Option<Range<u32>> = None;
-            for index in level {
-                let node = &self.nodes[index as usize];
-                if node.kind != NodeKind::Dir {
-                    continue;
-                }
-
-                let dir = &self.dirs[node.dir as usize];
-                if dir.child_count == 0 {
-                    continue;
-                }
-
-                let children = dir.first_child..dir.first_child + dir.child_count;
-                next = Some(match next {
-                    Some(run) => run.start.min(children.start)..run.end.max(children.end),
-                    None => children,
-                });
-            }
-
-            match next {
+            match self.children_run(level) {
                 Some(run) => level = run,
                 None => return count,
             }
         }
+    }
+
+    /// Whether some directory inside the subtree (or the node itself) could not be listed. The sizes,
+    /// counts and age of such a node only cover the part that was read.
+    pub fn has_unreadable(&self, id: NodeId) -> bool {
+        if self.unreadable.is_empty() || self.node(id).kind != NodeKind::Dir {
+            return false;
+        }
+
+        // Same walk as `shared_files`: one run of ids per depth.
+        let mut level = id.0..id.0 + 1;
+        loop {
+            let from = self.unreadable.partition_point(|&dir| dir < level.start);
+            if self.unreadable.get(from).is_some_and(|&dir| dir < level.end) {
+                return true;
+            }
+
+            match self.children_run(level) {
+                Some(run) => level = run,
+                None => return false,
+            }
+        }
+    }
+
+    /// The run of ids holding every child of the directories in `level`.
+    fn children_run(&self, level: Range<u32>) -> Option<Range<u32>> {
+        let mut next: Option<Range<u32>> = None;
+        for index in level {
+            let node = &self.nodes[index as usize];
+            if node.kind != NodeKind::Dir {
+                continue;
+            }
+
+            let dir = &self.dirs[node.dir as usize];
+            if dir.child_count == 0 {
+                continue;
+            }
+
+            let children = dir.first_child..dir.first_child + dir.child_count;
+            next = Some(match next {
+                Some(run) => run.start.min(children.start)..run.end.max(children.end),
+                None => children,
+            });
+        }
+
+        next
     }
 
     /// Hard-linked files among the ids in `ids`.

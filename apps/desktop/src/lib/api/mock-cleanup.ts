@@ -1,0 +1,439 @@
+import { ApiRequestError, type Api } from './client';
+import { RULE_IDS, suggestionsOf } from './mock-suggestions';
+import type { MockNode, MockTree } from './mock-tree';
+import type {
+  CleanupActionKind,
+  CleanupEvent,
+  CleanupId,
+  CleanupPlanDto,
+  OutcomeDto,
+  PlanGroupDto,
+  PlanId,
+  RefusedDto,
+  ScanId,
+  SuggestionDto,
+  UndoDto,
+} from './types';
+
+/*
+ * The mock's stand-in for the cleanup commands of `src-tauri/src/commands/cleanup.rs`. It never changes
+ * anything, it only tells the story of a cleanup over the mock's own suggestions.
+ *
+ * Still different from the backend:
+ * - The mock knows only the up to 20 largest matches of a rule (what `getSuggestions` lists as `nodes`), so a
+ *   group has at most 20 items; the backend plans every match.
+ * - It has no disk to guard, so nothing is refused for being protected, nested or changed since the plan.
+ * - Every target succeeds: there are no `skipped` or `failed` outcomes, no problems, and no tool that is missing.
+ * - `freed` is the sum of what was deleted, emptied or cleaned by a tool (not what was trashed, which
+ *   frees nothing yet), as the mock cannot measure a disk.
+ * - Confirmation: the backend asks the user in a native dialog before anything that cannot be undone and rejects
+ *   with `cancelled` when declined. A browser has no such dialog, so `startCleanup` simply proceeds.
+ */
+
+/** The limits of the backend. */
+const PLAN_LIFETIME_MS = 10 * 60 * 1000;
+const MAX_PLANS = 4;
+const MAX_DONE = 4;
+const MAX_RULES = 64;
+const SAMPLE_PATHS = 20;
+
+const SCAN_ROOT_REASON = 'it is the scanned folder itself';
+const KEPT_REASON = 'kept on purpose';
+const NOT_CLEANED_REASON = 'Platter does not clean this';
+
+interface Tool {
+  program: string;
+  args: string[];
+  needsElevation: boolean;
+}
+
+type Action = { kind: Exclude<CleanupActionKind, 'runTool'> } | { kind: 'runTool'; tool: Tool };
+
+const DELETE: Action = { kind: 'delete' };
+const EMPTY_FOLDER: Action = { kind: 'emptyFolder' };
+const TRASH: Action = { kind: 'trash' };
+
+const tool = (program: string, args: string[], needsElevation: boolean): Action => ({
+  kind: 'runTool',
+  tool: { program, args, needsElevation },
+});
+
+/** `action_for` of `crates/platter-cleanup/src/action.rs`: the rules not listed are not cleaned. */
+const ACTIONS: Record<string, Action> = {
+  'rust-target': DELETE,
+  'rust-target-recent': DELETE,
+  'node-modules': DELETE,
+  'node-modules-recent': DELETE,
+  'python-cache': DELETE,
+
+  'app-cache': EMPTY_FOLDER,
+  'npm-cache': EMPTY_FOLDER,
+  'bun-cache': EMPTY_FOLDER,
+  'pnpm-store': EMPTY_FOLDER,
+  'yarn-cache': EMPTY_FOLDER,
+  'cargo-registry': EMPTY_FOLDER,
+  'gradle-cache': EMPTY_FOLDER,
+  'maven-repository': EMPTY_FOLDER,
+  'nuget-packages': EMPTY_FOLDER,
+  'go-modules': EMPTY_FOLDER,
+  'steam-shader-cache': EMPTY_FOLDER,
+
+  trash: { kind: 'emptyTrash' },
+
+  'old-downloads': TRASH,
+  'disk-images': TRASH,
+  'docker-desktop-vm': TRASH,
+
+  coredumps: tool('find', ['/var/lib/systemd/coredump', '-xdev', '-mindepth', '1', '-delete'], true),
+  'pacman-cache': tool('paccache', ['-rk2'], true),
+  'apt-cache': tool('apt-get', ['clean'], true),
+  'dnf-cache': tool('dnf', ['clean', 'packages'], true),
+  journal: tool('journalctl', ['--vacuum-time=2weeks'], true),
+  'docker-data': tool('docker', ['--context', 'default', 'system', 'prune', '--force'], false),
+};
+
+const RULE_ORDER = new Map(RULE_IDS.map((id, index) => [id, index]));
+
+const fail = (code: 'notFound' | 'invalid', message: string): never => {
+  throw new ApiRequestError(code, message);
+};
+
+const commandOf = (action: Action): string | undefined =>
+  action.kind === 'runTool' ? [action.tool.program, ...action.tool.args].join(' ') : undefined;
+
+interface Target {
+  path: string;
+  allocated: number;
+}
+
+interface PlannedGroup {
+  ruleId: string;
+  action: Action;
+  targets: Target[];
+}
+
+interface StoredPlan {
+  scan: ScanId;
+  groups: PlannedGroup[];
+  made: number;
+}
+
+type Step =
+  | { kind: 'start'; group: PlannedGroup }
+  | { kind: 'target'; group: PlannedGroup; target: Target }
+  | { kind: 'end'; group: PlannedGroup };
+
+interface Running {
+  id: CleanupId;
+  cancelled: boolean;
+}
+
+export interface MockCleanupHost {
+  /** The tree of a scan; rejects with `notFound` for an unknown scan. */
+  treeOf(scan: ScanId): MockTree;
+  pathOf(tree: MockTree, node: MockNode): string;
+  /** The mock's scan duration: 0 plays a cleanup out at once, anything else spreads it over that long. */
+  durationMs: number;
+}
+
+export type MockCleanupApi = Pick<Api, 'planCleanup' | 'startCleanup' | 'cancelCleanup' | 'undoCleanup'>;
+
+/** As in the backend, every plan with something to do is confirmed (the mock has no dialog to show). */
+const needsConfirmation = (groups: PlannedGroup[]): boolean => groups.length > 0;
+
+export function createMockCleanup(host: MockCleanupHost): MockCleanupApi {
+  const plans = new Map<PlanId, StoredPlan>();
+  /** Scans a cleanup has run on: they no longer describe the disk. */
+  const outdated = new Set<ScanId>();
+  /** Finished runs: the paths each moved to the trash, until it is undone. */
+  const done = new Map<CleanupId, string[]>();
+  let running: Running | null = null;
+  let lastPlan: PlanId = 0;
+  let lastCleanup: CleanupId = 0;
+
+  const store = (scan: ScanId, groups: PlannedGroup[]): PlanId => {
+    const id = ++lastPlan;
+    const now = Date.now();
+
+    for (const [other, stored] of plans) {
+      if (now - stored.made >= PLAN_LIFETIME_MS) {
+        plans.delete(other);
+      }
+    }
+
+    // Map order is insertion order: the oldest goes first.
+    while (plans.size >= MAX_PLANS) {
+      plans.delete(plans.keys().next().value as PlanId);
+    }
+
+    plans.set(id, { scan, groups, made: now });
+
+    return id;
+  };
+
+  /** What the plan will do, as the wire description (without an id) and as groups to play out. */
+  const describe = (
+    scan: ScanId,
+    ids: string[],
+    tree: MockTree,
+  ): { plan: Omit<CleanupPlanDto, 'planId'>; planned: PlannedGroup[] } => {
+    const chosen = new Set(ids);
+    const { suggestions } = suggestionsOf(tree);
+    const byRule = new Map(suggestions.map((suggestion) => [suggestion.id, suggestion]));
+    const groups: PlanGroupDto[] = [];
+    const planned: PlannedGroup[] = [];
+    const refused: RefusedDto[] = [];
+
+    const ordered = [...chosen]
+      .filter((id) => byRule.has(id))
+      .sort((a, b) => (RULE_ORDER.get(a) ?? 0) - (RULE_ORDER.get(b) ?? 0));
+
+    for (const id of ordered) {
+      const suggestion = byRule.get(id) as SuggestionDto;
+      const action = ACTIONS[id];
+
+      const nodes = suggestion.nodes.map((node) => tree.nodes[node]).filter((node) => node !== undefined);
+      const targets: Target[] = [];
+
+      for (const node of nodes) {
+        const path = host.pathOf(tree, node);
+
+        if (node.id === 0) {
+          refused.push({ ruleId: id, path, reason: SCAN_ROOT_REASON });
+        } else if (suggestion.verdict === 'keep') {
+          refused.push({ ruleId: id, path, reason: KEPT_REASON });
+        } else if (!action) {
+          refused.push({ ruleId: id, path, reason: NOT_CLEANED_REASON });
+        } else {
+          targets.push({ path, allocated: node.allocated });
+        }
+      }
+
+      if (!action || targets.length === 0) {
+        continue;
+      }
+
+      const command = commandOf(action);
+
+      planned.push({ ruleId: id, action, targets });
+      groups.push({
+        ruleId: id,
+        title: suggestion.title,
+        verdict: suggestion.verdict,
+        action: action.kind,
+        items: targets.length,
+        allocated: targets.reduce((sum, target) => sum + target.allocated, 0),
+        ...(command === undefined ? {} : { command }),
+        needsElevation: action.kind === 'runTool' && action.tool.needsElevation,
+        samplePaths: targets.slice(0, SAMPLE_PATHS).map((target) => target.path),
+      });
+    }
+
+    return {
+      plan: {
+        scanId: scan,
+        groups,
+        refused: refused.slice(0, 200),
+        refusedMore: Math.max(0, refused.length - 200),
+        notFound: [...chosen].filter((id) => !byRule.has(id)),
+        allocated: groups.reduce((sum, group) => sum + group.allocated, 0),
+        needsConfirmation: needsConfirmation(planned),
+      },
+      planned,
+    };
+  };
+
+  const stepsOf = (groups: PlannedGroup[]): Step[] =>
+    groups.flatMap((group): Step[] => [
+      { kind: 'start', group },
+      ...group.targets.map((target): Step => ({ kind: 'target', group, target })),
+      { kind: 'end', group },
+    ]);
+
+  const outcomeOf = (action: Action): OutcomeDto => {
+    switch (action.kind) {
+      case 'trash':
+        return { kind: 'trashed', problems: 0 };
+      case 'runTool':
+        return { kind: 'byTool', detail: commandOf(action), problems: 0 };
+      default:
+        return { kind: 'removed', problems: 0 };
+    }
+  };
+
+  /** Plays the plan out as the backend's executor does: tools are not stopped halfway, other groups stop between targets. */
+  const play = (
+    cleanup: CleanupId,
+    scan: ScanId,
+    groups: PlannedGroup[],
+    state: Running,
+    onEvent: (event: CleanupEvent) => void,
+  ): void => {
+    const queue = stepsOf(groups);
+    const trashed: string[] = [];
+    const total = queue.filter((step) => step.kind === 'target').length;
+    const delay = host.durationMs > 0 && total > 0 ? host.durationMs / total : 0;
+    let cleaned = 0;
+    let freed = 0;
+
+    const finish = (cancelled: boolean): void => {
+      // Whatever happened, the scan no longer describes the disk.
+      outdated.add(scan);
+      running = null;
+      done.set(cleanup, trashed);
+
+      while (done.size > MAX_DONE) {
+        done.delete(done.keys().next().value as CleanupId);
+      }
+
+      onEvent({
+        type: 'finished',
+        cleanupId: cleanup,
+        outdatedScan: scan,
+        cleaned,
+        withProblems: 0,
+        freed,
+        cancelled,
+        toolsNotRun: [],
+        canUndo: trashed.length > 0,
+      });
+    };
+
+    const pump = (): void => {
+      for (;;) {
+        const step = queue.shift();
+
+        if (!step) {
+          finish(false);
+          return;
+        }
+
+        const isTool = step.group.action.kind === 'runTool';
+
+        if (state.cancelled && ((step.kind === 'start' && isTool) || (step.kind === 'target' && !isTool))) {
+          if (step.kind === 'target') {
+            onEvent({ type: 'groupFinished', ruleId: step.group.ruleId });
+          }
+
+          finish(true);
+          return;
+        }
+
+        if (step.kind === 'start') {
+          onEvent({ type: 'groupStarted', ruleId: step.group.ruleId, targets: step.group.targets.length });
+        } else if (step.kind === 'end') {
+          onEvent({ type: 'groupFinished', ruleId: step.group.ruleId });
+        } else {
+          const outcome = outcomeOf(step.group.action);
+
+          cleaned++;
+
+          // Moving to the trash frees nothing until the trash is emptied, as on a real disk.
+          if (outcome.kind === 'trashed') {
+            trashed.push(step.target.path);
+          } else {
+            freed += step.target.allocated;
+          }
+
+          onEvent({
+            type: 'targetDone',
+            ruleId: step.group.ruleId,
+            path: step.target.path,
+            allocated: step.target.allocated,
+            outcome,
+          });
+
+          if (delay > 0) {
+            setTimeout(pump, delay);
+            return;
+          }
+        }
+      }
+    };
+
+    // Start on the next tick, so the caller has the id before the first event arrives.
+    setTimeout(pump, 0);
+  };
+
+  return {
+    async planCleanup(scan, suggestionIds) {
+      if (suggestionIds.length === 0 || suggestionIds.length > MAX_RULES) {
+        return fail('invalid', `choose between 1 and ${MAX_RULES} suggestions`);
+      }
+
+      const unknown = suggestionIds.find((id) => !RULE_ORDER.has(id));
+
+      if (unknown !== undefined) {
+        return fail('invalid', `${unknown} is not a rule`);
+      }
+
+      if (outdated.has(scan)) {
+        return fail('invalid', 'the disk changed since this scan; rescan first');
+      }
+
+      const { plan, planned } = describe(scan, suggestionIds, host.treeOf(scan));
+
+      return { planId: store(scan, planned), ...plan };
+    },
+
+    async startCleanup(plan, onEvent) {
+      if (running) {
+        return fail('invalid', 'a cleanup is already running');
+      }
+
+      const stored = plans.get(plan);
+
+      if (!stored) {
+        return fail('notFound', `plan ${plan} does not exist or was used`);
+      }
+
+      // A plan is used once, whatever comes of it.
+      plans.delete(plan);
+
+      if (Date.now() - stored.made >= PLAN_LIFETIME_MS) {
+        return fail('invalid', 'the plan has expired; make a new one');
+      }
+
+      if (outdated.has(stored.scan)) {
+        return fail('invalid', 'the disk changed since this plan was made; rescan first');
+      }
+
+      if (stored.groups.length === 0) {
+        return fail('invalid', 'the plan has nothing to clean');
+      }
+
+      // A dropped scan is `invalid` here, as in the backend, not `notFound`.
+      try {
+        host.treeOf(stored.scan);
+      } catch {
+        return fail('invalid', 'the disk changed since this plan was made; rescan first');
+      }
+
+      const cleanup = ++lastCleanup;
+      const state: Running = { id: cleanup, cancelled: false };
+
+      running = state;
+      play(cleanup, stored.scan, stored.groups, state, onEvent);
+
+      return cleanup;
+    },
+
+    async cancelCleanup(cleanup) {
+      if (running?.id === cleanup) {
+        running.cancelled = true;
+      }
+    },
+
+    async undoCleanup(cleanup): Promise<UndoDto[]> {
+      const paths = done.get(cleanup);
+
+      if (!paths) {
+        return fail('notFound', `cleanup ${cleanup} cannot be undone`);
+      }
+
+      done.delete(cleanup);
+
+      return paths.map((path) => ({ path, restored: true }));
+    },
+  };
+}

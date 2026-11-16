@@ -1,14 +1,16 @@
-import { ApiRequestError, COLLAPSED_NODE_ID, type Api } from './client';
+import { ApiRequestError, type Api } from './client';
+import { createMockCleanup } from './mock-cleanup';
+import { toDto } from './mock-dto';
 import { REAL_BYTES, REAL_ROOT, SKEW_BYTES, SKEW_ROOT } from './mock-layouts';
+import { lodOf } from './mock-lod';
+import { largestDirs } from './mock-summary';
 import { suggestionsOf } from './mock-suggestions';
-import { buildTree, childrenOf, DAY, type MockNode, type MockTree } from './mock-tree';
+import { buildTree, CATEGORIES, childrenOf, DAY, type MockNode, type MockTree } from './mock-tree';
 import type {
   AgeBucket,
   Category,
   ChildrenPage,
   ExternalLink,
-  LodNode,
-  NodeDto,
   NodeId,
   PathDto,
   ScanEvent,
@@ -17,6 +19,7 @@ import type {
   SortKey,
   SummaryDto,
   VolumeDto,
+  ScanWarning,
 } from './types';
 
 const GB = 1_000_000_000;
@@ -98,6 +101,8 @@ export interface MockOptions {
   /** Test hook: the demo disk keeps nearly everything in one folder (see `dominantLayout`). */
   dominant?: boolean;
   pickedFolder?: string | null;
+  /** Test hook: warnings the finished scan reports. */
+  warnings?: ScanWarning[];
 }
 
 /** Elapsed time reported for an instant scan, so the header does not read "in 0 s". */
@@ -124,10 +129,11 @@ function stopTimer(record: ScanRecord): void {
 const MAX_LIMIT = 1000;
 const MAX_LOD_NODES = 5000;
 const MAX_LOD_DEPTH = 64;
+/** The longest `getChildren` name filter, in UTF-8 bytes. */
+const MAX_NAME_FILTER_BYTES = 1024;
 
-/** Directories listed in `largestDirs`, and the share of a directory one child directory may hold before it is left out. */
-const LARGEST_DIRS = 8;
-const DOMINANT_SHARE_PERCENT = 80;
+const encoder = new TextEncoder();
+const utf8Length = (text: string): number => encoder.encode(text).length;
 
 const fail = (code: 'notFound' | 'invalid', message: string): never => {
   throw new ApiRequestError(code, message);
@@ -162,35 +168,6 @@ function sorter(sort: SortKey): (a: MockNode, b: MockNode) => number {
   }
 }
 
-function toDto(node: MockNode): NodeDto {
-  return {
-    id: node.id,
-    name: node.name,
-    kind: node.kind,
-    allocated: node.allocated,
-    apparent: node.apparent,
-    files: node.files,
-    hasChildren: node.childCount > 0,
-    category: node.category,
-    mtime: node.mtime,
-    ...(node.unreadable ? { unreadable: true } : {}),
-  };
-}
-
-function collapsedDto(hidden: MockNode[]): NodeDto {
-  return {
-    id: COLLAPSED_NODE_ID,
-    name: `${hidden.length} smaller items`,
-    kind: 'collapsed',
-    allocated: hidden.reduce((sum, node) => sum + node.allocated, 0),
-    apparent: hidden.reduce((sum, node) => sum + node.apparent, 0),
-    files: hidden.reduce((sum, node) => sum + node.files, 0),
-    hasChildren: false,
-    category: 'other',
-    mtime: hidden.reduce((newest, node) => Math.max(newest, node.mtime), 0),
-  };
-}
-
 const AGE_LIMITS_DAYS: [AgeBucket, number][] = [
   ['week', 7],
   ['month', 30],
@@ -220,7 +197,7 @@ function pathOf(tree: MockTree, node: MockNode): PathDto {
 
   const root = chain[0] as MockNode;
   const rest = chain.slice(1).map((entry) => entry.name);
-  const prefix = tree.rootPath === '/' ? '' : tree.rootPath;
+  const prefix = tree.rootPath.replace(/\/+$/, '');
 
   return {
     path: rest.length === 0 ? tree.rootPath : `${prefix}/${rest.join('/')}`,
@@ -229,68 +206,6 @@ function pathOf(tree: MockTree, node: MockNode): PathDto {
       ...chain.slice(1).map((entry) => ({ id: entry.id, name: entry.name })),
     ],
   };
-}
-
-function lodOf(tree: MockTree, rootNode: MockNode, maxNodes: number, maxDepth: number): LodNode {
-  interface Draft {
-    node: MockNode;
-    depth: number;
-    kids: (Draft | { collapsed: NodeDto })[];
-  }
-
-  const root: Draft = { node: rootNode, depth: 0, kids: [] };
-  const frontier: Draft[] = rootNode.childCount > 0 && maxDepth > 0 ? [root] : [];
-  let count = 1;
-
-  while (frontier.length > 0 && count < maxNodes) {
-    let largest = 0;
-    frontier.forEach((draft, index) => {
-      if (draft.node.allocated > (frontier[largest] as Draft).node.allocated) {
-        largest = index;
-      }
-    });
-
-    const [draft] = frontier.splice(largest, 1) as [Draft];
-    const kids = childrenOf(tree, draft.node).sort(sorter('sizeDesc'));
-    const room = maxNodes - count;
-
-    // Show every child if they fit, otherwise the biggest ones plus one "N smaller items" node.
-    let shown = kids;
-    let hidden: MockNode[] = [];
-
-    if (kids.length > room) {
-      if (room < 2) {
-        continue;
-      }
-
-      shown = kids.slice(0, room - 1);
-      hidden = kids.slice(room - 1);
-    }
-
-    for (const kid of shown) {
-      const child: Draft = { node: kid, depth: draft.depth + 1, kids: [] };
-      draft.kids.push(child);
-      count++;
-
-      if (kid.childCount > 0 && child.depth < maxDepth) {
-        frontier.push(child);
-      }
-    }
-
-    if (hidden.length > 0) {
-      draft.kids.push({ collapsed: collapsedDto(hidden) });
-      count++;
-    }
-  }
-
-  const finish = (draft: Draft): LodNode => ({
-    node: toDto(draft.node),
-    children: draft.kids.map((kid) =>
-      'collapsed' in kid ? { node: kid.collapsed, children: [] } : finish(kid),
-    ),
-  });
-
-  return finish(root);
 }
 
 function summaryOf(tree: MockTree, node: MockNode): SummaryDto {
@@ -336,40 +251,13 @@ function summaryOf(tree: MockTree, node: MockNode): SummaryDto {
     byCategory: [...byCategory]
       .filter(([, value]) => value.allocated > 0 || value.files > 0)
       .map(([category, value]) => ({ category, ...value }))
-      .sort((a, b) => b.allocated - a.allocated),
+      .sort(
+        (a, b) =>
+          b.allocated - a.allocated || CATEGORIES.indexOf(a.category) - CATEGORIES.indexOf(b.category),
+      ),
     byAge: [...byAge].map(([bucket, value]) => ({ bucket, ...value })),
     largestDirs: largestDirs(tree, node).map(toDto),
   };
-}
-
-/** Whether one child directory of `dir` holds at least `DOMINANT_SHARE_PERCENT` of its allocated bytes. */
-function hasDominantChild(tree: MockTree, dir: MockNode): boolean {
-  if (dir.allocated === 0) {
-    return false;
-  }
-
-  return childrenOf(tree, dir).some(
-    (child) => child.kind === 'dir' && child.allocated * 100 >= dir.allocated * DOMINANT_SHARE_PERCENT,
-  );
-}
-
-/**
- * The 8 largest directories among the children and grandchildren of `node`. A child is left out when one of
- * its own child directories (a grandchild, so itself a candidate) holds most of its bytes: `/home` and
- * `/home/user` are not both listed.
- */
-function largestDirs(tree: MockTree, node: MockNode): MockNode[] {
-  const candidates: MockNode[] = [];
-
-  for (const child of childrenOf(tree, node).filter((entry) => entry.kind === 'dir')) {
-    if (!hasDominantChild(tree, child)) {
-      candidates.push(child);
-    }
-
-    candidates.push(...childrenOf(tree, child).filter((entry) => entry.kind === 'dir'));
-  }
-
-  return candidates.sort((a, b) => b.allocated - a.allocated || a.id - b.id).slice(0, LARGEST_DIRS);
 }
 
 /** Every directory path in depth-first order: the "currently reading" line of a running scan. */
@@ -396,6 +284,7 @@ export function createMockApi(options: MockOptions = {}): Api {
   const tickMs = options.tickMs ?? 100;
   const clock = options.now ?? (() => Math.floor(Date.now() / 1000));
   const volumes = options.volumes ?? MOCK_VOLUMES;
+  const warnings = options.warnings;
   const scans = new Map<ScanId, ScanRecord>();
   let nextId: ScanId = 1;
 
@@ -426,6 +315,12 @@ export function createMockApi(options: MockOptions = {}): Api {
     return volume ? volume.total - volume.available : FOLDER_BYTES;
   };
 
+  const cleanup = createMockCleanup({
+    treeOf: (scan) => scanOf(scan).tree,
+    pathOf: (tree, node) => pathOf(tree, node).path,
+    durationMs,
+  });
+
   const run = (record: ScanRecord, id: ScanId): void => {
     if (!record.running) {
       return;
@@ -451,6 +346,7 @@ export function createMockApi(options: MockOptions = {}): Api {
           errors: UNREADABLE_DIRS,
         },
         elapsedMs: durationMs > 0 ? Date.now() - started : INSTANT_SCAN_ELAPSED_MS,
+        ...(warnings && warnings.length > 0 ? { warnings } : {}),
       });
     };
 
@@ -546,14 +442,24 @@ export function createMockApi(options: MockOptions = {}): Api {
       return toDto(nodeOf(scan, node).node);
     },
 
-    async getChildren(scan, node, offset, limit, sort): Promise<ChildrenPage> {
+    async getChildren(scan, node, offset, limit, sort, query): Promise<ChildrenPage> {
       const { tree, node: parent } = nodeOf(scan, node);
 
       if (offset < 0 || limit < 0) {
         return fail('invalid', 'offset and limit must not be negative');
       }
 
-      const sorted = childrenOf(tree, parent).sort(sorter(sort));
+      if (query !== undefined && utf8Length(query) > MAX_NAME_FILTER_BYTES) {
+        return fail('invalid', `the name filter must not be longer than ${MAX_NAME_FILTER_BYTES} bytes`);
+      }
+
+      const needle = query === undefined || query.trim() === '' ? undefined : query.toLowerCase();
+      const children = childrenOf(tree, parent);
+      const sorted = (
+        needle === undefined
+          ? children
+          : children.filter((child) => child.name.toLowerCase().includes(needle))
+      ).sort(sorter(sort));
       const window = Math.min(limit, MAX_LIMIT);
 
       return {
@@ -566,8 +472,9 @@ export function createMockApi(options: MockOptions = {}): Api {
     async getLod(scan, node, maxNodes, maxDepth) {
       const { tree, node: root } = nodeOf(scan, node);
 
-      if (maxNodes < 1 || maxDepth < 0) {
-        return fail('invalid', 'maxNodes must be at least 1 and maxDepth must not be negative');
+      // The backend takes unsigned numbers, so a negative one never arrives; zero nodes still shows the root.
+      if (maxNodes < 0 || maxDepth < 0) {
+        return fail('invalid', 'maxNodes and maxDepth must not be negative');
       }
 
       return lodOf(tree, root, Math.min(maxNodes, MAX_LOD_NODES), Math.min(maxDepth, MAX_LOD_DEPTH));
@@ -588,6 +495,8 @@ export function createMockApi(options: MockOptions = {}): Api {
     async getSuggestions(scan) {
       return suggestionsOf(scanOf(scan).tree);
     },
+
+    ...cleanup,
 
     async openInFileManager(scan, node) {
       nodeOf(scan, node);

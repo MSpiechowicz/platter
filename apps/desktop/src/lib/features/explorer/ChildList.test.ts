@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { NodeDto } from '../../api/types';
 import ChildList from './ChildList.svelte';
 
@@ -22,6 +22,8 @@ function props(extra: { moreDisabled?: boolean; loadingMore?: boolean }) {
     items: [item],
     total: 5,
     uncounted: [],
+    allTotal: 5,
+    loaded: 1,
     sort: 'sizeDesc' as const,
     selected: null,
     hovered: null,
@@ -115,9 +117,15 @@ describe('ChildList rows that are not counted', () => {
     expect(document.querySelectorAll('.row.off')).toHaveLength(0);
   });
 
-  it('has no footer when the count is not known yet or there are none', () => {
-    open({ uncountedTotal: undefined });
+  it('has no footer when there are none', () => {
+    open({ uncounted: [], uncountedTotal: 0 });
     expect(screen.queryByText(/not counted/)).toBeNull();
+  });
+
+  it('never hides the rows it has when the count is not known: it counts them, and says it is not the whole', () => {
+    open({ uncountedTotal: undefined, hasMore: true, allTotal: 10, loaded: 4 });
+
+    expect(screen.getByRole('button', { name: '3 items not counted so far' })).toBeTruthy();
   });
 
   it('says "1 item" in the footer for one', () => {
@@ -127,6 +135,133 @@ describe('ChildList rows that are not counted', () => {
 });
 
 const named = (id: number, name: string, allocated = 100 - id): NodeDto => ({ ...item, id, name, allocated });
+
+/** A folder with more than one page and many rows without a size: only the pages loaded so far are in the lists. */
+describe('ChildList on a folder with several pages and rows that are not counted', () => {
+  const sized = (count: number): NodeDto[] =>
+    Array.from({ length: count }, (_, i) => named(i + 1, `big-${i}`));
+  const empty = (count: number): NodeDto[] =>
+    Array.from({ length: count }, (_, i) => zero(1000 + i, `empty-${String(i).padStart(3, '0')}`));
+
+  const rows = (): number => document.querySelectorAll('.row.off').length;
+
+  it('sorted by size: counts all the rows without a size, lists the loaded ones, and counts what is left to load', async () => {
+    // 300 children: 100 with a size and 200 without. The first page of 200 held the 100 and 100 of the rest.
+    render(ChildList, {
+      props: {
+        ...props({}),
+        items: sized(100),
+        total: 100,
+        uncounted: empty(100),
+        uncountedTotal: 200,
+        hasMore: true,
+        allTotal: 300,
+        loaded: 200,
+      },
+    });
+
+    const footer = screen.getByRole('button', { name: '200 items not counted' });
+
+    await fireEvent.click(footer);
+
+    expect(rows()).toBe(100);
+    expect(screen.getByRole('button', { name: 'Load more (100 left)' })).toBeTruthy();
+    expect(screen.queryByText('Nothing in this folder.')).toBeNull();
+  });
+
+  it('sorted by anything else: shows the rows loaded without a size, and does not state a total it cannot know', async () => {
+    // The first page has 50 of them, spread among the sized ones; the total of them is not known.
+    render(ChildList, {
+      props: {
+        ...props({}),
+        items: sized(150),
+        total: 250,
+        uncounted: empty(50),
+        uncountedTotal: undefined,
+        sort: 'nameAsc',
+        hasMore: true,
+        allTotal: 300,
+        loaded: 200,
+      },
+    });
+
+    const footer = screen.getByRole('button', { name: '50 items not counted so far' });
+
+    await fireEvent.click(footer);
+
+    expect(rows()).toBe(50);
+    expect(screen.getByRole('button', { name: 'Load more (100 left)' })).toBeTruthy();
+  });
+
+  it('lists the rows without a size, and not "Nothing in this folder", when the whole first page has none', async () => {
+    render(ChildList, {
+      props: {
+        ...props({}),
+        items: [],
+        total: 100,
+        uncounted: empty(200),
+        uncountedTotal: undefined,
+        sort: 'nameAsc',
+        hasMore: true,
+        allTotal: 300,
+        loaded: 200,
+      },
+    });
+
+    expect(screen.queryByText('Nothing in this folder.')).toBeNull();
+
+    await fireEvent.click(screen.getByRole('button', { name: '200 items not counted so far' }));
+
+    expect(rows()).toBe(200);
+    expect(screen.getByRole('button', { name: 'Load more (100 left)' })).toBeTruthy();
+  });
+
+  it('still says a folder is empty when it is', () => {
+    render(ChildList, {
+      props: { ...props({}), items: [], total: 0, uncounted: [], hasMore: false, allTotal: 0, loaded: 0 },
+    });
+
+    expect(screen.getByText('Nothing in this folder.')).toBeTruthy();
+  });
+
+  it('counts "so far" under a filter while pages of matches are still to come, and plainly when they are all in', () => {
+    const { unmount } = render(ChildList, {
+      props: {
+        ...props({}),
+        uncounted: empty(5),
+        uncountedTotal: undefined,
+        query: 'empty-00',
+        hasMore: true,
+      },
+    });
+
+    expect(screen.getByRole('button', { name: '5 items not counted so far' })).toBeTruthy();
+    unmount();
+
+    render(ChildList, {
+      props: { ...props({}), uncounted: empty(5), uncountedTotal: 5, query: 'empty-00', hasMore: false },
+    });
+    expect(screen.getByRole('button', { name: '5 items not counted' })).toBeTruthy();
+  });
+});
+
+describe('ChildList when the rows of a "smaller items" tile stop loading', () => {
+  it('says that only the first rows are shown', () => {
+    render(ChildList, {
+      props: { ...props({}), groupTruncated: true, allTotal: 12_000, loaded: 5000 },
+    });
+
+    expect(
+      screen.getByText(/^Only the first 5,000 of 12,000 items are shown, so some of the smaller items/),
+    ).toBeTruthy();
+  });
+
+  it('says nothing while the tile can still be loaded to the end', () => {
+    render(ChildList, { props: { ...props({}), allTotal: 12_000, loaded: 400 } });
+
+    expect(screen.queryByText(/Only the first/)).toBeNull();
+  });
+});
 
 describe('ChildList header', () => {
   it('is one line: the title, the count right after it and the sort, in one row', () => {
@@ -155,10 +290,6 @@ describe('ChildList header', () => {
 });
 
 describe('ChildList search', () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   const rows = [
     named(1, 'node_modules'),
     named(2, 'Cargo.lock'),
@@ -185,30 +316,24 @@ describe('ChildList search', () => {
     expect(screen.queryByRole('button', { name: 'Clear the search' })).toBeNull();
   });
 
-  it('applies what is typed after a short pause, once', async () => {
-    vi.useFakeTimers();
-
+  it('hands over what is typed as it is typed: the store decides when to ask', async () => {
     const onquery = vi.fn();
     const { field } = search({ onquery });
 
     await fireEvent.input(field, { target: { value: 'c' } });
     await fireEvent.input(field, { target: { value: 'ca' } });
-    vi.advanceTimersByTime(100);
-    expect(onquery).not.toHaveBeenCalled();
 
-    vi.advanceTimersByTime(40);
-    expect(onquery).toHaveBeenCalledTimes(1);
-    expect(onquery).toHaveBeenCalledWith('ca');
+    expect(onquery.mock.calls).toEqual([['c'], ['ca']]);
   });
 
-  it('shows only the rows whose name contains the query, whatever the case, in the same order', () => {
-    search({ query: 'cargo' });
+  it('lists the rows it is given, which with a query are the ones the backend found, in the same order', () => {
+    search({ query: 'cargo', items: [rows[1], rows[3]], total: 5, matched: 2 });
 
     expect(names()).toEqual(['Cargo.lock', 'CARGO_HOME']);
   });
 
   it('underlines the matching part of the name, with no background', () => {
-    search({ query: 'RG' });
+    search({ query: 'RG', items: [rows[1], rows[2], rows[3]], matched: 3 });
 
     const marks = [...document.querySelectorAll('.row mark')];
 
@@ -216,62 +341,102 @@ describe('ChildList search', () => {
     expect(document.querySelector('.row .nm')?.textContent).toBe('Cargo.lock');
   });
 
-  it('counts "M of N" in the header while filtering', () => {
-    search({ query: 'cargo' });
+  it('counts "M of N" in the header while filtering, from the numbers it is given', () => {
+    search({ query: 'cargo', items: [rows[1], rows[3]], total: 143, matched: 12 });
 
-    expect(document.querySelector('.head .count')?.textContent).toBe('2 of 5 items');
+    expect(document.querySelector('.head .count')?.textContent).toBe('12 of 143 items');
+  });
+
+  it('counts only the folder until the matches are known, and without a query', () => {
+    const { unmount } = search({ query: 'cargo', items: [], total: 143, loading: true });
+
+    expect(document.querySelector('.head .count')?.textContent).toBe('143 items');
+    unmount();
+
+    search({ total: 143, matched: 12 });
+    expect(document.querySelector('.head .count')?.textContent).toBe('143 items');
   });
 
   it('says so in one line when nothing matches, and shows no rows', () => {
-    search({ query: 'zzz' });
+    search({ query: 'zzz', items: [], total: 5, matched: 0 });
 
     expect(names()).toEqual([]);
     expect(screen.getByText('No folder or file here matches "zzz"')).toBeTruthy();
+    expect(screen.queryByText('Nothing in this folder.')).toBeNull();
   });
 
-  it('does not say nothing matches while pages are still coming', () => {
-    search({ query: 'zzz', searching: true, hasMore: true, loaded: 1400, allTotal: 3200 });
+  it('does not say nothing matches while the matches are on their way, and shows that it is working', () => {
+    search({ query: 'zzz', items: [], total: 5, loading: true });
 
     expect(screen.queryByText(/No folder or file/)).toBeNull();
-    expect(screen.getByText('Searching… 1,400 of 3,200')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Load more/ })).toBeNull();
+    expect(screen.queryByText('Nothing in this folder.')).toBeNull();
+    expect(document.querySelector('.rows')?.getAttribute('aria-busy')).toBe('true');
+    expect(document.querySelector('.progress')?.classList.contains('on')).toBe(true);
   });
 
-  it('says how many items were searched when the folder has more than the limit', () => {
-    search({ query: 'cargo', searchTruncated: true, hasMore: true, allTotal: 7200, loaded: 5000 });
+  it('shows no working line without a query, or once the matches are in', () => {
+    const { unmount } = search({ loading: true });
 
-    expect(screen.getByText('Searched the first 5,000 of 7,200 items')).toBeTruthy();
+    expect(document.querySelector('.progress')?.classList.contains('on')).toBe(false);
+    unmount();
+
+    search({ query: 'cargo', items: [rows[1]], matched: 1 });
+    expect(document.querySelector('.progress')?.classList.contains('on')).toBe(false);
   });
 
-  it('keeps a filtered-out selected row selected, and does not list it', () => {
+  it('shows the error, and not "no matches", when the matches could not be read', async () => {
+    const onretry = vi.fn();
+
+    search({ query: 'zzz', items: [], total: 5, error: 'the folder cannot be read', onretry });
+
+    expect(screen.getByText(/The list could not be read: the folder cannot be read/)).toBeTruthy();
+    expect(screen.queryByText(/No folder or file/)).toBeNull();
+    expect(screen.queryByText('Nothing in this folder.')).toBeNull();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(onretry).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers "Load more" for the matches too, counting the matches that are left', async () => {
+    const onmore = vi.fn();
+
+    search({
+      query: 'cargo',
+      items: [rows[1], rows[3]],
+      total: 20_000,
+      matched: 11_111,
+      hasMore: true,
+      allTotal: 11_111,
+      loaded: 200,
+      onmore,
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Load more (10,911 left)' }));
+    expect(onmore).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not light a row for a selected child that the search left out', () => {
     const onchoose = vi.fn();
 
-    search({ query: 'docs', selected: 1, onchoose });
+    search({ query: 'docs', items: [rows[4]], selected: 1, onchoose });
 
     expect(names()).toEqual(['docs']);
     expect(document.querySelector('.row.sel')).toBeNull();
     expect(onchoose).not.toHaveBeenCalled();
   });
 
-  it('filters the rows that are not counted with the same query, and drops the footer when none match', async () => {
-    const off = [zero(10, 'boot', { kind: 'mount' }), zero(11, 'root', { unreadable: true })];
+  it('lists the rows without a size that the backend found, and counts them in the footer', async () => {
+    const off = [zero(10, 'boot', { kind: 'mount' })];
 
-    const { unmount } = search({ query: 'oo', uncounted: off, uncountedTotal: 2 });
+    search({ query: 'boo', items: [], uncounted: off, uncountedTotal: 1, matched: 0 });
 
-    expect(screen.getByRole('button', { name: '2 items not counted' })).toBeTruthy();
-    unmount();
-
-    search({ query: 'boo', uncounted: off, uncountedTotal: 2 });
-    expect(screen.getByRole('button', { name: '1 item not counted' })).toBeTruthy();
-
+    expect(screen.queryByText(/No folder or file/)).toBeNull();
     await fireEvent.click(screen.getByRole('button', { name: '1 item not counted' }));
     expect([...document.querySelectorAll('.row.off .nm')].map((nm) => nm.textContent)).toEqual(['boot']);
   });
 
-  it('has no footer at all when no uncounted row matches', () => {
-    const off = [zero(10, 'boot', { kind: 'mount' })];
-
-    search({ query: 'cargo', uncounted: off, uncountedTotal: 1 });
+  it('has no footer at all when no row without a size was found', () => {
+    search({ query: 'cargo', items: [rows[1]], uncounted: [], uncountedTotal: 0 });
 
     expect(screen.queryByText(/not counted/)).toBeNull();
   });

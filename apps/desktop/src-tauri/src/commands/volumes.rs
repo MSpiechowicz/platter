@@ -12,6 +12,9 @@ pub async fn list_volumes(state: State<'_, AppState>) -> CommandResult<Vec<Volum
     let platform = state.platform.clone();
 
     let volumes = tauri::async_runtime::spawn_blocking(move || platform.volumes.list()).await?;
+    let volumes: Vec<VolumeDto> = volumes.iter().map(VolumeDto::from).collect();
 
-    Ok(volumes.iter().map(VolumeDto::from).collect())
+    // These mount points may now be scanned.
+    state.allow_roots(volumes.iter().map(|volume| volume.mount_point.clone()));
+    Ok(volumes)
 }

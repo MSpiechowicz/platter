@@ -707,7 +707,11 @@ describe('ExplorerStore on a skewed disk', () => {
 
     await settled(store);
 
-    const small = store.items.filter((item) => item.allocated > 0).slice(-6);
+    // The map keeps only the few biggest children; every other loaded item sits in the "smaller items" tile, which
+    // the highlight stands for, so what is highlighted is worked out from what the store itself shows.
+    const onMap = new Set(store.topLevel.map((node) => node.id));
+    const small = store.items.filter((item) => item.allocated > 0 && !onMap.has(item.id)).slice(-6);
+    const offMap = store.items.filter((item) => !onMap.has(item.id)).map((item) => item.id);
     const tile: NodeDto = {
       ...(small[0] as NodeDto),
       id: COLLAPSED_NODE_ID,
@@ -724,8 +728,11 @@ describe('ExplorerStore on a skewed disk', () => {
     expect(store.selected).toBe(COLLAPSED_NODE_ID);
     expect(store.groupSelected).toBe(true);
     expect(store.selectedNode?.name).toBe('6 smaller items');
-    expect([...store.highlighted].sort()).toEqual(small.map((item) => item.id).sort());
-    expect(store.items.filter((item) => store.highlighted.has(item.id))).toHaveLength(6);
+    expect(small).toHaveLength(6);
+    expect(small.every((item) => store.highlighted.has(item.id))).toBe(true);
+    expect([...store.highlighted].sort()).toEqual([...offMap].sort());
+    expect(store.items.filter((item) => store.highlighted.has(item.id))).toHaveLength(offMap.length);
+    expect(offMap.length).toBeGreaterThan(6);
 
     // Choosing it again does not open anything.
     store.choose(COLLAPSED_NODE_ID);
@@ -896,5 +903,46 @@ describe('ExplorerStore and items that are not counted', () => {
 
     expect(store.uncountedTotal).toBe(0);
     expect(store.uncountedItems).toEqual([]);
+  });
+
+  describe('when the folder has more than one page', () => {
+    it('sorted by size: knows how many have no size, has only the loaded ones to list, and gets the rest by "Load more"', async () => {
+      // 300 children: 100 with a size and 200 without; the first page of 200 holds the 100 and 100 of the rest.
+      const store = await pagedStore([...Array(100).fill(5), ...Array(200).fill(0)]);
+
+      expect(store.total).toBe(300);
+      expect(store.items).toHaveLength(200);
+      expect(store.hasMore).toBe(true);
+      expect(store.uncountedTotal).toBe(200);
+      expect(store.sizedTotal).toBe(100);
+      expect(store.sizedItems).toHaveLength(100);
+      expect(store.uncountedItems).toHaveLength(100);
+
+      await store.loadMore();
+
+      expect(store.hasMore).toBe(false);
+      expect(store.uncountedTotal).toBe(200);
+      expect(store.uncountedItems).toHaveLength(200);
+    });
+
+    it('sorted by name: has the loaded rows without a size, and no total while pages are missing', async () => {
+      // The 200 first names have no size, the 100 last ones have: the first page is all rows without a size.
+      const store = await pagedStore([...Array(200).fill(0), ...Array(100).fill(5)]);
+
+      store.setSort('nameAsc');
+      await settled(store);
+
+      expect(store.sizedItems).toHaveLength(0);
+      expect(store.uncountedItems).toHaveLength(200);
+      expect(store.uncountedTotal).toBeUndefined();
+      expect(store.hasMore).toBe(true);
+      // The most the rows with a size can be: everything not yet seen without one.
+      expect(store.sizedTotal).toBe(100);
+
+      await store.loadMore();
+
+      expect(store.uncountedTotal).toBe(200);
+      expect(store.sizedItems).toHaveLength(100);
+    });
   });
 });

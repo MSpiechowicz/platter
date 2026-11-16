@@ -26,12 +26,20 @@ pub async fn start_scan(
     options: ScanOptions,
     on_event: Channel<ScanEvent>,
 ) -> CommandResult<ScanId> {
+    // Only a root the backend offered (a volume, a folder from its dialog): the web view cannot name
+    // an arbitrary path to scan, and through a scan, to plan a cleanup in.
+    let Some(pinned) = state.allowed_root(&options.root) else {
+        return Err(CommandError::invalid(
+            "scan a disk from the list or a folder chosen in the folder dialog",
+        ));
+    };
+
     let emit: EmitFn = Arc::new(move |event| {
         // The webview may have gone away; there is nobody to tell.
         let _ = on_event.send(event);
     });
 
-    start(&state, options, emit).await
+    start_pinned(&state, options, pinned, emit).await
 }
 
 /// Cancels a running scan. Unknown and already ended scans are not an error (nothing to cancel), so a
@@ -56,11 +64,30 @@ pub fn drop_scan(state: State<'_, AppState>, scan: ScanId) -> CommandResult<()> 
 /// A scan lasts seconds to minutes and does its own fan-out on a private rayon pool, so the driver
 /// thread only waits. A plain thread keeps it off the async runtime's blocking pool, which is shared
 /// with the queries.
+#[cfg(test)]
 pub async fn start(state: &AppState, options: ScanOptions, emit: EmitFn) -> CommandResult<ScanId> {
+    start_pinned(state, options, None, emit).await
+}
+
+/// [`start`], refusing when the root is no longer the folder with identity `pinned` (a picked folder
+/// swapped for a link, or for another folder, since it was picked).
+pub async fn start_pinned(
+    state: &AppState,
+    options: ScanOptions,
+    pinned: Option<(u64, u64)>,
+    emit: EmitFn,
+) -> CommandResult<ScanId> {
     // `canonicalize` touches the filesystem and can block for as long as a mount is unresponsive. The
     // scan is not registered yet, so a failure here leaves nothing behind and emits no event.
     let requested = options.root.clone();
     let resolved = tauri::async_runtime::spawn_blocking(move || resolve_root(&requested)).await??;
+    if let Some(identity) = pinned
+        && resolved.identity != Some(identity)
+    {
+        return Err(CommandError::invalid(
+            "the folder changed since it was chosen; choose it again",
+        ));
+    }
     let root = resolved.path;
     let config = scan_config(options.one_file_system, resolved.identity);
 

@@ -126,6 +126,87 @@ export interface SuggestionsDto {
   totals: { safe: number; review: number; keep: number };
 }
 
+export type PlanId = number;
+export type CleanupId = number;
+
+/** What cleaning one group of matches means. `trash` can be undone; the others cannot. */
+export type CleanupActionKind = 'delete' | 'emptyFolder' | 'emptyTrash' | 'trash' | 'runTool';
+
+/** The matches of one rule that a plan acts on. */
+export interface PlanGroupDto {
+  ruleId: string;
+  title: string;
+  verdict: Verdict;
+  action: CleanupActionKind;
+  items: number;
+  allocated: number;
+  /** The command a tool runs, as text; only for `runTool`. */
+  command?: string;
+  needsElevation: boolean;
+  /** The first few paths (up to 20), for showing. */
+  samplePaths: string[];
+}
+
+/** A match the plan will not touch, with the reason in plain words. */
+export interface RefusedDto {
+  ruleId: string;
+  path: string;
+  reason: string;
+}
+
+export interface CleanupPlanDto {
+  planId: PlanId;
+  scanId: ScanId;
+  groups: PlanGroupDto[];
+  /** At most 200 refusals; `refusedMore` counts the rest. */
+  refused: RefusedDto[];
+  refusedMore: number;
+  /** Rule ids that matched nothing in this scan. */
+  notFound: string[];
+  allocated: number;
+  /**
+   * Starting the plan shows the backend's native confirmation: true whenever the plan has something to do (moving
+   * to the trash is confirmed too). An empty plan cannot be started.
+   */
+  needsConfirmation: boolean;
+}
+
+export type OutcomeKind = 'removed' | 'trashed' | 'byTool' | 'skipped' | 'failed';
+
+export interface OutcomeDto {
+  kind: OutcomeKind;
+  /** Why it was skipped or failed, or the command a tool ran. */
+  detail?: string;
+  /** Problems inside the target (entries that could not be removed, mounts left alone). */
+  problems: number;
+}
+
+export type CleanupEvent =
+  | { type: 'groupStarted'; ruleId: string; targets: number }
+  | { type: 'targetDone'; ruleId: string; path: string; allocated: number; outcome: OutcomeDto }
+  | { type: 'groupFinished'; ruleId: string }
+  | {
+      type: 'finished';
+      cleanupId: CleanupId;
+      /** The scan the cleanup ran on no longer describes the disk. */
+      outdatedScan: ScanId;
+      cleaned: number;
+      withProblems: number;
+      /** Free space after minus before; absent when it could not be measured. */
+      freed?: number;
+      cancelled: boolean;
+      toolsNotRun: string[];
+      /** Something was moved to the trash and `undoCleanup` can put it back. */
+      canUndo: boolean;
+    }
+  | { type: 'failed'; message: string; outdatedScan: ScanId; canUndo: boolean; cleanupId: CleanupId };
+
+export interface UndoDto {
+  path: string;
+  restored: boolean;
+  error?: string;
+}
+
 // Errors are returned as `ApiError { code, message }` (prose in docs/architecture.md, "IPC contract").
 export type ApiErrorCode = 'notFound' | 'cancelled' | 'io' | 'invalid';
 

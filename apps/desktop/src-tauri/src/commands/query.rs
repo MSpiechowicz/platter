@@ -11,7 +11,7 @@ use platter_core::dto::{ChildrenPage, LodNode, NodeDto, PathDto, ScanId, SortKey
 use platter_core::{NodeId, QueryError, Tree, query};
 use tauri::State;
 
-use crate::error::CommandResult;
+use crate::error::{CommandError, CommandResult};
 use crate::state::AppState;
 
 /// Largest page `get_children` returns; a bigger `limit` is clamped.
@@ -26,6 +26,8 @@ pub async fn get_node(state: State<'_, AppState>, scan: ScanId, node: NodeId) ->
     Ok(query::node(&tree, node)?)
 }
 
+/// `query`, when given, keeps only the children whose name contains it, ignoring case; `total` is then
+/// the number of matches. An empty or blank query filters nothing.
 #[tauri::command]
 pub async fn get_children(
     state: State<'_, AppState>,
@@ -34,12 +36,23 @@ pub async fn get_children(
     offset: u32,
     limit: u32,
     sort: SortKey,
+    query: Option<String>,
 ) -> CommandResult<ChildrenPage> {
+    let filter = match query.as_deref() {
+        Some(text) if text.len() > query::MAX_NAME_FILTER_BYTES => {
+            return Err(CommandError::invalid(format!(
+                "the name filter is longer than {} bytes",
+                query::MAX_NAME_FILTER_BYTES
+            )));
+        }
+        Some(text) => query::NameFilter::new(text),
+        None => None,
+    };
     let tree = state.scans.tree(scan)?;
     let limit = clamp(limit, MAX_PAGE);
 
     blocking(tree, move |tree| {
-        query::children(tree, node, offset as usize, limit, sort)
+        query::children_matching(tree, node, filter.as_ref(), offset as usize, limit, sort)
     })
     .await
 }

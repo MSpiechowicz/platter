@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { tick, untrack } from 'svelte';
   import { api } from '../../api';
   import { baseName, formatCount, formatDuration } from '../../format';
+  import { hooks } from '../../hooks';
   import PageHeader from '../../components/layout/PageHeader.svelte';
   import Button from '../../components/ui/Button.svelte';
   import Card from '../../components/ui/Card.svelte';
@@ -8,6 +10,7 @@
   import Notice from '../../components/ui/Notice.svelte';
   import Pill from '../../components/ui/Pill.svelte';
   import { describeError } from '../../api/client';
+  import { cleanup } from '../../state/cleanup.svelte';
   import { resource } from '../../state/resource.svelte';
   import { scan, type ReadyScan } from '../../state/scan.svelte';
   import { ui } from '../../state/ui.svelte';
@@ -19,6 +22,7 @@
   import LargestFoldersCard from './LargestFoldersCard.svelte';
   import { loadOverview } from './model';
   import ReclaimableCard from './ReclaimableCard.svelte';
+  import { warningLines } from './scanWarnings';
 
   interface Props {
     ready: ReadyScan;
@@ -47,9 +51,33 @@
     return api.getSuggestions(ready.scanId);
   });
 
+  // Screenshots only (`?clean=`, see hooks.ts): the mock plays the click that a person would make.
+  let hooked = false;
+
+  $effect(() => {
+    if (hooked || !hooks.clean || !suggestions.data || !overview.data) {
+      return;
+    }
+
+    hooked = true;
+
+    void tick().then(() =>
+      untrack(() => {
+        if (hooks.clean === 'review') {
+          cleanup.select('all');
+          void cleanup.cleanSelected();
+        } else {
+          void cleanup.cleanSafe();
+        }
+      }),
+    );
+  });
+
   const retrySuggestions = (): void => {
     attempt++;
   };
+
+  const warnings = $derived(warningLines(ready.warnings));
 
   const subtitle = $derived.by(() => {
     const options = scan.options;
@@ -66,11 +94,16 @@
 
 <div class="overview">
   <PageHeader title="STORAGE OVERVIEW" sub={subtitle}>
-    <div class="topr">
-      <Pill dot grow>
-        Scan complete · <b>{formatCount(ready.totals.files)} files</b> in {formatDuration(ready.elapsedMs)}
-      </Pill>
-      <Button onclick={() => scan.rescan()}>Rescan</Button>
+    <div class="status">
+      <div class="topr">
+        <Pill dot grow>
+          Scan complete · <b>{formatCount(ready.totals.files)} files</b> in {formatDuration(ready.elapsedMs)}
+        </Pill>
+        <Button disabled={cleanup.busy} onclick={() => scan.rescan()}>Rescan</Button>
+      </div>
+      {#each warnings as line (line)}
+        <p class="warning">{line}</p>
+      {/each}
     </div>
   </PageHeader>
 
@@ -78,7 +111,11 @@
     {@const data = overview.data}
     <div class="grid">
       <div class="col l">
-        <CapacityCard volume={wholeVolume} totals={ready.totals} />
+        <CapacityCard
+          volume={wholeVolume}
+          container={wholeVolume ? undefined : scan.volumeInfo?.volume}
+          totals={ready.totals}
+        />
         <FileTypesCard byCategory={data.summary.byCategory} />
         <ReclaimableCard
           suggestions={suggestions.data}
@@ -86,6 +123,7 @@
           error={suggestions.error}
           onretry={retrySuggestions}
           scanned={data.summary.node.allocated}
+          freed={cleanup.freedTotal}
         />
       </div>
 
@@ -109,6 +147,8 @@
       <div class="col r">
         <AdvisorCard
           suggestions={suggestions.data}
+          scanId={ready.scanId}
+          store={cleanup}
           loading={suggestions.loading}
           error={suggestions.error}
           onretry={retrySuggestions}
@@ -135,10 +175,21 @@
     --advisor-col: 380px;
   }
 
+  .status {
+    width: var(--advisor-col);
+  }
+
   .topr {
     display: flex;
     gap: 10px;
-    width: var(--advisor-col);
+  }
+
+  /* A scan warning: one muted line under the status pill, aligned with its left edge. */
+  .warning {
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.4;
   }
 
   .grid {

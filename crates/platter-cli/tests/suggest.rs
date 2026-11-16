@@ -55,10 +55,10 @@ fn json_is_the_suggestions_wire_format() {
 
     let suggestions = report["suggestions"].as_array().unwrap();
     let ids: Vec<&str> = suggestions.iter().map(|s| s["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["app-cache", "trash", "rust-target-recent", "documents"]);
+    assert_eq!(ids, ["trash", "app-cache", "rust-target-recent", "documents"]);
 
-    let cache = &suggestions[0];
-    assert_eq!(cache["verdict"], "safe");
+    let cache = &suggestions[1];
+    assert_eq!(cache["verdict"], "review");
     assert_eq!(cache["path"], "~/.cache");
     assert_eq!(cache["items"], 1);
     assert!(cache["allocated"].as_u64().unwrap() >= 50_000);
@@ -69,8 +69,8 @@ fn json_is_the_suggestions_wire_format() {
     assert_eq!(suggestions[3]["verdict"], "keep");
 
     let totals = &report["totals"];
-    assert!(totals["safe"].as_u64().unwrap() >= 70_000);
-    assert!(totals["review"].as_u64().unwrap() >= 30_000);
+    assert!(totals["safe"].as_u64().unwrap() >= 20_000);
+    assert!(totals["review"].as_u64().unwrap() >= 80_000);
     assert!(totals["keep"].as_u64().unwrap() >= 10_000);
 }
 
@@ -88,7 +88,10 @@ fn the_table_lists_each_suggestion_and_a_total_per_verdict_without_the_real_home
         .lines()
         .find(|line| line.contains("Application caches"))
         .unwrap();
-    assert!(cache.starts_with("safe") && cache.contains("~/.cache"), "{cache}");
+    assert!(
+        cache.starts_with("review") && cache.contains("~/.cache"),
+        "{cache}"
+    );
 
     for verdict in ["safe", "review", "keep"] {
         assert!(

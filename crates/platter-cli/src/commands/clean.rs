@@ -1,0 +1,253 @@
+use platter_cleanup::{
+    CleanupAction, CleanupPlan, CleanupReport, Disk, TargetOutcome, execute, plan_cleanup,
+};
+use platter_core::CancelToken;
+use platter_core::dto::Verdict;
+use platter_platform::Platform;
+use platter_platform::environment::home_trash;
+
+use super::{CliResult, print_line, scan_path};
+use crate::args::CleanArgs;
+use crate::format;
+
+pub fn run(args: &CleanArgs) -> CliResult<()> {
+    if !args.dry_run && !args.yes {
+        return Err("this deletes files: add --dry-run to see the plan, or --yes to clean".into());
+    }
+    if args.rules.is_empty() && !args.safe {
+        return Err("choose what to clean: --safe, or --rule ID (see `platter-cli suggest`)".into());
+    }
+
+    let rules = platter_rules::RuleSet::builtin();
+    let mut selected: Vec<&str> = args.rules.iter().map(String::as_str).collect();
+    if args.safe {
+        selected.extend(
+            rules
+                .rules()
+                .iter()
+                .filter(|rule| rule.verdict == Verdict::Safe)
+                .map(|rule| rule.id),
+        );
+    }
+    selected.sort_unstable();
+    selected.dedup();
+
+    let tree = scan_path(&args.path, args.one_file_system, args.max_entries)?;
+    let platform = Platform::current();
+    let env = platform.environment_for(tree.root_path());
+    let plan = plan_cleanup(&tree, &env, &rules, &selected, &platform.entry_probe);
+
+    // Only rules asked for by name are worth a "found nothing"; `--safe` asks for all of them.
+    let asked: Vec<String> = plan
+        .not_found
+        .iter()
+        .filter(|id| args.rules.contains(id))
+        .cloned()
+        .collect();
+    print_line(&render(&plan, &asked, args.verbose, args.dry_run))?;
+    if args.dry_run {
+        return Ok(());
+    }
+    if plan.groups().is_empty() {
+        // Asked to clean, and nothing could be: that is not a success.
+        if !plan.refused.is_empty() || !asked.is_empty() {
+            return Err("nothing was cleaned (see above)".into());
+        }
+        return Ok(());
+    }
+
+    let trash = home_trash(env.home.as_deref());
+    let disk = Disk {
+        probe: &platform.entry_probe,
+        remover: &platform.entry_remover,
+        trash_dir: trash.as_deref(),
+        tools: Some(&platform.tool_runner),
+    };
+    let report = execute(&plan, &disk, &CancelToken::new(), &mut |_| {});
+    print_line(&render_report(&report))?;
+
+    if report.results.iter().any(|result| !is_clean(&result.outcome)) {
+        return Err("some items could not be cleaned (listed above)".into());
+    }
+    if !asked.is_empty() {
+        return Err("some rules found nothing to clean (listed above)".into());
+    }
+    Ok(())
+}
+
+fn is_clean(outcome: &TargetOutcome) -> bool {
+    match outcome {
+        TargetOutcome::Removed(removed) => !removed.has_errors() && removed.skipped_mounts == 0,
+        TargetOutcome::Trashed(_) | TargetOutcome::ByTool(_) => true,
+        TargetOutcome::Skipped(_) | TargetOutcome::Failed(_) => false,
+    }
+}
+
+fn render(plan: &CleanupPlan, not_found: &[String], verbose: bool, dry_run: bool) -> String {
+    let first = if dry_run {
+        "Dry run: nothing was changed."
+    } else {
+        "Plan:"
+    };
+    let mut lines = vec![first.to_owned(), String::new()];
+
+    if plan.groups().is_empty() {
+        lines.push("Nothing to clean.".to_owned());
+    } else {
+        let rows: Vec<Vec<String>> = plan
+            .groups()
+            .iter()
+            .map(|group| {
+                vec![
+                    group.rule_id().to_owned(),
+                    action_name(&group.action()),
+                    group.targets().len().to_string(),
+                    format::bytes(group.allocated()),
+                ]
+            })
+            .collect();
+        lines.push(format::table(&["RULE", "ACTION", "ITEMS", "SIZE"], &rows));
+        lines.push(String::new());
+        lines.push(format!(
+            "{} {} (as scanned; hard links and shared blocks can make the space freed differ).",
+            if dry_run { "Would clean" } else { "Cleaning" },
+            format::bytes(plan.allocated)
+        ));
+
+        if verbose {
+            lines.push(String::new());
+            for group in plan.groups() {
+                for target in group.targets() {
+                    lines.push(format!(
+                        "  {}  {}",
+                        group.rule_id(),
+                        format::display(&target.display_path())
+                    ));
+                }
+            }
+        }
+    }
+
+    if !plan.refused.is_empty() {
+        lines.push(String::new());
+        lines.push(format!("Left out ({}):", plan.refused.len()));
+        for refused in &plan.refused {
+            lines.push(format!(
+                "  {}  {}: {}",
+                refused.rule_id,
+                format::display(&refused.path),
+                format::display(&refused.reason.to_string())
+            ));
+        }
+    }
+
+    if !not_found.is_empty() {
+        lines.push(String::new());
+        let ids: Vec<String> = not_found.iter().map(|id| format::display(id)).collect();
+        lines.push(format!("Found nothing for: {}", ids.join(", ")));
+    }
+
+    lines.join("\n")
+}
+
+fn render_report(report: &CleanupReport) -> String {
+    let mut lines = vec![String::new()];
+    let mut problems = Vec::new();
+
+    for result in &report.results {
+        let path = format::display(&result.path);
+        match &result.outcome {
+            TargetOutcome::Removed(removed) => {
+                for (inner, error) in &removed.errors {
+                    problems.push(format!(
+                        "  {}: {}",
+                        format::display(&String::from_utf8_lossy(inner)),
+                        format::display(error)
+                    ));
+                }
+                if removed.more_errors > 0 {
+                    problems.push(format!(
+                        "  {path}: and {} more problems inside",
+                        removed.more_errors
+                    ));
+                }
+                if removed.skipped_mounts > 0 {
+                    problems.push(format!(
+                        "  {path}: {} mounted folders inside were left alone",
+                        removed.skipped_mounts
+                    ));
+                }
+            }
+            TargetOutcome::Trashed(_) | TargetOutcome::ByTool(_) => {}
+            TargetOutcome::Skipped(why) | TargetOutcome::Failed(why) => {
+                problems.push(format!("  {path}: {}", format::display(why)));
+            }
+        }
+    }
+
+    let cleaned = report.results.iter().filter(|r| is_clean(&r.outcome)).count();
+    let with_problems = report.results.len() - cleaned;
+    let mut summary = format!("Cleaned {cleaned} of {} items.", report.results.len());
+    if with_problems > 0 {
+        summary.push_str(&format!(" {with_problems} with problems (listed below)."));
+    }
+    lines.push(summary);
+
+    // Moving to the trash frees nothing until the trash is emptied.
+    let only_trashed = report
+        .results
+        .iter()
+        .filter(|r| is_clean(&r.outcome))
+        .all(|r| matches!(r.outcome, TargetOutcome::Trashed(_)));
+    match report.freed {
+        Some(_) if cleaned > 0 && only_trashed => {
+            lines.push("Moved to the trash: the space is freed when the trash is emptied.".to_owned())
+        }
+        Some(0) if cleaned > 0 => lines.push(
+            "Free space has not changed yet: the filesystem may release it a little later, or snapshots and \
+             other copies still hold those blocks."
+                .to_owned(),
+        ),
+        Some(freed) if freed >= 0 => lines.push(format!(
+            "Free space grew by {}.",
+            format::bytes(u64::try_from(freed).unwrap_or(u64::MAX))
+        )),
+        Some(_) => lines.push(
+            "Free space did not grow (other programs wrote meanwhile, or the space is shared).".to_owned(),
+        ),
+        None => lines.push("Free space could not be measured.".to_owned()),
+    }
+    if !report.tools_not_run.is_empty() {
+        lines.push(format!(
+            "Not run yet (needs the owning tool): {}",
+            report.tools_not_run.join(", ")
+        ));
+    }
+    if report.cancelled {
+        lines.push("Stopped early: cancelled.".to_owned());
+    }
+    if !problems.is_empty() {
+        lines.push(String::new());
+        lines.push("Problems:".to_owned());
+        lines.extend(problems);
+    }
+
+    lines.join("\n")
+}
+
+fn action_name(action: &CleanupAction) -> String {
+    match action {
+        CleanupAction::Delete => "delete".to_owned(),
+        CleanupAction::EmptyFolder => "empty folder".to_owned(),
+        CleanupAction::Trash => "move to trash".to_owned(),
+        CleanupAction::EmptyTrash => "empty the trash".to_owned(),
+        CleanupAction::RunTool(tool) => {
+            let elevated = if tool.needs_elevation() {
+                " (as administrator)"
+            } else {
+                ""
+            };
+            format!("run {} {}{elevated}", tool.program(), tool.args().join(" "))
+        }
+    }
+}

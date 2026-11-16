@@ -5,7 +5,7 @@ use platter_core::{Environment, NodeId, NodeKind, Tree};
 
 use crate::display::{join, shorten_home};
 use crate::found::Found;
-use crate::plan::{Plan, Role, named_of};
+use crate::plan::{Plan, Role, kept_root, named_of};
 use crate::reason::{Facts, render};
 use crate::resolve::has_sibling_file;
 use crate::rule::{Files, Matcher, Named, Rule, RuleSet};
@@ -17,22 +17,90 @@ pub type Suggestions = SuggestionsDto;
 ///
 /// One top-down pass. A node that matches a rule is recorded and not entered, so the outermost match
 /// wins, nothing inside it is matched again and no byte is counted twice. Unreadable folders, skipped
-/// mounts and empty nodes never match. When two rules match the same folder, the earlier rule wins.
+/// mounts and empty nodes never match, and a folder with an unreadable part inside, whose size and age
+/// are not really known, is never `safe`. When two rules match the same folder, a `keep` rule wins, then the
+/// earlier rule. A `keep` folder is never entered, and a scan that starts inside one gets no suggestions.
+///
+/// Without a known home directory nothing can be kept, so name rules (`target`, `node_modules`, ...) are
+/// at most `review`.
 ///
 /// Suggestions come safe first, then review, then keep, largest first within each verdict.
 pub fn evaluate(tree: &Tree, env: &Environment, rules: &RuleSet) -> Suggestions {
+    let Some((verdicts, found)) = run(tree, env, rules) else {
+        return Suggestions {
+            suggestions: Vec::new(),
+            totals: VerdictTotals::default(),
+        };
+    };
+
+    assemble(tree, env, rules.rules(), &verdicts, found)
+}
+
+/// Every node one rule matched, with the verdict the rule has on this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleMatches {
+    /// The rule's id (see [`Rule::id`]).
+    pub id: &'static str,
+    pub verdict: Verdict,
+    /// All matched nodes, in the order the pass met them (a suggestion lists only the largest few).
+    pub nodes: Vec<NodeId>,
+}
+
+/// The same pass as [`evaluate`], answered as every matched node per rule instead of display text. For
+/// code that has to act on all matches, not show them. Rules that matched nothing are left out.
+pub fn matches(tree: &Tree, env: &Environment, rules: &RuleSet) -> Vec<RuleMatches> {
+    let Some((verdicts, found)) = run(tree, env, rules) else {
+        return Vec::new();
+    };
+
+    rules
+        .rules()
+        .iter()
+        .zip(verdicts)
+        .zip(found)
+        .filter(|(_, found)| !found.is_empty())
+        .map(|((rule, verdict), found)| RuleMatches {
+            id: rule.id,
+            verdict,
+            nodes: found.all,
+        })
+        .collect()
+}
+
+/// The single pass. `None` when the scan starts inside a kept folder, so nothing may be suggested.
+fn run(tree: &Tree, env: &Environment, rules: &RuleSet) -> Option<(Vec<Verdict>, Vec<Found>)> {
+    if kept_root(tree, env, rules.rules()).is_some() {
+        return None;
+    }
+
     let plan = Plan::new(tree, env, rules.rules());
+    let verdicts: Vec<Verdict> = rules
+        .rules()
+        .iter()
+        .map(|rule| effective_verdict(rule, env))
+        .collect();
     let mut walker = Walker {
         tree,
         env,
         rules: rules.rules(),
+        verdicts: &verdicts,
         plan,
         found: rules.rules().iter().map(|_| Found::default()).collect(),
         sets: vec![Vec::new()],
     };
 
     walker.walk();
-    assemble(tree, env, rules.rules(), walker.found)
+    let found = walker.found;
+    Some((verdicts, found))
+}
+
+/// A rule's verdict on this machine: a name rule is not trusted with `safe` when no home directory is
+/// known, because then no personal folder can be kept out of its reach.
+fn effective_verdict(rule: &Rule, env: &Environment) -> Verdict {
+    match (rule.verdict, &rule.matcher) {
+        (Verdict::Safe, Matcher::Named(_)) if env.home.is_none() => Verdict::Review,
+        (verdict, _) => verdict,
+    }
 }
 
 /// A run of sibling nodes still to visit, with the file rules that apply to them.
@@ -46,6 +114,8 @@ struct Walker<'a> {
     tree: &'a Tree,
     env: &'a Environment,
     rules: &'a [Rule],
+    /// The verdict of each rule on this machine (see `effective_verdict`).
+    verdicts: &'a [Verdict],
     plan: Plan,
     found: Vec<Found>,
     /// Interned sets of active file rules (rule indexes, ascending). Set 0 is empty.
@@ -92,11 +162,19 @@ impl Walker<'_> {
     fn visit(&mut self, node: NodeId, set: usize) -> Option<usize> {
         match self.tree.kind(node) {
             NodeKind::Dir => {
-                if let Some((rule, name)) = self.matching_rule(node)
-                    && self.is_suggestible(node)
-                {
-                    self.found[rule].add(self.tree, node, name);
-                    return None;
+                if let Some((rule, name)) = self.matching_rule(node) {
+                    // A kept folder is never entered, whatever is in it.
+                    if self.rules[rule].verdict == Verdict::Keep {
+                        if self.tree.allocated(node) > 0 {
+                            self.found[rule].add(self.tree, node, name);
+                        }
+                        return None;
+                    }
+
+                    if self.is_suggestible(node, self.verdicts[rule]) {
+                        self.found[rule].add(self.tree, node, name);
+                        return None;
+                    }
                 }
 
                 Some(self.with_regions(node, set))
@@ -114,12 +192,18 @@ impl Walker<'_> {
         let mut best: Option<(usize, Option<usize>)> = None;
 
         if self.plan.is_anchor(node) {
-            let claim = self
-                .plan
-                .anchors_at(node)
-                .iter()
-                .find(|anchor| anchor.role == Role::Claim);
-            best = claim.map(|anchor| (anchor.rule, None));
+            let claims = || {
+                self.plan
+                    .anchors_at(node)
+                    .iter()
+                    .filter(|anchor| anchor.role == Role::Claim)
+            };
+            let keep = claims().find(|anchor| self.rules[anchor.rule].verdict == Verdict::Keep);
+            if let Some(anchor) = keep {
+                return Some((anchor.rule, None));
+            }
+
+            best = claims().next().map(|anchor| (anchor.rule, None));
         }
 
         // The scan root has no parent in the tree, so a name rule cannot check its surroundings.
@@ -161,13 +245,43 @@ impl Walker<'_> {
         {
             return None;
         }
+        if !rule.sibling_any.is_empty()
+            && !rule
+                .sibling_any
+                .iter()
+                .any(|marker| has_sibling_file(self.tree, node, marker))
+        {
+            return None;
+        }
+        if !rule.not_inside.is_empty() || !rule.not_below.is_empty() {
+            // Only for a folder that passed every cheaper test, so few paths are ever built.
+            let path = self.tree.path_of(node);
+            let parent = path.parent().unwrap_or(&path);
+
+            if parent.components().any(|component| {
+                rule.not_inside
+                    .iter()
+                    .any(|name| component.as_os_str().as_encoded_bytes() == name.as_bytes())
+            }) {
+                return None;
+            }
+            if rule.not_below.iter().any(|below| path.starts_with(below)) {
+                return None;
+            }
+        }
 
         Some(index)
     }
 
-    /// Unreadable folders have an unknown size and empty ones nothing to offer: neither is suggested.
-    fn is_suggestible(&self, node: NodeId) -> bool {
-        self.tree.allocated(node) > 0 && !self.tree.is_unreadable(node)
+    /// Unreadable folders have an unknown size and empty ones nothing to offer: neither is suggested. Nor
+    /// is a folder with an unreadable folder inside labelled `safe`: its size and age only cover what was
+    /// read. Such a folder can still be a `review` item, which the user confirms one by one.
+    fn is_suggestible(&self, node: NodeId, verdict: Verdict) -> bool {
+        if self.tree.allocated(node) == 0 || self.tree.is_unreadable(node) {
+            return false;
+        }
+
+        verdict != Verdict::Safe || !self.tree.has_unreadable(node)
     }
 
     /// The set of file rules active below `node`: the inherited ones plus those anchored here.
@@ -228,7 +342,13 @@ impl Walker<'_> {
 }
 
 /// Turns the matches into suggestions: rendered text, display paths, ordering and totals.
-fn assemble(tree: &Tree, env: &Environment, rules: &[Rule], found: Vec<Found>) -> Suggestions {
+fn assemble(
+    tree: &Tree,
+    env: &Environment,
+    rules: &[Rule],
+    verdicts: &[Verdict],
+    found: Vec<Found>,
+) -> Suggestions {
     let mut totals = VerdictTotals::default();
     let mut ranked: Vec<(usize, SuggestionDto)> = Vec::new();
 
@@ -242,7 +362,8 @@ fn assemble(tree: &Tree, env: &Environment, rules: &[Rule], found: Vec<Found>) -
             days: rule.matcher.age_days(),
             min_bytes: rule.matcher.min_bytes(),
         };
-        let total = match rule.verdict {
+        let verdict = verdicts[index];
+        let total = match verdict {
             Verdict::Safe => &mut totals.safe,
             Verdict::Review => &mut totals.review,
             Verdict::Keep => &mut totals.keep,
@@ -255,7 +376,7 @@ fn assemble(tree: &Tree, env: &Environment, rules: &[Rule], found: Vec<Found>) -
                 id: rule.id.to_owned(),
                 title: rule.title.to_owned(),
                 path: display_path(tree, env, rule, found),
-                verdict: rule.verdict,
+                verdict,
                 reason: render(rule.reason, &facts),
                 allocated: found.allocated,
                 items: found.items,
@@ -282,6 +403,10 @@ fn display_path(tree: &Tree, env: &Environment, rule: &Rule, found: &Found) -> S
         Matcher::Fixed(path) => (*path).to_owned(),
         Matcher::Home("") => "~".to_owned(),
         Matcher::Home(relative) => format!("~/{relative}"),
+        Matcher::UserDir(dir) => env.user_dir(*dir).map_or_else(
+            || format!("~/{}", dir.default_name()),
+            |path| shorten_home(&path, home),
+        ),
         Matcher::Named(named) => {
             if let Some(node) = found.single() {
                 return shorten_home(&tree.path_of(node), home);

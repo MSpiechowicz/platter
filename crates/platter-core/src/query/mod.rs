@@ -7,7 +7,7 @@ mod node;
 mod path;
 mod summary;
 
-pub use children::children;
+pub use children::{MAX_NAME_FILTER_BYTES, NameFilter, children, children_matching};
 pub use lod::{MAX_LOD_DEPTH, lod};
 pub use node::node;
 pub use path::path;

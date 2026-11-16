@@ -59,13 +59,15 @@ describe('the app', () => {
     expect(screen.getByText('Space by last modified')).toBeTruthy();
     expect(screen.getByText('Largest folders')).toBeTruthy();
     expect(screen.getByText('What is on the disk')).toBeTruthy();
-    // The suggestions are read-only: the cards are there, but nothing can be cleaned, and no update notice shows.
+    // The cards are there with the cleaning controls, nothing is cleaned until a click, and no update notice shows.
     expect(await screen.findByText('Reclaimable')).toBeTruthy();
     expect(await screen.findByText('Pacman package cache', undefined, { timeout: 3000 })).toBeTruthy();
     expect(screen.getByRole('heading', { name: /^Advisor/ })).toBeTruthy();
     expect(screen.queryByText('Update available')).toBeNull();
-    expect(screen.queryByRole('button', { name: /clean/i })).toBeNull();
-    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.getByRole('button', { name: /^Clean safe/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Clean selected/ })).toBeTruthy();
+    expect(screen.getAllByRole('checkbox').length).toBeGreaterThan(0);
+    expect(document.querySelector('dialog[open]')).toBeNull();
   });
 
   it('cancels a scan and returns to the chooser with a note', async () => {
@@ -235,7 +237,10 @@ describe('the app', () => {
     await screen.findByText('USED', undefined, { timeout: 3000 });
 
     expect(screen.getAllByText(/GB/).length).toBeGreaterThan(0);
-    expect(screen.queryAllByText(/GiB/)).toHaveLength(0);
+    // A rule's reason is the backend's own text and says "1 GiB" whatever the unit setting is.
+    expect(screen.queryAllByText(/GiB/).filter((element) => !element.classList.contains('why'))).toHaveLength(
+      0,
+    );
 
     await fireEvent.click(nav('Settings'));
     await fireEvent.click(screen.getByRole('button', { name: 'GiB' }));

@@ -163,15 +163,39 @@ fn unreadable_mount_and_empty_nodes_are_never_suggested() {
 }
 
 #[test]
-fn an_unreadable_folder_inside_a_match_does_not_stop_the_match() {
+fn a_folder_with_an_unreadable_part_inside_is_never_safe_but_can_be_reviewed() {
     let mut fs = FakeFs::new();
     fs.file("/home/u/.cache/a", 100);
-    fs.unreadable_dir("/home/u/.cache/locked");
+    fs.unreadable_dir("/home/u/.cache/deep/locked");
     let tree = scan_at(&fs, "/", false);
 
-    let found = run(&tree, vec![home("cache", Safe, ".cache")]);
+    let safe = run(&tree, vec![home("cache", Safe, ".cache")]);
+    let review = run(&tree, vec![home("cache", Review, ".cache")]);
 
-    assert_eq!(get(&found, "cache").unwrap().allocated, 100);
+    assert!(safe.suggestions.is_empty(), "{safe:?}");
+    assert_eq!(get(&review, "cache").unwrap().allocated, 100);
+}
+
+#[test]
+fn an_old_build_folder_with_an_unreadable_part_is_not_judged_by_the_part_that_was_read() {
+    let mut fs = FakeFs::new();
+    fs.file("/home/u/p/Cargo.toml", 1);
+    aged_file(&mut fs, "/home/u/p/target/old", 100, 400);
+    fs.unreadable_dir("/home/u/p/target/debug/locked");
+    let tree = scan_at(&fs, "/", false);
+
+    let found = run(
+        &tree,
+        vec![Rule::new(
+            "t",
+            "T",
+            Safe,
+            Matcher::Named(Named::new(&["target"]).next_to("Cargo.toml").idle(30)),
+            "r",
+        )],
+    );
+
+    assert!(found.suggestions.is_empty(), "{found:?}");
 }
 
 #[test]
@@ -323,7 +347,7 @@ fn when_two_rules_match_the_same_folder_the_earlier_one_wins() {
     let first = run(
         &tree,
         vec![
-            home("first", Keep, ".cache"),
+            home("first", Review, ".cache"),
             fixed("second", Safe, "/home/u/.cache"),
         ],
     );
@@ -331,12 +355,29 @@ fn when_two_rules_match_the_same_folder_the_earlier_one_wins() {
         &tree,
         vec![
             fixed("second", Safe, "/home/u/.cache"),
-            home("first", Keep, ".cache"),
+            home("first", Review, ".cache"),
         ],
     );
 
     assert_eq!(ids(&first), ["first"]);
     assert_eq!(ids(&second), ["second"]);
+}
+
+#[test]
+fn a_keep_rule_wins_on_the_same_folder_whatever_the_order() {
+    let mut fs = FakeFs::new();
+    fs.file("/home/u/.cache/a", 100);
+    let tree = scan_at(&fs, "/", false);
+
+    let found = run(
+        &tree,
+        vec![
+            fixed("safe", Safe, "/home/u/.cache"),
+            home("keep", Keep, ".cache"),
+        ],
+    );
+
+    assert_eq!(ids(&found), ["keep"]);
 }
 
 #[test]
@@ -347,15 +388,45 @@ fn a_name_rule_and_a_path_rule_on_the_same_folder_are_decided_by_table_order() {
 
     let named_first = run(
         &tree,
-        vec![target_rule("named", Review), home("path", Keep, "p/target")],
+        vec![target_rule("named", Safe), home("path", Review, "p/target")],
     );
     let path_first = run(
         &tree,
-        vec![home("path", Keep, "p/target"), target_rule("named", Review)],
+        vec![home("path", Review, "p/target"), target_rule("named", Safe)],
     );
 
     assert_eq!(ids(&named_first), ["named"]);
     assert_eq!(ids(&path_first), ["path"]);
+}
+
+#[test]
+fn a_keep_path_beats_a_name_rule_on_the_same_folder_whatever_the_order() {
+    let mut fs = FakeFs::new();
+    fs.file("/home/u/p/Cargo.toml", 1).file("/home/u/p/target/x", 100);
+    let tree = scan_at(&fs, "/", false);
+
+    let found = run(
+        &tree,
+        vec![target_rule("named", Safe), home("path", Keep, "p/target")],
+    );
+
+    assert_eq!(ids(&found), ["path"]);
+}
+
+#[test]
+fn a_kept_folder_is_never_entered_even_when_part_of_it_is_unreadable() {
+    let mut fs = FakeFs::new();
+    fs.file("/home/u/Documents/p/Cargo.toml", 1);
+    aged_file(&mut fs, "/home/u/Documents/p/target/x", 100, 400);
+    fs.unreadable_dir("/home/u/Documents/locked");
+    let tree = scan_at(&fs, "/", false);
+
+    let found = run(
+        &tree,
+        vec![target_rule("target", Safe), home("docs", Keep, "Documents")],
+    );
+
+    assert_eq!(ids(&found), ["docs"]);
 }
 
 #[test]
@@ -528,4 +599,34 @@ mod scan_roots {
 
         assert!(get(&found, "cache").is_none());
     }
+}
+
+#[test]
+fn matches_lists_every_node_of_a_rule_beyond_what_a_suggestion_shows() {
+    let mut fs = FakeFs::new();
+    for i in 0..(MAX_NODES + 5) {
+        fs.file(&format!("/home/u/p{i}/Cargo.toml"), 1)
+            .file(&format!("/home/u/p{i}/target/x"), 10);
+    }
+    let tree = scan_at(&fs, "/", false);
+    let rules = RuleSet::new(vec![target_rule("target", Safe)]);
+
+    let all = platter_rules::matches(&tree, &env(), &rules);
+    let shown = evaluate(&tree, &env(), &rules);
+
+    assert_eq!(all.len(), 1);
+    assert_eq!((all[0].id, all[0].verdict), ("target", Safe));
+    assert_eq!(all[0].nodes.len(), MAX_NODES + 5);
+    assert_eq!(shown.suggestions[0].nodes.len(), MAX_NODES);
+}
+
+#[test]
+fn matches_is_empty_for_a_scan_inside_a_kept_folder() {
+    let mut fs = FakeFs::new();
+    fs.file("/home/u/Documents/w/Cargo.toml", 1)
+        .file("/home/u/Documents/w/target/x", 10);
+    let tree = scan_at(&fs, "/home/u/Documents/w", false);
+    let rules = RuleSet::new(vec![target_rule("target", Safe), home("docs", Keep, "Documents")]);
+
+    assert!(platter_rules::matches(&tree, &env(), &rules).is_empty());
 }

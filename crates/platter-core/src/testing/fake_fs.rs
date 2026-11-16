@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::budget::Lease;
 use crate::model::{EntryKind, ScanWarning, SkipReason};
-use crate::ports::{DirListing, DirSource, EntryMeta, RawEntry, RootInfo, SourceOptions};
+use crate::ports::{
+    DirListing, DirSource, EntryMeta, EntryProbe, ProbedEntry, RawEntry, RootInfo, SourceOptions,
+};
 
 #[derive(Debug, Clone)]
 struct FakeNode {
@@ -315,6 +317,22 @@ impl FakeFs {
         Some(current)
     }
 
+    /// Turns the entry at `path` into a symlink, as if someone swapped it after a scan. What was inside
+    /// can no longer be reached through it.
+    pub fn swap_for_symlink(&mut self, path: &str) -> &mut Self {
+        let index = self.resolve(path).expect("the entry exists");
+        self.nodes[index].meta.kind = EntryKind::Symlink;
+        self
+    }
+
+    /// Removes the entry at `path` and everything below it from its directory, as if deleted after a scan.
+    pub fn remove(&mut self, path: &str) -> &mut Self {
+        let index = self.resolve(path).expect("the entry exists");
+        let parent = self.nodes[index].parent;
+        self.nodes[parent].children.retain(|&child| child != index);
+        self
+    }
+
     fn path_of(&self, index: usize) -> String {
         let mut names = Vec::new();
         let mut current = index;
@@ -324,6 +342,51 @@ impl FakeFs {
         }
         names.reverse();
         format!("/{}", names.join("/"))
+    }
+}
+
+impl EntryProbe for FakeFs {
+    fn probe(&self, path: &[u8]) -> io::Result<Vec<ProbedEntry>> {
+        if path.first() != Some(&b'/') {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+        }
+
+        let mut current = 0;
+        let mut found = Vec::new();
+        let parts: Vec<&[u8]> = path[1..].split(|&byte| byte == b'/').collect();
+        let parts = match parts.as_slice() {
+            // A trailing slash, or the root itself.
+            [rest @ .., []] => rest.to_vec(),
+            all => all.to_vec(),
+        };
+
+        for (position, part) in parts.iter().enumerate() {
+            if part.is_empty() || *part == b"." || *part == b".." {
+                return Err(io::Error::from(io::ErrorKind::InvalidInput));
+            }
+            if self.nodes[current].meta.kind != EntryKind::Dir {
+                return Err(io::Error::from(io::ErrorKind::NotADirectory));
+            }
+
+            current = self.nodes[current]
+                .children
+                .iter()
+                .copied()
+                .find(|&child| self.nodes[child].name.as_bytes() == *part)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+
+            let last = position + 1 == parts.len();
+            if !last && self.nodes[current].meta.kind != EntryKind::Dir {
+                return Err(io::Error::from(io::ErrorKind::NotADirectory));
+            }
+
+            found.push(ProbedEntry {
+                meta: self.nodes[current].meta,
+                mount_id: None,
+            });
+        }
+
+        Ok(found)
     }
 }
 

@@ -5,6 +5,44 @@ use crate::dto::{ChildrenPage, SortKey};
 use crate::error::QueryError;
 use crate::model::{NodeId, Tree};
 
+/// The longest name filter a caller should accept, in bytes. A file name is at most 255 bytes on the
+/// platforms Platter runs on, so a longer filter could never match; refusing it bounds one request.
+pub const MAX_NAME_FILTER_BYTES: usize = 1024;
+
+/// A case-insensitive substring of a child's name, as the Explorer's search box means it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameFilter {
+    needle: String,
+}
+
+impl NameFilter {
+    /// The filter for `text`, or `None` when it filters nothing (empty or only spaces, as in the UI).
+    pub fn new(text: &str) -> Option<Self> {
+        if text.trim().is_empty() {
+            return None;
+        }
+
+        Some(Self {
+            needle: text.to_lowercase(),
+        })
+    }
+
+    /// Whether `name` contains the filter, ignoring case. A name that is not valid UTF-8 is compared in
+    /// the form it is shown in (invalid bytes become U+FFFD).
+    pub fn matches(&self, name: &[u8]) -> bool {
+        if name.is_ascii() && self.needle.is_ascii() {
+            let needle = self.needle.as_bytes();
+            return name
+                .windows(needle.len())
+                .any(|window| window.eq_ignore_ascii_case(needle));
+        }
+
+        String::from_utf8_lossy(name)
+            .to_lowercase()
+            .contains(&self.needle)
+    }
+}
+
 /// One page of a node's children, ordered by `sort`.
 ///
 /// Ties are broken by name (case-insensitive) and then id, so paging is stable. `total` is the number
@@ -16,9 +54,28 @@ pub fn children(
     limit: usize,
     sort: SortKey,
 ) -> Result<ChildrenPage, QueryError> {
+    children_matching(tree, parent, None, offset, limit, sort)
+}
+
+/// Like [`children`], but only the children whose name matches `filter`; `total` is then the number of
+/// matching children.
+pub fn children_matching(
+    tree: &Tree,
+    parent: NodeId,
+    filter: Option<&NameFilter>,
+    offset: usize,
+    limit: usize,
+    sort: SortKey,
+) -> Result<ChildrenPage, QueryError> {
     ensure(tree, parent)?;
 
-    let mut ids: Vec<NodeId> = tree.children(parent).collect();
+    let mut ids: Vec<NodeId> = match filter {
+        Some(filter) => tree
+            .children(parent)
+            .filter(|&id| filter.matches(tree.name(id)))
+            .collect(),
+        None => tree.children(parent).collect(),
+    };
     let total = ids.len();
     let end = offset.saturating_add(limit).min(total);
 

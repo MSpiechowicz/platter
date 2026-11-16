@@ -14,9 +14,11 @@
     onretry: () => void;
     /** The space the scan covers: what the bar's full width stands for. */
     scanned: number;
+    /** Bytes freed by the cleanups of this session; 0 before any. Not part of the bar, which shows the scan. */
+    freed: number;
   }
 
-  let { suggestions, loading, error, onretry, scanned }: Props = $props();
+  let { suggestions, loading, error, onretry, scanned, freed }: Props = $props();
 
   const segments = $derived(reclaimSegments(suggestions, scanned));
   const wins = $derived(biggestWins(suggestions));
@@ -44,6 +46,12 @@
           <span class="num">{fmt.size(segment.allocated)}</span>
         </div>
       {/each}
+
+      <div class="recr">
+        <i style="background:var(--accent)"></i>
+        <span>Already freed</span>
+        <span class="num">{fmt.size(freed)}</span>
+      </div>
 
       {#if wins.length > 0}
         <h4 class="recsub">Biggest wins</h4>

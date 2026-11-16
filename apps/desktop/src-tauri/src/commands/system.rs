@@ -40,7 +40,7 @@ pub async fn open_in_file_manager(
 /// second way to name a scan root to the contract (`ScanOptions.root` would be a path or a token), which
 /// is not worth it for a rare case; such a folder can still be reached by picking its parent.
 #[tauri::command]
-pub async fn pick_folder(app: AppHandle) -> CommandResult<Option<String>> {
+pub async fn pick_folder(app: AppHandle, state: State<'_, AppState>) -> CommandResult<Option<String>> {
     let picked = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
@@ -56,7 +56,19 @@ pub async fn pick_folder(app: AppHandle) -> CommandResult<Option<String>> {
         CommandError::invalid(format!("the chosen location is not a local folder: {error}"))
     })?;
 
-    wire_path(&path).map(Some)
+    let picked = wire_path(&path)?;
+    // The folder the user chose in the backend's own dialog may now be scanned, as the folder it is
+    // now: its identity is pinned, so swapping it for a link before the scan is refused. Reading it can
+    // stall on a hung mount, so off the async worker; without an identity the pick is refused.
+    let identity = tauri::async_runtime::spawn_blocking(move || {
+        platter_platform::root::resolve_root(&path)
+            .ok()
+            .and_then(|resolved| resolved.identity)
+    })
+    .await?
+    .ok_or_else(|| CommandError::invalid("the chosen folder cannot be read; choose another one"))?;
+    state.allow_picked(picked.clone(), Some(identity));
+    Ok(Some(picked))
 }
 
 /// The path as the UI receives it, or an error when it has no exact text form.

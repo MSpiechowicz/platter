@@ -14,6 +14,7 @@ workspace = true
 platter-core.workspace = true
 platter-platform.workspace = true
 platter-rules.workspace = true
+platter-cleanup.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1,15 +1,27 @@
 <script lang="ts">
-  import type { NodeId, SuggestionsDto } from '../../api/types';
+  import { untrack } from 'svelte';
+  import type { NodeId, ScanId, SuggestionsDto } from '../../api/types';
   import Card from '../../components/ui/Card.svelte';
+  import Checkbox from '../../components/ui/Checkbox.svelte';
   import Loading from '../../components/ui/Loading.svelte';
+  import Segmented from '../../components/ui/Segmented.svelte';
+  import Button from '../../components/ui/Button.svelte';
   import { countUp } from '../../motion/countUp.svelte';
+  import type { Action, CleanupStore, SelectionChoice } from '../../state/cleanup.svelte';
   import { fmt } from '../../state/fmt.svelte';
-  import { groupSuggestions, itemCount, suggestionCount } from './advisor';
+  import { groupSuggestions, itemCount, reasonOf, suggestionCount } from './advisor';
+  import { footerStatus } from './cleanupText';
+  import { visibleText } from './display';
   import RetryNote from './RetryNote.svelte';
+  import ReviewDialog from './ReviewDialog.svelte';
 
   interface Props {
     /** Undefined until the first answer arrives. */
     suggestions: SuggestionsDto | undefined;
+    /** The scan the suggestions belong to. */
+    scanId: ScanId;
+    /** The cleanup flow; the card only shows it and passes the user's clicks on. */
+    store: CleanupStore;
     loading: boolean;
     error: unknown;
     onretry: () => void;
@@ -17,17 +29,61 @@
     onopen: (nodeId: NodeId) => void;
   }
 
-  let { suggestions, loading, error, onretry, onopen }: Props = $props();
+  let { suggestions, scanId, store, loading, error, onretry, onopen }: Props = $props();
+
+  const CHOICES: { value: SelectionChoice; label: string }[] = [
+    { value: 'safe', label: 'Safe' },
+    { value: 'all', label: 'All' },
+    { value: 'none', label: 'None' },
+  ];
+
+  const ACTION_LABELS: Record<Action, string> = { cancel: 'Cancel', undo: 'Undo', rescan: 'Rescan' };
+
+  // The suggestions become the store's rows before the first paint, so the safe ones are ticked from the start.
+  $effect.pre(() => {
+    const id = scanId;
+    const data = suggestions;
+
+    untrack(() => store.load(id, data));
+  });
 
   const groups = $derived(suggestions ? groupSuggestions(suggestions) : []);
   const count = $derived(suggestions?.suggestions.length ?? 0);
+  const status = $derived(footerStatus(store));
+  const locked = $derived(store.busy || store.outdated);
 
-  const animatedSafe = countUp(() => suggestions?.totals.safe ?? 0);
+  const animatedSelected = countUp(() => store.selectedBytes, 300);
+
+  function run(action: Action): void {
+    if (action === 'cancel') {
+      void store.cancel();
+    } else if (action === 'undo') {
+      void store.undo();
+    } else {
+      void store.rescan();
+    }
+  }
 </script>
 
 <Card title="Advisor" hint="RULES" class="advisor">
   {#if suggestions}
-    <div class="tools">{suggestionCount(count)}</div>
+    <div class="tools">
+      <span>
+        {store.cleanable.length > 0
+          ? `${store.selectedItems.length} of ${store.cleanable.length} selected`
+          : suggestionCount(count)}
+      </span>
+      <span class="sp"></span>
+      <span>Select</span>
+      <Segmented
+        size="sm"
+        label="Select"
+        options={CHOICES}
+        value={store.choice}
+        disabled={locked || store.cleanable.length === 0}
+        onchange={(choice) => store.select(choice as 'safe' | 'all' | 'none')}
+      />
+    </div>
 
     {#if count > 0}
       <div class="list">
@@ -40,20 +96,32 @@
             </h4>
 
             {#each group.suggestions as suggestion (suggestion.id)}
-              <button
-                type="button"
-                class="sug"
-                disabled={suggestion.nodes.length === 0}
-                title="{suggestion.path}: open in the Explorer"
-                onclick={() => onopen(suggestion.nodes[0] as NodeId)}
-              >
-                <span class="text">
-                  <span class="t">{suggestion.title}</span>
-                  <span class="p">{suggestion.path}</span>
-                  <span class="why">{suggestion.reason}</span>
-                </span>
+              <div class="sug" class:done={store.cleaned.has(suggestion.id)}>
+                {#if suggestion.verdict === 'keep'}
+                  <span class="slot"></span>
+                {:else}
+                  <Checkbox
+                    checked={store.isSelected(suggestion.id)}
+                    disabled={locked || store.cleaned.has(suggestion.id)}
+                    aria-label={visibleText(suggestion.title)}
+                    onchange={() => store.toggle(suggestion.id)}
+                  />
+                {/if}
+
+                <button
+                  type="button"
+                  class="text"
+                  disabled={suggestion.nodes.length === 0}
+                  title="{visibleText(suggestion.path)}: open in the Explorer"
+                  onclick={() => onopen(suggestion.nodes[0] as NodeId)}
+                >
+                  <span class="t">{visibleText(suggestion.title)}</span>
+                  <span class="p">{visibleText(suggestion.path)}</span>
+                  <span class="why">{visibleText(reasonOf(suggestion))}</span>
+                </button>
+
                 <b class="num">{fmt.size(suggestion.allocated)}</b>
-              </button>
+              </div>
             {/each}
           </section>
         {/each}
@@ -66,16 +134,52 @@
 
     <div class="total">
       <div class="trow">
-        <div>
-          <div class="label">SAFE TO CLEAN</div>
-          <b class="num">{fmt.size(animatedSafe.value)}</b>
+        <div class="sel">
+          <div class="label">SELECTED</div>
+          <b class="num">{fmt.size(animatedSelected.value)}</b>
         </div>
-        <p class="note">
-          <span>Cleaning arrives in the next update.</span>
-          <span>Nothing is changed for now.</span>
-        </p>
+
+        <div class="status" class:attention={status.attention} role="status">
+          <div class="sbody">
+            <p class="msg">{status.text}</p>
+
+            {#if status.actions.length > 0}
+              <p class="acts">
+                {#each status.actions as action (action)}
+                  <button type="button" class="act" onclick={() => run(action)}
+                    >{ACTION_LABELS[action]}</button
+                  >
+                {/each}
+              </p>
+            {/if}
+
+            {#each status.details as line, index (index)}
+              <p class="detail">{line}</p>
+            {/each}
+          </div>
+        </div>
+      </div>
+
+      <div class="tbtns">
+        <Button disabled={!store.canCleanSafe} onclick={() => void store.cleanSafe()}>
+          {store.safeItems.length > 0 ? `Clean safe · ${fmt.size(store.safeBytes)}` : 'Clean safe'}
+        </Button>
+        <Button
+          variant="primary"
+          disabled={!store.canCleanSelected}
+          onclick={() => void store.cleanSelected()}
+        >
+          Clean selected ({store.selectedItems.length})
+        </Button>
       </div>
     </div>
+
+    <ReviewDialog
+      plan={store.reviewing}
+      suggestions={store.suggestions}
+      onconfirm={() => void store.confirmReview()}
+      oncancel={() => store.dismissReview()}
+    />
   {:else if error}
     <RetryNote {onretry} />
   {:else}
@@ -92,10 +196,15 @@
   .tools {
     display: flex;
     align-items: center;
+    gap: 8px;
     min-height: 32px;
     padding-bottom: 10px;
     font-size: 12.5px;
     color: var(--muted);
+  }
+
+  .sp {
+    flex: 1;
   }
 
   .list {
@@ -157,29 +266,47 @@
     color: var(--red);
   }
 
-  /* Title, path and reason share one left edge; the size sits on the right. */
+  /* The checkbox has its own column; title, path and reason share one left edge, and the size sits on the right. */
   .sug {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
     gap: 10px;
     align-items: start;
-    width: 100%;
     padding: 10px 0;
-    text-align: left;
-    cursor: pointer;
   }
 
-  .sug:disabled {
-    cursor: default;
+  /* The box lines up with the first line of the title. */
+  .sug > :global(.chk) {
+    margin-top: 3px;
+  }
+
+  /* A kept row has no checkbox; its column stays so that every row starts at the same edge. */
+  .slot {
+    display: block;
   }
 
   .sug + .sug {
     border-top: 1px solid var(--line);
   }
 
+  .sug.done {
+    opacity: 0.35;
+  }
+
+  .sug.done .t {
+    text-decoration: line-through;
+  }
+
   .text {
     display: block;
     min-width: 0;
+    padding: 0;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .text:disabled {
+    cursor: default;
   }
 
   .text > span {
@@ -190,7 +317,7 @@
     transition: color 0.15s;
   }
 
-  .sug:hover:not(:disabled) .t {
+  .text:hover:not(:disabled) .t {
     color: #fff;
   }
 
@@ -226,12 +353,17 @@
     border-top: 1px solid var(--line);
   }
 
+  /* A fixed height: the status text can change as it likes, nothing around it moves. */
   .trow {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 14px;
-    min-height: 44px;
+    height: 60px;
+  }
+
+  .sel {
+    flex: none;
   }
 
   .label {
@@ -244,15 +376,64 @@
     font-size: 22px;
   }
 
-  .note {
+  /* The text is centred against the total; a long list of details scrolls inside the box instead of growing it. */
+  .status {
+    flex: 1;
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow-y: auto;
     font-size: 12.5px;
     line-height: 1.4;
     color: var(--muted);
     text-align: right;
-    max-width: 210px;
   }
 
-  .note span {
-    display: block;
+  .status.attention {
+    color: var(--amber);
+  }
+
+  /* Auto margins centre the text while it fits, and give way to scrolling when it does not. */
+  .sbody {
+    margin-block: auto;
+  }
+
+  .detail {
+    margin-top: 3px;
+    font-size: 11.5px;
+    color: var(--dim);
+    overflow-wrap: anywhere;
+  }
+
+  .acts {
+    display: flex;
+    justify-content: flex-end;
+    gap: 14px;
+  }
+
+  .act {
+    padding: 0;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  .act:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+  }
+
+  .tbtns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 14px;
+  }
+
+  .tbtns :global(.btn) {
+    padding: 9px 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>

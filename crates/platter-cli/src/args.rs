@@ -17,6 +17,8 @@ pub enum Command {
     Scan(ScanArgs),
     /// Scan a directory and list what could be cleaned (read-only: nothing is changed).
     Suggest(SuggestArgs),
+    /// Clean what rules find in a directory: `--dry-run` shows the plan, `--yes` carries it out.
+    Clean(CleanArgs),
     /// Scan a directory and write a JSON fixture for the frontend mock.
     ExportFixture(ExportArgs),
 }
@@ -70,6 +72,40 @@ pub struct SuggestArgs {
     /// Also print how long the scan and the rules took (to stderr).
     #[arg(long)]
     pub stats: bool,
+
+    /// Most entries to hold in memory before giving up (see `scan --help`).
+    #[arg(long, value_name = "N")]
+    pub max_entries: Option<u64>,
+}
+
+#[derive(Debug, Args)]
+pub struct CleanArgs {
+    pub path: PathBuf,
+
+    /// Clean what this rule finds (repeatable; see `suggest` for the ids).
+    #[arg(long = "rule", value_name = "ID")]
+    pub rules: Vec<String>,
+
+    /// Clean what every `safe` rule finds.
+    #[arg(long)]
+    pub safe: bool,
+
+    /// Show what would be cleaned and change nothing.
+    #[arg(long, conflicts_with = "yes")]
+    pub dry_run: bool,
+
+    /// Clean for real: delete, empty and move to the trash what the plan lists. Without it (and without
+    /// `--dry-run`) nothing is done.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// List every target, not only the totals per rule.
+    #[arg(long)]
+    pub verbose: bool,
+
+    /// Stay on the scan root's disk (see `scan --help`).
+    #[arg(long)]
+    pub one_file_system: bool,
 
     /// Most entries to hold in memory before giving up (see `scan --help`).
     #[arg(long, value_name = "N")]

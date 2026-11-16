@@ -17,12 +17,16 @@ function lazyApi(load: () => Promise<Api>): Api {
     cancelScan: async (scan) => (await impl()).cancelScan(scan),
     dropScan: async (scan) => (await impl()).dropScan(scan),
     getNode: async (scan, node) => (await impl()).getNode(scan, node),
-    getChildren: async (scan, node, offset, limit, sort) =>
-      (await impl()).getChildren(scan, node, offset, limit, sort),
+    getChildren: async (scan, node, offset, limit, sort, query) =>
+      (await impl()).getChildren(scan, node, offset, limit, sort, query),
     getLod: async (scan, node, maxNodes, maxDepth) => (await impl()).getLod(scan, node, maxNodes, maxDepth),
     getPath: async (scan, node) => (await impl()).getPath(scan, node),
     getSummary: async (scan, node) => (await impl()).getSummary(scan, node),
     getSuggestions: async (scan) => (await impl()).getSuggestions(scan),
+    planCleanup: async (scan, suggestionIds) => (await impl()).planCleanup(scan, suggestionIds),
+    startCleanup: async (plan, onEvent) => (await impl()).startCleanup(plan, onEvent),
+    cancelCleanup: async (cleanup) => (await impl()).cancelCleanup(cleanup),
+    undoCleanup: async (cleanup) => (await impl()).undoCleanup(cleanup),
     openInFileManager: async (scan, node) => (await impl()).openInFileManager(scan, node),
     openExternal: async (link) => (await impl()).openExternal(link),
   };
@@ -45,6 +49,7 @@ function selectApi(): Api {
     volumes: hooks.mounts ? MOCK_VOLUMES_WITH_SUBVOLUMES : undefined,
     holdAt: hooks.view === 'scanning' ? 0.62 : undefined,
     dominant: hooks.dominant,
+    warnings: hooks.warn ? ['mountTableUnavailable'] : undefined,
   });
 }
 

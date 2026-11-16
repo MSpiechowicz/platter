@@ -75,6 +75,8 @@ button {
   color: inherit;
   cursor: pointer;
   border: 0;
+  /* Each engine has its own default (WebKitGTK about 6px a side); a button that wants room sets its own. */
+  padding: 0;
   background: none;
 }
 

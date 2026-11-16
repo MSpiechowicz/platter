@@ -67,8 +67,9 @@
   const waiting = delayed(() => store.frame.loading);
   const reading = $derived(`Reading ${store.opening ?? store.node?.name ?? 'the folder'}…`);
 
-  // What the details card is about: the selected child, or else the open folder.
-  const detail = $derived(store.selectedNode ?? store.node);
+  // What the details card is about: the selected child (a chain tile: its last folder, the one "Open folder" opens),
+  // or else the open folder. The path, the numbers and both actions all refer to this one folder.
+  const detail = $derived(store.selectedTarget ?? store.node);
   const detailPath = $derived.by(() => {
     const here = shown?.path.path ?? '';
     const chosen = store.selectedNode;
@@ -85,7 +86,7 @@
   });
   // How much of the open folder the selected child holds, whatever the map draws.
   const detailShare = $derived(
-    store.selectedNode && !store.groupSelected ? store.shareOf(store.selectedNode) : undefined,
+    store.selectedTarget && !store.groupSelected ? store.shareOf(store.selectedTarget) : undefined,
   );
   const detailColor = $derived(
     store.selectedNode && !store.groupSelected ? store.colorOf(store.selectedNode.id) : store.focusColor,
@@ -256,14 +257,15 @@
         path={detailPath}
         share={detailShare}
         color={detailColor}
-        canOpen={store.selectedNode?.hasChildren === true}
+        canOpen={store.selectedTarget?.hasChildren === true}
         onopen={() => store.openSelected()}
         onreveal={reveal}
       />
       <ChildList
         folder={store.focus}
         items={store.sizedItems}
-        total={store.sizedTotal}
+        total={store.allSizedTotal}
+        matched={store.matchedTotal}
         uncounted={store.uncountedItems}
         uncountedTotal={store.uncountedTotal}
         sort={store.sort}
@@ -271,8 +273,7 @@
         highlighted={store.highlighted}
         wantMore={store.groupNeedsRows}
         query={store.query}
-        searching={store.searching}
-        searchTruncated={store.searchTruncated}
+        groupTruncated={store.groupTruncated}
         allTotal={store.total}
         loaded={store.items.length}
         onquery={(query) => store.setQuery(query)}

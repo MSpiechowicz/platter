@@ -35,8 +35,12 @@ mod stat;
 
 mod budget;
 mod open;
+pub mod probe;
+pub mod remove;
 #[cfg(test)]
 mod tests;
+pub mod tools;
+mod trash;
 
 pub use budget::descriptors_held;
 pub use exclusions::ExclusionRules;

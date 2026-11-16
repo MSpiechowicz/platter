@@ -14,7 +14,8 @@ const MASK: StatxFlags = StatxFlags::TYPE
     .union(StatxFlags::SIZE)
     .union(StatxFlags::BLOCKS)
     .union(StatxFlags::MTIME)
-    .union(StatxFlags::MNT_ID);
+    .union(StatxFlags::MNT_ID)
+    .union(StatxFlags::UID);
 
 /// What checking a directory against its listing needs: device (always reported), inode, mount id.
 const IDENTITY_MASK: StatxFlags = StatxFlags::TYPE.union(StatxFlags::INO).union(StatxFlags::MNT_ID);
@@ -40,6 +41,9 @@ pub(super) struct Stat {
     /// attribute (before 5.8). `meta.is_mount_root` is `false` then, until the reader decides with
     /// [`is_boundary`].
     pub reported_mount_root: Option<bool>,
+    /// Owner and permission bits (used where ownership matters: a trash folder on another disk).
+    pub uid: u32,
+    pub mode: u32,
 }
 
 /// Whether the entry starts another mount. With a kernel that reports it (`reported`), that settles it.
@@ -99,6 +103,8 @@ fn convert(raw: &Statx) -> Stat {
         },
         mount_id: has_mount_id.then_some(raw.stx_mnt_id),
         reported_mount_root,
+        uid: raw.stx_uid,
+        mode: u32::from(raw.stx_mode) & 0o7777,
     }
 }
 

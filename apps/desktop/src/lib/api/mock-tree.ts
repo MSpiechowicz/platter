@@ -1,10 +1,11 @@
 import { layoutFor, type DirSpec, type FileGroup } from './mock-layouts';
-import type { Category, NodeKind } from './types';
+import type { Category, NodeKind, SkipReason } from './types';
 
 export const BLOCK_SIZE = 4096;
 export const DAY = 86_400;
 
-const CATEGORIES: Category[] = [
+/** In the backend's index order, which breaks ties between categories of equal size. */
+export const CATEGORIES: Category[] = [
   'video',
   'image',
   'audio',
@@ -32,6 +33,10 @@ export interface MockNode {
   category: Category;
   mtime: number;
   unreadable?: boolean;
+  /** Why a `mount` was not entered. */
+  skipped?: SkipReason;
+  /** Files below (or the file itself) with more than one hard link. */
+  sharedFiles: number;
   firstChild: number;
   childCount: number;
 }
@@ -122,6 +127,9 @@ interface Draft {
   allocated: number;
   mtime: number;
   unreadable?: boolean;
+  skipped?: SkipReason;
+  /** A file that is also hard-linked from somewhere else. */
+  shared?: boolean;
   kids: Draft[];
 }
 
@@ -142,13 +150,22 @@ const dirDraft = (name: string, now: number): Draft => ({
   kids: [],
 });
 
+/** A mount that is left out: a virtual filesystem always, any other only when the scan stays on one filesystem. */
+const isSkipped = (spec: DirSpec, ctx: Context): boolean =>
+  spec.mount === true && (ctx.oneFileSystem || spec.skipped === 'system');
+
 function weightOf(spec: DirSpec, ctx: Context): number {
-  return spec.mount && ctx.oneFileSystem ? 0 : spec.weight;
+  return isSkipped(spec, ctx) ? 0 : spec.weight;
 }
 
 function buildDir(spec: DirSpec, bytes: number, ctx: Context): Draft {
-  if (spec.mount && ctx.oneFileSystem) {
-    return { ...dirDraft(spec.name, ctx.now), kind: 'mount', allocated: 0 };
+  if (isSkipped(spec, ctx)) {
+    return {
+      ...dirDraft(spec.name, ctx.now),
+      kind: 'mount',
+      allocated: 0,
+      ...(spec.skipped ? { skipped: spec.skipped } : {}),
+    };
   }
 
   if (spec.unreadable || spec.empty) {
@@ -173,7 +190,24 @@ function buildDir(spec: DirSpec, bytes: number, ctx: Context): Draft {
     addFiles(draft, spec.files, (bytes * filesWeight) / total, ctx);
   }
 
+  for (const name of spec.markers ?? []) {
+    draft.kids.push(markerFile(name, ctx.now));
+  }
+
   return draft;
+}
+
+/** A small file such as `Cargo.toml`. It has no weight and does not touch the random numbers, so the rest of the tree stays as it is. */
+function markerFile(name: string, now: number): Draft {
+  return {
+    name,
+    kind: 'file',
+    category: name.endsWith('.toml') ? 'code' : 'data',
+    apparent: 300,
+    allocated: BLOCK_SIZE,
+    mtime: now - 200 * DAY,
+    kids: [],
+  };
 }
 
 function addFiles(parent: Draft, group: FileGroup, bytes: number, ctx: Context): void {
@@ -195,7 +229,10 @@ function addFiles(parent: Draft, group: FileGroup, bytes: number, ctx: Context):
     const target = bucket ?? parent;
     const category = pick(random, categories);
     const apparent = Math.max(200, Math.floor((bytes * weight) / sum));
-    const ageDays = Math.min(4000, -Math.log(Math.max(random(), 1e-6)) * (group.ageDays ?? 180));
+    const ageDays = Math.min(
+      4000,
+      (group.minAgeDays ?? 0) + -Math.log(Math.max(random(), 1e-6)) * (group.ageDays ?? 180),
+    );
     const mtime = Math.floor(now - ageDays * DAY - random() * DAY);
 
     // About one entry in 250 is a symlink: it counts its own tiny size only.
@@ -219,6 +256,7 @@ function addFiles(parent: Draft, group: FileGroup, bytes: number, ctx: Context):
       apparent,
       allocated: Math.ceil(apparent / BLOCK_SIZE) * BLOCK_SIZE,
       mtime,
+      ...(group.sharedEvery && index % group.sharedEvery === 0 ? { shared: true } : {}),
       kids: [],
     });
   });
@@ -266,6 +304,8 @@ function flatten(rootDraft: Draft, options: TreeOptions): MockTree {
       category: draft.category,
       mtime: draft.mtime,
       ...(draft.unreadable ? { unreadable: true } : {}),
+      ...(draft.skipped ? { skipped: draft.skipped } : {}),
+      sharedFiles: draft.shared ? 1 : 0,
       firstChild: 0,
       childCount: 0,
     });
@@ -317,6 +357,7 @@ function aggregate(nodes: MockNode[], now: number): void {
     parent.allocated += node.allocated;
     parent.apparent += node.apparent;
     parent.files += node.files;
+    parent.sharedFiles += node.sharedFiles;
     parent.mtime = Math.max(parent.mtime, node.mtime);
 
     const into = bytesByCategory[parent.id] as Float64Array;

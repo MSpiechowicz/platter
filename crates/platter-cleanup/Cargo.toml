@@ -1,0 +1,18 @@
+[package]
+name = "platter-cleanup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Platter cleanup: turns selected suggestions into a plan of verified targets. This milestone plans only; nothing is deleted."
+
+[lints]
+workspace = true
+
+[dependencies]
+platter-core.workspace = true
+platter-rules.workspace = true
+
+[dev-dependencies]
+platter-core = { workspace = true, features = ["testing"] }

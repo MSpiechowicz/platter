@@ -18,7 +18,11 @@ pub fn run(args: &SuggestArgs) -> CliResult<()> {
     let tree = scan_path(&root, args.one_file_system, args.max_entries)?;
 
     let started = Instant::now();
-    let suggestions = evaluate(&tree, &Platform::current().environment(), &RuleSet::builtin());
+    let suggestions = evaluate(
+        &tree,
+        &Platform::current().environment_for(tree.root_path()),
+        &RuleSet::builtin(),
+    );
     let evaluated = started.elapsed();
 
     if args.stats {

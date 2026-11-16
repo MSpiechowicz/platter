@@ -6,17 +6,49 @@
 //! package is still needed, for example, is not in the tree, so the text speaks about what the folder is.
 
 use platter_core::dto::Verdict::{Keep, Review, Safe};
-use platter_core::{Category, Os};
+use platter_core::{Category, Os, UserDir};
 
 use crate::rule::{Files, Matcher, Named, Rule};
 
 const GIB: u64 = 1 << 30;
 
+/// A project that installs its dependencies has one of these next to `package.json`.
+const NODE_LOCKFILES: &[&str] = &[
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lock",
+    "bun.lockb",
+];
+/// Places where tools install packages of their own; deleting their `node_modules` breaks the tool.
+const NODE_TOOL_DIRS: &[&str] = &[
+    "node_modules",
+    ".nvm",
+    ".volta",
+    ".fnm",
+    ".npm-global",
+    ".vscode",
+    ".vscode-insiders",
+    ".vscode-oss",
+    ".vscode-server",
+    ".cursor",
+    ".cursor-server",
+    ".windsurf",
+];
+const SYSTEM_PREFIXES: &[&str] = &["/usr", "/opt"];
+
+const fn node_modules() -> Named {
+    Named::new(&["node_modules"])
+        .next_to("package.json")
+        .next_to_any(NODE_LOCKFILES)
+        .not_inside(NODE_TOOL_DIRS)
+        .not_below(SYSTEM_PREFIXES)
+}
+
 #[rustfmt::skip]
 pub(crate) const RULES: &[Rule] = &[
     // Safe: regenerated or downloaded again on demand.
-    Rule::new("pacman-cache", "Pacman package cache", Safe, Matcher::Fixed("/var/cache/pacman/pkg"),
-        "Package files pacman keeps after installing them, possibly including older versions you could downgrade to. Pacman downloads a package again if it needs one that is gone.").only_on(Os::Linux),
     Rule::new("apt-cache", "APT package archives", Safe, Matcher::Fixed("/var/cache/apt/archives"),
         "Package files APT downloaded for installs and upgrades. APT downloads them again when it needs them.").only_on(Os::Linux),
     Rule::new("dnf-cache", "DNF cache", Safe, Matcher::Fixed("/var/cache/dnf"),
@@ -25,13 +57,11 @@ pub(crate) const RULES: &[Rule] = &[
         Matcher::Named(Named::new(&["target"]).next_to("Cargo.toml").idle(30)),
         "Build output that cargo creates again on the next build. {n:project} with nothing modified in over {days} days."),
     Rule::new("node-modules", "node_modules", Safe,
-        Matcher::Named(Named::new(&["node_modules"]).next_to("package.json").idle(60)),
+        Matcher::Named(node_modules().idle(60)),
         "Dependencies that a package manager installs again from package.json. {n:project} with nothing modified in over {days} days."),
     Rule::new("python-cache", "Python caches", Safe,
         Matcher::Named(Named::new(&["__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"])),
         "Bytecode and tool caches that Python, pytest, mypy and ruff recreate on the next run. Found in {n:folder}."),
-    Rule::new("app-cache", "Application caches", Safe, Matcher::Home(".cache"),
-        "Rebuilt by the apps that use it. Large downloads kept here, such as models, would have to be downloaded again."),
     Rule::new("npm-cache", "npm cache", Safe, Matcher::Home(".npm"),
         "Packages npm downloaded before. npm downloads them again when a project needs them."),
     Rule::new("bun-cache", "Bun install cache", Safe, Matcher::Home(".bun/install/cache"),
@@ -44,16 +74,12 @@ pub(crate) const RULES: &[Rule] = &[
         "Crate sources and indexes cargo downloaded. Cargo fetches the ones a build needs again, which requires a network connection."),
     Rule::new("gradle-cache", "Gradle caches", Safe, Matcher::Home(".gradle/caches"),
         "Dependencies and build caches of Gradle. Gradle downloads or rebuilds what a build needs."),
-    Rule::new("maven-repository", "Maven repository", Safe, Matcher::Home(".m2/repository"),
-        "Artifacts Maven downloaded. Maven fetches the ones a build needs again, which requires a network connection."),
     Rule::new("nuget-packages", "NuGet packages", Safe, Matcher::Home(".nuget/packages"),
         "Packages NuGet downloaded. NuGet restores the ones a build needs."),
     Rule::new("go-modules", "Go module cache", Safe, Matcher::Home("go/pkg/mod"),
         "Module sources Go downloaded. Go fetches the ones a build needs again, which requires a network connection."),
     Rule::new("trash", "Trash", Safe, Matcher::Home(".local/share/Trash"),
         "Files moved to the trash. Emptying it deletes them for good; a file that is also hard-linked elsewhere keeps its space."),
-    Rule::new("journal", "System journal", Safe, Matcher::Fixed("/var/log/journal"),
-        "System logs kept by systemd-journald, including the current boot. Removing entries loses that history; journalctl can trim them for you.").only_on(Os::Linux),
     Rule::new("coredumps", "Core dumps", Safe, Matcher::Fixed("/var/lib/systemd/coredump"),
         "Memory dumps saved when programs crashed. They are mainly useful for debugging those crashes.").only_on(Os::Linux),
     Rule::new("steam-shader-cache", "Steam shader cache", Safe,
@@ -61,6 +87,14 @@ pub(crate) const RULES: &[Rule] = &[
         "Compiled shaders Steam keeps for games. Steam rebuilds them the next time a game needs them, which can cause brief stutter."),
 
     // Review: probably removable, but only the owner can tell.
+    Rule::new("pacman-cache", "Pacman package cache", Review, Matcher::Fixed("/var/cache/pacman/pkg"),
+        "Package files pacman keeps after installing them, including older versions you could downgrade to. Pacman downloads a package again if it needs one that is gone, but an old version may no longer be available.").only_on(Os::Linux),
+    Rule::new("journal", "System journal", Review, Matcher::Fixed("/var/log/journal"),
+        "System logs kept by systemd-journald, including the current boot. Removing entries loses that history; journalctl can trim them for you.").only_on(Os::Linux),
+    Rule::new("app-cache", "Application caches", Review, Matcher::Home(".cache"),
+        "Rebuilt by the apps that use it. Large downloads kept here, such as models, would have to be downloaded again, and some apps keep things here that cannot be rebuilt."),
+    Rule::new("maven-repository", "Maven repository", Review, Matcher::Home(".m2/repository"),
+        "Artifacts Maven downloaded, and those your own builds installed with mvn install. Downloaded ones are fetched again when a build needs them; installed ones exist only here."),
     Rule::new("docker-data", "Docker data", Review, Matcher::Fixed("/var/lib/docker"),
         "Images, containers and volumes. Volumes can hold data that exists nowhere else, so look before removing anything.").only_on(Os::Linux),
     Rule::new("docker-desktop-vm", "Docker Desktop virtual machine", Review, Matcher::Home(".docker/desktop/vms"),
@@ -77,14 +111,20 @@ pub(crate) const RULES: &[Rule] = &[
         Matcher::Named(Named::new(&["target"]).next_to("Cargo.toml").recent(30)),
         "{n:project} touched in the last {days} days, so you are probably still working on them. Removing the build output means a full rebuild."),
     Rule::new("node-modules-recent", "node_modules (recent)", Review,
-        Matcher::Named(Named::new(&["node_modules"]).next_to("package.json").recent(60)),
+        Matcher::Named(node_modules().recent(60)),
         "{n:project} touched in the last {days} days, so you are probably still working on them. Removing the dependencies means a reinstall."),
 
     // Keep: shown so the user can see what is deliberately left alone. Nothing inside is suggested.
     Rule::new("steam-library", "Steam library", Keep, Matcher::Home(".local/share/Steam/steamapps/common"),
         "Installed games. Left alone on purpose: they would have to be downloaded again."),
-    Rule::new("documents", "Documents", Keep, Matcher::Home("Documents"),
-        "The Documents folder. Left alone on purpose; nothing inside is suggested for cleanup."),
-    Rule::new("pictures", "Pictures", Keep, Matcher::Home("Pictures"),
-        "The Pictures folder. Left alone on purpose; nothing inside is suggested for cleanup."),
+    Rule::new("documents", "Documents", Keep, Matcher::UserDir(UserDir::Documents),
+        "Your documents folder. Left alone on purpose; nothing inside is suggested for cleanup."),
+    Rule::new("pictures", "Pictures", Keep, Matcher::UserDir(UserDir::Pictures),
+        "Your pictures folder. Left alone on purpose; nothing inside is suggested for cleanup."),
+    Rule::new("videos", "Videos", Keep, Matcher::UserDir(UserDir::Videos),
+        "Your videos folder. Left alone on purpose; nothing inside is suggested for cleanup."),
+    Rule::new("music", "Music", Keep, Matcher::UserDir(UserDir::Music),
+        "Your music folder. Left alone on purpose; nothing inside is suggested for cleanup."),
+    Rule::new("desktop", "Desktop", Keep, Matcher::UserDir(UserDir::Desktop),
+        "Your desktop folder. Left alone on purpose; nothing inside is suggested for cleanup."),
 ];

@@ -1,16 +1,15 @@
 import { formatCount } from '../../format';
 
-/** The most items a search looks through: more pages than this are not loaded in the background. */
+/**
+ * The most items the list loads by itself for the rows of a selected "smaller items" tile: more pages than this are
+ * not loaded in the background. "Load more" still loads further pages on request. (A search is answered by the
+ * backend and is not limited by it.)
+ */
 export const SEARCH_LIMIT = 5000;
 
 /** What is searched for: the text as typed, `''` when it is empty or only spaces. */
 export function normalizeQuery(text: string): string {
   return text.trim() === '' ? '' : text;
-}
-
-/** Whether `name` contains `query`, ignoring case. An empty query matches everything. */
-export function matches(name: string, query: string): boolean {
-  return query === '' || name.toLowerCase().includes(query.toLowerCase());
 }
 
 export interface Segment {

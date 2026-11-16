@@ -16,6 +16,11 @@ binary=$repo/target/release/platter
 case ${1:-install} in
   install)
     [ -x "$binary" ] || { echo "Build the app first: pnpm -C apps/desktop tauri build --no-bundle" >&2; exit 1; }
+    # The path goes into Exec= as one quoted argument (desktop entry spec): refuse what cannot be
+    # written there safely.
+    case $binary in
+      *[!A-Za-z0-9/._\ -]*) echo "The build path has characters a desktop entry cannot hold: $binary" >&2; exit 1 ;;
+    esac
     mkdir -p "$data/applications"
     for size in 32x32 128x128 256x256 512x512; do mkdir -p "$data/icons/hicolor/$size/apps"; done
     mkdir -p "$data/icons/hicolor/scalable/apps"
@@ -30,7 +35,7 @@ case ${1:-install} in
 Type=Application
 Name=Platter
 Comment=See what is using your disk
-Exec=$binary
+Exec="$binary"
 Icon=platter
 Terminal=false
 Categories=Utility;System;

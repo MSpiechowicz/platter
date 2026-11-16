@@ -1,11 +1,17 @@
 import { flushSync, tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { COLLAPSED_NODE_ID, type Api } from '../../../api/client';
+import { COLLAPSED_NODE_ID, isApiError, type Api } from '../../../api/client';
 import { createMockApi } from '../../../api/mock';
 import type { ChildrenPage, NodeDto, NodeId } from '../../../api/types';
 import { PALETTE } from '../colors';
 import { SEARCH_LIMIT } from '../search';
-import { ExplorerStore, EXPANSION_DEPTH, PAGE_SIZE, type ExplorerStart } from './explorer.svelte';
+import {
+  ExplorerStore,
+  EXPANSION_DEPTH,
+  PAGE_SIZE,
+  QUERY_DELAY_MS,
+  type ExplorerStart,
+} from './explorer.svelte';
 import { MAX_CHAIN_EXPANSIONS } from '../layout/chains';
 
 interface Mock {
@@ -306,17 +312,20 @@ describe('the colours of folders', () => {
   });
 });
 
-/** A folder of `total` items on top of the demo scan, served in pages like the backend does. */
+/**
+ * A folder of `total` items on top of the demo scan, served in pages like the backend does: the items are named
+ * `file-0` to `file-<total - 1>`, and a query keeps those whose name contains it, ignoring case.
+ */
 function bigFolder(mock: Mock, folder: NodeId, total: number) {
-  const calls: { offset: number; sort: string }[] = [];
-  const gate: { hold?: Promise<void> } = {};
+  const calls: { offset: number; sort: string; query?: string }[] = [];
+  const gate: { hold?: Promise<void>; holdQuery?: { query: string; until: Promise<void> } } = {};
 
   const item = (index: number): NodeDto => ({
     id: 1_000_000 + index,
     name: `file-${index}`,
     kind: 'file',
-    allocated: 10_000 - index,
-    apparent: 10_000 - index,
+    allocated: 100_000 - index,
+    apparent: 100_000 - index,
     files: 1,
     hasChildren: false,
     category: 'other',
@@ -325,117 +334,528 @@ function bigFolder(mock: Mock, folder: NodeId, total: number) {
 
   const api: Api = {
     ...mock.api,
-    getChildren: async (scan, node, offset, limit, sort): Promise<ChildrenPage> => {
+    getChildren: async (scan, node, offset, limit, sort, query): Promise<ChildrenPage> => {
       if (node !== folder) {
-        return mock.api.getChildren(scan, node, offset, limit, sort);
+        return mock.api.getChildren(scan, node, offset, limit, sort, query);
       }
 
-      calls.push({ offset, sort });
+      calls.push({ offset, sort, query });
       await gate.hold;
 
-      const items = Array.from({ length: Math.max(0, Math.min(limit, total - offset)) }, (_, index) =>
-        item(offset + index),
+      if (gate.holdQuery && gate.holdQuery.query === query) {
+        await gate.holdQuery.until;
+      }
+
+      if (query?.includes('boom')) {
+        throw new Error('the folder cannot be read');
+      }
+
+      const needle = query?.toLowerCase();
+      const indices = Array.from({ length: total }, (_, index) => index).filter(
+        (index) => !needle || item(index).name.includes(needle),
       );
 
-      return { parentId: node, total, items };
+      return {
+        parentId: node,
+        total: indices.length,
+        items: indices.slice(offset, offset + limit).map(item),
+      };
     },
   };
 
   return { api, calls, gate };
 }
 
+/** The store of `opt` of the `/real` scan with `total` items in it; `wrap` can change the API it is served by. */
+async function inBigFolder(total: number, wrap: (api: Api) => Api = (api) => api) {
+  const mock = await scanMock('/real');
+  const probe = open(mock);
+
+  await settled(probe);
+
+  const folder = probe.topLevel.find((node) => node.name === 'opt') as NodeDto;
+  const big = bigFolder(mock, folder.id, total);
+  const store = open(mock, wrap(big.api), { focus: folder.id });
+
+  await settled(store, folder.id);
+
+  return { store, ...big };
+}
+
 describe('searching a folder', () => {
-  async function inFolder(total: number) {
-    const mock = await scanMock('/real');
-    const probe = open(mock);
+  const inFolder = (total: number) => inBigFolder(total);
+  const asked = (calls: { query?: string }[]) => calls.filter((call) => call.query !== undefined);
+  const names = (store: ExplorerStore) => store.items.map((item) => item.name);
 
-    await settled(probe);
-
-    const folder = probe.topLevel.find((node) => node.name === 'opt') as NodeDto;
-    const big = bigFolder(mock, folder.id, total);
-    const store = open(mock, big.api, { focus: folder.id });
-
-    await settled(store, folder.id);
-
-    return { store, ...big };
+  /** Types a query and lets the pause run out, as the list does after the last key. */
+  async function search(store: ExplorerStore, query: string): Promise<void> {
+    store.setQuery(query);
+    await vi.advanceTimersByTimeAsync(QUERY_DELAY_MS);
+    await tick();
   }
 
-  it('loads the rest of the pages in the background while a query is on, and then stops', async () => {
+  async function answered(store: ExplorerStore): Promise<void> {
+    await vi.waitFor(() => expect(store.page.loading).toBe(false));
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('finds a match far beyond the old limit in one request for the first page', async () => {
+    const { store, calls } = await inFolder(20_000);
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await search(store, 'FILE-19999');
+    await answered(store);
+
+    expect(names(store)).toEqual(['file-19999']);
+    expect(store.total).toBe(1);
+    expect(store.hasMore).toBe(false);
+    expect(calls.map((call) => [call.offset, call.query])).toEqual([
+      [0, undefined],
+      [0, 'FILE-19999'],
+    ]);
+    expect(store.matchedTotal).toBe(1);
+    expect(store.allSizedTotal).toBe(20_000);
+  });
+
+  it('asks the backend once for what was typed in a burst, after the pause', async () => {
     const { store, calls } = await inFolder(1000);
 
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    store.setQuery('f');
+    await vi.advanceTimersByTimeAsync(QUERY_DELAY_MS - 50);
+    store.setQuery('fi');
+    await vi.advanceTimersByTimeAsync(QUERY_DELAY_MS - 50);
+    store.setQuery('file-99');
+
+    expect(asked(calls)).toEqual([]);
+    expect(store.query).toBe('');
+
+    await vi.advanceTimersByTimeAsync(QUERY_DELAY_MS);
+    await tick();
+    await answered(store);
+
+    expect(store.query).toBe('file-99');
+    expect(asked(calls).map((call) => call.query)).toEqual(['file-99']);
+    expect(names(store)).toEqual(['file-99', ...Array.from({ length: 10 }, (_, index) => `file-99${index}`)]);
+  });
+
+  it('drops an answer that arrives after the query changed', async () => {
+    const { store, gate } = await inFolder(20_000);
+    let release!: () => void;
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    gate.holdQuery = { query: 'file-1', until: new Promise<void>((resolve) => (release = resolve)) };
+
+    // The first query is slow to answer, the second is quick.
+    await search(store, 'file-1');
+    expect(store.page.loading).toBe(true);
+
+    await search(store, 'file-12345');
+    await answered(store);
+    expect(names(store)).toEqual(['file-12345']);
+
+    release();
+    await vi.advanceTimersByTimeAsync(10);
+    await tick();
+
+    expect(store.query).toBe('file-12345');
+    expect(names(store)).toEqual(['file-12345']);
+    expect(store.total).toBe(1);
+    expect(store.page.loading).toBe(false);
+  });
+
+  it('shows the loading state, with no rows, until the matches have arrived', async () => {
+    const { store, gate } = await inFolder(1000);
+    let release!: () => void;
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    gate.holdQuery = { query: 'file-5', until: new Promise<void>((resolve) => (release = resolve)) };
+    await search(store, 'file-5');
+
+    expect(store.page.loading).toBe(true);
+    expect(store.page.data).toBeUndefined();
+    expect(store.page.error).toBeUndefined();
+    expect(store.items).toEqual([]);
+    expect(store.pageCurrent).toBe(false);
+    expect(store.matchedTotal).toBeUndefined();
+
+    release();
+    await answered(store);
+    expect(store.page.loading).toBe(false);
+    expect(store.items.length).toBeGreaterThan(0);
+  });
+
+  it('pages further on demand, asking for the same query', async () => {
+    const { store, calls } = await inFolder(20_000);
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await search(store, 'file-1');
+    await answered(store);
+
+    // 'file-1', 'file-10'..'file-19', 'file-100'.., 'file-1000'.., 'file-10000'..: 11,111 names.
+    expect(store.total).toBe(11_111);
     expect(store.items).toHaveLength(PAGE_SIZE);
-    expect(calls).toHaveLength(1);
+    expect(store.hasMore).toBe(true);
+    expect(store.matchedTotal).toBe(11_111);
 
-    store.setQuery('file-9');
-    await vi.waitFor(() => expect(store.items).toHaveLength(1000));
+    await store.loadMore();
 
-    expect(calls.map((call) => call.offset)).toEqual([0, 200, 400, 600, 800]);
-    expect(store.searching).toBe(false);
-    expect(store.searchTruncated).toBe(false);
+    expect(store.items).toHaveLength(2 * PAGE_SIZE);
+    expect(new Set(store.items.map((item) => item.id)).size).toBe(2 * PAGE_SIZE);
+    expect(calls.at(-1)).toMatchObject({ offset: PAGE_SIZE, query: 'file-1' });
+    expect(asked(calls)).toHaveLength(2);
   });
 
-  it('loads nothing without a query', async () => {
+  it('shows the whole folder again when the query is cleared, without asking for it again', async () => {
+    const { store, calls } = await inFolder(20_000);
+
+    await store.loadMore();
+    expect(store.items).toHaveLength(2 * PAGE_SIZE);
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await search(store, 'file-777');
+    await answered(store);
+    expect(store.total).toBeLessThan(200);
+
+    const before = calls.length;
+
+    store.setQuery('');
+
+    // At once: no pause, no request, and the rows that were loaded are back.
+    expect(store.query).toBe('');
+    expect(store.page.loading).toBe(false);
+    expect(store.items).toHaveLength(2 * PAGE_SIZE);
+    expect(store.total).toBe(20_000);
+    expect(store.matchedTotal).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(QUERY_DELAY_MS * 2);
+    expect(calls).toHaveLength(before);
+  });
+
+  it('cancels a pause that has not run out when the query is cleared', async () => {
     const { store, calls } = await inFolder(1000);
 
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    expect(calls).toHaveLength(1);
-    expect(store.searching).toBe(false);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    store.setQuery('file-5');
+    store.setQuery('');
+    await vi.advanceTimersByTimeAsync(QUERY_DELAY_MS * 2);
+
+    expect(store.query).toBe('');
+    expect(asked(calls)).toEqual([]);
   });
 
-  it('stops at the limit and says the folder has more', async () => {
+  it('takes a query of only spaces for no query', async () => {
+    const { store, calls } = await inFolder(1000);
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await search(store, '   ');
+
+    expect(store.query).toBe('');
+    expect(asked(calls)).toEqual([]);
+  });
+
+  it('shows the error when the matches cannot be read, never "no matches"', async () => {
+    const { store, calls } = await inFolder(1000);
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await search(store, 'boom');
+    await answered(store);
+
+    expect(store.page.error).toEqual(new Error('the folder cannot be read'));
+    expect(store.page.loading).toBe(false);
+    expect(store.items).toEqual([]);
+
+    // Another query is a new attempt: the error goes while it is on its way, and the list is back after it.
+    await search(store, 'file-5');
+    await answered(store);
+    expect(store.page.error).toBeUndefined();
+    expect(store.items.length).toBeGreaterThan(0);
+
+    // "Try again" asks for the matches again.
+    await search(store, 'boom2');
+    await answered(store);
+    expect(store.page.error).toBeDefined();
+
+    const before = asked(calls).length;
+
+    store.retry();
+    await tick();
+    expect(store.page.error).toBeUndefined();
+    expect(store.page.loading).toBe(true);
+    await answered(store);
+    expect(asked(calls)).toHaveLength(before + 1);
+    expect(store.page.error).toBeDefined();
+  });
+
+  it('refuses a query the backend refuses, with its own error', async () => {
+    const mock = await scanMock('/real');
+    const store = open(mock);
+
+    await settled(store);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await search(store, 'a'.repeat(1025));
+    await answered(store);
+
+    expect(isApiError(store.page.error)).toBe(true);
+    expect(store.page.error).toMatchObject({ code: 'invalid' });
+    expect(store.items).toEqual([]);
+  });
+
+  it('keeps the chosen row selected while a search hides it, and after it is cleared', async () => {
+    const { store } = await inFolder(20_000);
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await search(store, 'file-19999');
+    await answered(store);
+
+    const row = store.items[0] as NodeDto;
+
+    store.choose(row.id);
+    expect(store.selectedNode?.name).toBe('file-19999');
+
+    await search(store, 'file-5');
+    await answered(store);
+    expect(store.items.some((item) => item.id === row.id)).toBe(false);
+    expect(store.selectedNode?.name).toBe('file-19999');
+
+    store.setQuery('');
+    expect(store.selectedNode?.name).toBe('file-19999');
+  });
+
+  it('counts the sized items of the folder and of the matches, and does not count the rest as matches', async () => {
+    const mock = await scanMock('/real');
+    const store = open(mock);
+
+    await settled(store);
+
+    const all = store.sizedTotal;
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await search(store, 'zzz-no-such-name');
+    await answered(store);
+
+    expect(store.allSizedTotal).toBe(all);
+    expect(store.matchedTotal).toBe(0);
+    expect(store.total).toBe(0);
+    expect(store.items).toEqual([]);
+    expect(store.page.error).toBeUndefined();
+  });
+
+  it('asks again for the new sort while a query is on', async () => {
+    const { store, calls } = await inFolder(1000);
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await search(store, 'file-9');
+    await answered(store);
+    store.setSort('nameAsc');
+    await tick();
+    await answered(store);
+
+    expect(calls.filter((call) => call.query === 'file-9').map((call) => call.sort)).toEqual([
+      'sizeDesc',
+      'nameAsc',
+    ]);
+    expect(store.items.length).toBeGreaterThan(0);
+  });
+
+  it('does not load the rest of a big folder by itself', async () => {
     const { store, calls } = await inFolder(12_000);
 
-    store.setQuery('x');
-    await vi.waitFor(() => expect(store.items.length).toBe(SEARCH_LIMIT));
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await search(store, 'file');
+    await answered(store);
+    await vi.advanceTimersByTimeAsync(200);
 
-    expect(store.items).toHaveLength(SEARCH_LIMIT);
-    expect(calls).toHaveLength(SEARCH_LIMIT / PAGE_SIZE);
-    expect(store.searchTruncated).toBe(true);
-    expect(store.searching).toBe(false);
+    expect(store.total).toBe(12_000);
+    expect(store.items).toHaveLength(PAGE_SIZE);
+    expect(calls).toHaveLength(2);
   });
 
-  it('asks for no more pages once the query is cleared', async () => {
+  it('ignores a page of more rows that arrives after the query changed', async () => {
     const { store, calls, gate } = await inFolder(5000);
     let release!: () => void;
 
-    gate.hold = new Promise<void>((resolve) => (release = resolve));
-    store.setQuery('a');
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
-
-    store.setQuery('');
-    release();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    // The page that was on its way arrived; nothing was asked for after it.
-    expect(calls).toHaveLength(2);
-    expect(store.searching).toBe(false);
-  });
-
-  it('ignores pages that arrive after the sort changed, and starts again for the new sort', async () => {
-    const { store, calls, gate } = await inFolder(1000);
-    let release!: () => void;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await search(store, 'file-1');
+    await answered(store);
 
     gate.hold = new Promise<void>((resolve) => (release = resolve));
-    store.setQuery('a');
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
 
-    store.setSort('nameAsc');
+    const more = store.loadMore();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(store.loadingMore).toBe(true);
+
     gate.hold = undefined;
+    await search(store, 'file-4');
+    await answered(store);
     release();
-    await settled(store);
-    await vi.waitFor(() => expect(store.items).toHaveLength(1000));
+    await more;
 
-    expect(calls.filter((call) => call.sort === 'nameAsc').length).toBeGreaterThan(1);
-    expect(new Set(store.items.map((item) => item.id)).size).toBe(1000);
+    expect(store.loadingMore).toBe(false);
+    expect(store.items.every((item) => item.name.includes('file-4'))).toBe(true);
+    expect(calls.filter((call) => call.offset > 0)).toHaveLength(1);
   });
 
-  it('forgets the query when another folder is opened', async () => {
-    const { store } = await inFolder(600);
+  it('forgets the query, and its pause, when another folder is opened', async () => {
+    const { store, calls } = await inFolder(600);
 
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     store.setQuery('file');
     store.open(store.rootId);
     expect(store.query).toBe('');
+    await vi.advanceTimersByTimeAsync(QUERY_DELAY_MS * 2);
+    expect(store.query).toBe('');
+    expect(asked(calls)).toEqual([]);
+
+    vi.useRealTimers();
     await settled(store, store.rootId);
+  });
+
+  it('loads nothing more without a query, and a selected tile does not load matches in the background', async () => {
+    const { store, calls } = await inFolder(5000);
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(calls).toHaveLength(1);
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await search(store, 'file');
+    await answered(store);
+
+    store.chooseGroup(
+      {
+        ...(store.items[0] as NodeDto),
+        id: COLLAPSED_NODE_ID,
+        name: '4,000 smaller items',
+        kind: 'collapsed',
+      },
+      [],
+    );
+    expect(store.groupNeedsRows).toBe(false);
+    expect(store.groupTruncated).toBe(false);
+  });
+});
+
+describe('the rows of a selected "smaller items" tile', () => {
+  /** The "N smaller items" tile of the folder, as the map would hand it over. */
+  const smaller = (store: ExplorerStore, count: number): NodeDto => ({
+    ...(store.items[0] as NodeDto),
+    id: COLLAPSED_NODE_ID,
+    name: `${count} smaller items`,
+    kind: 'collapsed',
+    hasChildren: false,
+  });
+
+  /** What the list does while the tile asks for rows: one page after another, for as long as it is told to. */
+  const loadWhileWanted = async (store: ExplorerStore): Promise<void> => {
+    // A list that is never told to stop would loop for ever, so the test has a limit of its own.
+    for (let round = 0; round < 100 && store.groupNeedsRows && !store.loadingMore; round++) {
+      await store.loadMore();
+    }
+  };
+
+  it('are loaded in the background only up to the limit, and the list says it shows the first ones', async () => {
+    const { store, calls } = await inBigFolder(12_000);
+
+    store.chooseGroup(smaller(store, 11_000), []);
+    expect(store.groupNeedsRows).toBe(true);
+    expect(store.groupTruncated).toBe(false);
+
+    await loadWhileWanted(store);
+
+    expect(store.items).toHaveLength(SEARCH_LIMIT);
+    expect(calls).toHaveLength(SEARCH_LIMIT / PAGE_SIZE);
+    expect(store.groupNeedsRows).toBe(false);
+    expect(store.groupTruncated).toBe(true);
+
+    // The user can still ask for more by hand.
+    await store.loadMore();
+    expect(store.items).toHaveLength(SEARCH_LIMIT + PAGE_SIZE);
+  });
+
+  it('are loaded to the end when the tile is small enough, and nothing is said', async () => {
+    const { store, calls } = await inBigFolder(1000);
+
+    store.chooseGroup(smaller(store, 900), []);
+    await loadWhileWanted(store);
+
+    expect(calls.length).toBeGreaterThan(1);
+    expect(store.groupNeedsRows).toBe(false);
+    expect(store.groupTruncated).toBe(false);
+    expect(store.highlighted.size).toBeGreaterThanOrEqual(900);
+  });
+
+  it('stop being asked for after a request failed', async () => {
+    let failed = 0;
+
+    const { store } = await inBigFolder(5000, (api) => ({
+      ...api,
+      getChildren: (scan, node, offset, limit, sort) => {
+        if (offset === 0) {
+          return api.getChildren(scan, node, offset, limit, sort);
+        }
+
+        failed++;
+
+        return Promise.reject(new Error('disk gone'));
+      },
+    }));
+
+    store.chooseGroup(smaller(store, 4000), []);
+    await loadWhileWanted(store);
+
+    expect(store.moreError).not.toBeNull();
+    expect(store.groupNeedsRows).toBe(false);
+    expect(failed).toBe(1);
+  });
+});
+
+describe('the details of a chain tile', () => {
+  it('describe its last folder: the same one "Open folder" opens and "Show in file manager" shows', async () => {
+    const mock = await scanMock('/real');
+    const openInFileManager = vi.fn().mockResolvedValue(undefined);
+    const store = open(mock, { ...mock.api, openInFileManager });
+
+    await expanded(store);
+
+    const home = tile(store, 'home') as NonNullable<ReturnType<typeof tile>>;
+    const sam = home.chain?.at(-1) as NodeDto;
+
+    expect(sam.name).toBe('sam');
+
+    // Whether the tile is chosen in the map or its row in the list, it is the same selection.
+    store.choose(home.node.id);
+
+    expect(store.selectedNode?.name).toBe('home');
+    expect(store.selectedTarget).toBe(sam);
+    expect(store.selectedTarget).toBe(store.openTarget(home.node.id));
+
+    await store.reveal();
+    expect(openInFileManager).toHaveBeenCalledWith(mock.scanId, sam.id);
+
+    store.openSelected();
+    expect(store.focus).toBe(sam.id);
+  });
+
+  it('are the folder itself for a tile that is not a chain, and for the open folder when nothing is selected', async () => {
+    const mock = await scanMock('/real');
+    const openInFileManager = vi.fn().mockResolvedValue(undefined);
+    const store = open(mock, { ...mock.api, openInFileManager });
+
+    await expanded(store);
+    expect(store.selectedTarget).toBeUndefined();
+
+    await store.reveal();
+    expect(openInFileManager).toHaveBeenLastCalledWith(mock.scanId, mock.rootId);
+
+    const variable = store.topLevel.find((node) => node.name === 'var') as NodeDto;
+
+    store.choose(variable.id);
+    expect(store.selectedTarget).toBe(store.selectedNode);
+
+    await store.reveal();
+    expect(openInFileManager).toHaveBeenLastCalledWith(mock.scanId, variable.id);
   });
 });

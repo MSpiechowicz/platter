@@ -25,6 +25,10 @@ pub async fn get_suggestions(state: State<'_, AppState>, scan: ScanId) -> Comman
 /// The suggestions of `scan`: `notFound` when it is unknown or still running.
 pub fn suggestions(scans: &ScanRegistry, platform: &Platform, scan: ScanId) -> CommandResult<SuggestionsDto> {
     scans.suggestions(scan, |tree| {
-        evaluate(tree, &platform.environment(), &RuleSet::builtin())
+        evaluate(
+            tree,
+            &platform.environment_for(tree.root_path()),
+            &RuleSet::builtin(),
+        )
     })
 }

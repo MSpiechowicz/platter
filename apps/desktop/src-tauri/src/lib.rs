@@ -5,7 +5,10 @@ mod commands;
 mod error;
 mod state;
 
+use std::sync::Arc;
+
 use state::AppState;
+use tauri::Manager;
 
 pub fn run() {
     // Deep scans keep many directories open at once; raise the descriptor limit once, before any scan.
@@ -18,6 +21,16 @@ pub fn run() {
         // Rust functions directly.
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
+        .setup(|app| {
+            // The cleanup confirmation is a native dialog shown by the backend.
+            let handle = app.handle().clone();
+            #[cfg(target_os = "linux")]
+            let confirm = Arc::new(commands::cleanup::GtkConfirm { app: handle });
+            #[cfg(not(target_os = "linux"))]
+            let confirm = Arc::new(commands::cleanup::NativeConfirm { app: handle });
+            app.state::<AppState>().set_confirm(confirm);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::volumes::list_volumes,
             commands::scan::start_scan,
@@ -29,12 +42,25 @@ pub fn run() {
             commands::query::get_path,
             commands::query::get_summary,
             commands::suggestions::get_suggestions,
+            commands::cleanup::plan_cleanup,
+            commands::cleanup::start_cleanup,
+            commands::cleanup::cancel_cleanup,
+            commands::cleanup::undo_cleanup,
             commands::system::open_in_file_manager,
             commands::system::pick_folder,
             commands::system::open_external,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Platter");
+        .build(tauri::generate_context!())
+        .expect("error while building Platter")
+        .run(|app, event| {
+            // Quitting while a cleanup runs: let it finish the item in progress (a folder is never
+            // left half-deleted by the process ending), then stop.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                app.state::<AppState>()
+                    .cleanups
+                    .stop_for_exit(std::time::Duration::from_secs(30));
+            }
+        });
 }
 
 #[cfg(test)]

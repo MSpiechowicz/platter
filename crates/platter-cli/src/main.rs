@@ -28,6 +28,7 @@ fn main() -> ExitCode {
         Command::Volumes(args) => commands::volumes::run(&args),
         Command::Scan(args) => commands::scan::run(&args),
         Command::Suggest(args) => commands::suggest::run(&args),
+        Command::Clean(args) => commands::clean::run(&args),
         Command::ExportFixture(args) => commands::export::run(&args),
     };
 

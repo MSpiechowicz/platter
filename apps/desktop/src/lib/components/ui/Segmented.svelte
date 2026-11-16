@@ -9,10 +9,13 @@
     value: T;
     /** Accessible name of the group. */
     label: string;
+    /** `sm` is the compact control of the Advisor card. */
+    size?: 'md' | 'sm';
+    disabled?: boolean;
     onchange?: (value: T) => void;
   }
 
-  let { options, value = $bindable(), label, onchange }: Props = $props();
+  let { options, value = $bindable(), label, size = 'md', disabled = false, onchange }: Props = $props();
 
   function choose(next: T): void {
     if (next === value) {
@@ -24,12 +27,13 @@
   }
 </script>
 
-<div class="seg" role="group" aria-label={label}>
+<div class="seg {size}" role="group" aria-label={label}>
   {#each options as option (option.value)}
     <button
       type="button"
       class:on={option.value === value}
       aria-pressed={option.value === value}
+      {disabled}
       onclick={() => choose(option.value)}
     >
       {option.label}
@@ -56,8 +60,21 @@
     border-left: 1px solid var(--line);
   }
 
-  button:hover {
+  button:hover:not(:disabled) {
     color: var(--text);
+  }
+
+  .sm {
+    border-radius: 6px;
+  }
+
+  .sm button {
+    padding: 3px 10px;
+    font-size: 12px;
+  }
+
+  button:disabled {
+    opacity: 0.5;
   }
 
   .on {

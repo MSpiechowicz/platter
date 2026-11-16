@@ -1,4 +1,5 @@
 import type { SuggestionDto, SuggestionsDto, Verdict } from '../../api/types';
+import { formatCount } from '../../format';
 
 export const VERDICTS: readonly Verdict[] = ['safe', 'review', 'keep'];
 
@@ -25,6 +26,22 @@ export const VERDICT_COLORS: Record<Verdict, string> = {
   review: 'var(--amber)',
   keep: 'var(--slate)',
 };
+
+/**
+ * The reason shown in an Advisor row. When files inside are hard-linked from elsewhere, deleting the folder can free
+ * more or less than its size, and the row says so.
+ */
+export function reasonOf(suggestion: SuggestionDto): string {
+  const shared = suggestion.sharedFiles ?? 0;
+
+  if (shared <= 0) {
+    return suggestion.reason;
+  }
+
+  const files = shared === 1 ? '1 file is' : `${formatCount(shared)} files are`;
+
+  return `${suggestion.reason} ${files} also linked from elsewhere, so the space freed can differ.`;
+}
 
 /** Rows shown under "Biggest wins". */
 export const MAX_WINS = 4;

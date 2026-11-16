@@ -14,12 +14,14 @@
 //! Ids start at 1 and only grow; an id is never reused, so a stale id can never address a newer scan.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use platter_core::dto::{ScanId, SuggestionsDto};
 use platter_core::{CancelToken, Tree};
 use platter_platform::Platform;
 
+use crate::commands::cleanup::{CleanupRegistry, Confirm, RefuseAll};
 use crate::error::{CommandError, CommandResult};
 
 /// Scans that may run at the same time.
@@ -28,6 +30,13 @@ pub const MAX_RUNNING: usize = 4;
 pub struct AppState {
     pub platform: Arc<Platform>,
     pub scans: Arc<ScanRegistry>,
+    pub cleanups: Arc<CleanupRegistry>,
+    /// The scan roots the backend handed to the UI itself: volume mount points from `list_volumes`
+    /// and folders from its own folder dialog. `start_scan` accepts nothing else.
+    pub roots: Mutex<HashMap<String, Option<(u64, u64)>>>,
+    /// Asks the user before a cleanup that cannot be undone. Set by the app at startup; until then
+    /// (and in tests that set none) nothing is approved.
+    confirm: OnceLock<Arc<dyn Confirm>>,
 }
 
 impl AppState {
@@ -35,7 +44,43 @@ impl AppState {
         Self {
             platform: Arc::new(Platform::current()),
             scans: Arc::new(ScanRegistry::default()),
+            cleanups: Arc::new(CleanupRegistry::default()),
+            roots: Mutex::new(HashMap::new()),
+            confirm: OnceLock::new(),
         }
+    }
+
+    /// Sets the confirmation once; later calls are ignored.
+    pub fn set_confirm(&self, confirm: Arc<dyn Confirm>) {
+        let _ = self.confirm.set(confirm);
+    }
+
+    pub fn confirm(&self) -> Arc<dyn Confirm> {
+        self.confirm.get().cloned().unwrap_or_else(|| Arc::new(RefuseAll))
+    }
+
+    /// Remembers roots the backend offered (mount points).
+    pub fn allow_roots(&self, roots: impl IntoIterator<Item = String>) {
+        let mut allowed = self.roots.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for root in roots {
+            allowed.entry(root).or_insert(None);
+        }
+    }
+
+    /// Remembers a folder the user picked, with the identity (device, inode) it had then: a scan of it
+    /// must find the same folder there.
+    pub fn allow_picked(&self, root: String, identity: Option<(u64, u64)>) {
+        let mut allowed = self.roots.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        allowed.insert(root, identity);
+    }
+
+    /// `None` when `root` was not offered; else the identity it must have (`None` inside: any).
+    pub fn allowed_root(&self, root: &str) -> Option<Option<(u64, u64)>> {
+        self.roots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(root)
+            .copied()
     }
 }
 
@@ -46,7 +91,8 @@ impl Default for AppState {
 }
 
 enum Slot {
-    Running(CancelToken),
+    /// A running scan and the disk epoch it began in.
+    Running(CancelToken, u64),
     Finished(Finished),
 }
 
@@ -55,11 +101,16 @@ enum Slot {
 struct Finished {
     tree: Arc<Tree>,
     suggestions: Arc<OnceLock<SuggestionsDto>>,
+    /// A cleanup ran on this scan's disk: the tree no longer describes it.
+    outdated: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
 struct Inner {
     last_id: ScanId,
+    /// Counts the times a cleanup (or an undo) changed the disk. A scan that began before the latest
+    /// change finishes outdated.
+    epoch: u64,
     slots: HashMap<ScanId, Slot>,
 }
 
@@ -82,7 +133,7 @@ impl ScanRegistry {
         let running = inner
             .slots
             .values()
-            .filter(|slot| matches!(slot, Slot::Running(_)))
+            .filter(|slot| matches!(slot, Slot::Running(..)))
             .count();
         if running >= MAX_RUNNING {
             return Err(CommandError::invalid(format!(
@@ -93,7 +144,8 @@ impl ScanRegistry {
         inner.last_id += 1;
         let id = inner.last_id;
         let cancel = CancelToken::new();
-        inner.slots.insert(id, Slot::Running(cancel.clone()));
+        let epoch = inner.epoch;
+        inner.slots.insert(id, Slot::Running(cancel.clone(), epoch));
 
         Ok((id, cancel))
     }
@@ -104,9 +156,10 @@ impl ScanRegistry {
     pub fn finish(&self, id: ScanId, tree: Tree) -> Option<Arc<Tree>> {
         let mut inner = self.lock();
 
-        if !matches!(inner.slots.get(&id), Some(Slot::Running(_))) {
+        let Some(Slot::Running(_, began)) = inner.slots.get(&id) else {
             return None;
-        }
+        };
+        let outdated = *began < inner.epoch;
 
         inner.slots.retain(|_, slot| !matches!(slot, Slot::Finished(_)));
 
@@ -116,6 +169,7 @@ impl ScanRegistry {
             Slot::Finished(Finished {
                 tree: Arc::clone(&tree),
                 suggestions: Arc::default(),
+                outdated: Arc::new(AtomicBool::new(outdated)),
             }),
         );
 
@@ -126,21 +180,21 @@ impl ScanRegistry {
     pub fn abandon(&self, id: ScanId) {
         let mut inner = self.lock();
 
-        if matches!(inner.slots.get(&id), Some(Slot::Running(_))) {
+        if matches!(inner.slots.get(&id), Some(Slot::Running(..))) {
             inner.slots.remove(&id);
         }
     }
 
     /// Raises the cancel flag of a running scan. A finished or unknown scan is left alone.
     pub fn cancel(&self, id: ScanId) {
-        if let Some(Slot::Running(cancel)) = self.lock().slots.get(&id) {
+        if let Some(Slot::Running(cancel, _)) = self.lock().slots.get(&id) {
             cancel.cancel();
         }
     }
 
     /// Frees a scan: cancels it when running, drops the tree when finished. Unknown ids are fine.
     pub fn drop_scan(&self, id: ScanId) {
-        if let Some(Slot::Running(cancel)) = self.lock().slots.remove(&id) {
+        if let Some(Slot::Running(cancel, _)) = self.lock().slots.remove(&id) {
             cancel.cancel();
         }
     }
@@ -167,10 +221,27 @@ impl ScanRegistry {
             .clone())
     }
 
+    /// A cleanup or an undo changed the disk: every finished scan is outdated, and so is every scan
+    /// still running, when it finishes (it may have read the disk before the change).
+    pub fn disk_changed(&self) {
+        let mut inner = self.lock();
+        inner.epoch += 1;
+        for slot in inner.slots.values() {
+            if let Slot::Finished(finished) = slot {
+                finished.outdated.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Whether a cleanup ran on this scan since it finished.
+    pub fn is_outdated(&self, id: ScanId) -> bool {
+        matches!(self.lock().slots.get(&id), Some(Slot::Finished(finished)) if finished.outdated.load(Ordering::SeqCst))
+    }
+
     fn finished(&self, id: ScanId) -> CommandResult<Finished> {
         match self.lock().slots.get(&id) {
             Some(Slot::Finished(finished)) => Ok(finished.clone()),
-            Some(Slot::Running(_)) => Err(CommandError::not_found(format!("scan {id} has not finished"))),
+            Some(Slot::Running(..)) => Err(CommandError::not_found(format!("scan {id} has not finished"))),
             None => Err(unknown_scan(id)),
         }
     }
@@ -368,6 +439,41 @@ mod tests {
 
         assert!(computed);
         assert!(registry.suggestions(first, |_| empty_suggestions()).is_err());
+    }
+
+    #[test]
+    fn a_change_to_the_disk_outdates_finished_scans_and_scans_that_were_running() {
+        let registry = ScanRegistry::default();
+        let (done, _) = registry.begin().unwrap();
+        registry.finish(done, tiny_tree()).unwrap();
+        let (running, _) = registry.begin().unwrap();
+
+        registry.disk_changed();
+        assert!(registry.is_outdated(done));
+        registry.finish(running, tiny_tree()).unwrap();
+        assert!(
+            registry.is_outdated(running),
+            "it may have read the disk before the change"
+        );
+
+        let (after, _) = registry.begin().unwrap();
+        registry.finish(after, tiny_tree()).unwrap();
+        assert!(
+            !registry.is_outdated(after),
+            "a scan begun after the change is current"
+        );
+    }
+
+    #[test]
+    fn a_picked_folder_is_allowed_with_its_identity_and_a_volume_without() {
+        let state = AppState::new();
+
+        state.allow_roots(["/".to_owned()]);
+        state.allow_picked("/home/u/x".to_owned(), Some((1, 2)));
+
+        assert_eq!(state.allowed_root("/"), Some(None));
+        assert_eq!(state.allowed_root("/home/u/x"), Some(Some((1, 2))));
+        assert_eq!(state.allowed_root("/home/u/x/"), None, "exact text only");
     }
 
     #[test]

@@ -28,7 +28,12 @@ const DATA: SuggestionsDto = {
 };
 
 function show(
-  props: Partial<{ suggestions: SuggestionsDto | undefined; loading: boolean; error: unknown }> = {},
+  props: Partial<{
+    suggestions: SuggestionsDto | undefined;
+    loading: boolean;
+    error: unknown;
+    freed: number;
+  }> = {},
 ) {
   render(ReclaimableCard, {
     props: {
@@ -37,6 +42,7 @@ function show(
       error: undefined,
       onretry: () => {},
       scanned: 1000 * GB,
+      freed: 0,
       ...props,
     },
   });
@@ -52,20 +58,38 @@ describe('ReclaimableCard', () => {
     vi.useRealTimers();
   });
 
-  it('shows the three totals, and no "Already freed" row', () => {
+  it('shows the three totals and an "Already freed" row after them, 0 before any cleanup', () => {
     show();
 
     expect(screen.getByText('Safe to clean').parentElement?.textContent).toContain('149 GB');
     expect(screen.getByText('Needs your review').parentElement?.textContent).toContain('268 GB');
     expect(screen.getByText('Kept').parentElement?.textContent).toContain('142 GB');
-    expect(screen.queryByText('Already freed')).toBeNull();
+
+    const rows = [...document.querySelectorAll('.recr')].map((row) =>
+      row.textContent?.replace(/\s+/g, ' ').trim(),
+    );
+
+    expect(rows.slice(0, 4)).toEqual([
+      'Safe to clean 149 GB',
+      'Needs your review 268 GB',
+      'Kept 142 GB',
+      'Already freed 0 B',
+    ]);
+  });
+
+  it('shows what this session freed in the "Already freed" row, outside the bar', () => {
+    show({ freed: 1_200_000_000 });
+
+    expect(screen.getByText('Already freed').parentElement?.textContent).toContain('1.2 GB');
+    expect(screen.getByRole('img').getAttribute('aria-label')).not.toContain('Already freed');
+    expect(document.querySelectorAll('.fill i')).toHaveLength(3);
   });
 
   it('lists the biggest wins largest first, without the kept ones', () => {
     show();
 
     const heading = screen.getByRole('heading', { name: 'Biggest wins' });
-    const rows = [...(heading.parentElement?.querySelectorAll('.recr') ?? [])].slice(3);
+    const rows = [...(heading.parentElement?.querySelectorAll('.recr') ?? [])].slice(4);
 
     expect(rows.map((row) => row.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
       'Title of c 268 GB',
@@ -78,7 +102,7 @@ describe('ReclaimableCard', () => {
   it('shows zeros and no list of wins when there are no suggestions', () => {
     show({ suggestions: { suggestions: [], totals: { safe: 0, review: 0, keep: 0 } } });
 
-    expect(screen.getAllByText('0 B')).toHaveLength(3);
+    expect(screen.getAllByText('0 B')).toHaveLength(4);
     expect(screen.queryByRole('heading', { name: 'Biggest wins' })).toBeNull();
   });
 
@@ -95,7 +119,14 @@ describe('ReclaimableCard', () => {
     const onretry = vi.fn();
 
     render(ReclaimableCard, {
-      props: { suggestions: undefined, loading: false, error: new Error('x'), onretry, scanned: GB },
+      props: {
+        suggestions: undefined,
+        loading: false,
+        error: new Error('x'),
+        onretry,
+        scanned: GB,
+        freed: 0,
+      },
     });
     await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
 

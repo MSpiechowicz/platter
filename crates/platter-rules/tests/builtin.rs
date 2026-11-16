@@ -47,6 +47,7 @@ fn laptop() -> FakeFs {
     fs.file("/home/u/Projekty/c/Cargo.toml", 1);
     aged_file(&mut fs, "/home/u/Projekty/c/target/debug/x", 2000, 1);
     aged_file(&mut fs, "/home/u/Projekty/web/package.json", 1, 100);
+    aged_file(&mut fs, "/home/u/Projekty/web/pnpm-lock.yaml", 1, 100);
     aged_file(&mut fs, "/home/u/Projekty/web/node_modules/dep/i.js", 1500, 100);
     aged_file(&mut fs, "/home/u/Downloads/iso/old.iso", 2500, 800);
     aged_file(&mut fs, "/home/u/Downloads/new.zip", 99, 3);
@@ -67,26 +68,23 @@ fn a_developers_laptop_gets_the_expected_suggestions() {
     assert_eq!(
         summary,
         [
-            ("pacman-cache", Verdict::Safe, 5000, 1),
-            ("app-cache", Verdict::Safe, 4000, 1),
             ("rust-target", Verdict::Safe, 2000, 2),
             ("node-modules", Verdict::Safe, 1500, 1),
             ("npm-cache", Verdict::Safe, 800, 1),
             ("steam-shader-cache", Verdict::Safe, 700, 1),
             ("trash", Verdict::Safe, 600, 1),
-            ("journal", Verdict::Safe, 300, 1),
             ("disk-images", Verdict::Review, 3 << 30, 1),
             ("btrfs-snapshots", Verdict::Review, 9000, 1),
+            ("pacman-cache", Verdict::Review, 5000, 1),
+            ("app-cache", Verdict::Review, 4000, 1),
             ("old-downloads", Verdict::Review, 2500, 1),
             ("rust-target-recent", Verdict::Review, 2000, 1),
+            ("journal", Verdict::Review, 300, 1),
             ("steam-library", Verdict::Keep, 20_000, 1),
             ("documents", Verdict::Keep, 100, 1),
         ]
     );
-    assert_eq!(
-        found.totals.safe,
-        5000 + 4000 + 2000 + 1500 + 800 + 700 + 600 + 300
-    );
+    assert_eq!(found.totals.safe, 2000 + 1500 + 800 + 700 + 600);
     assert_eq!(found.totals.keep, 20_100);
 }
 
@@ -164,11 +162,11 @@ fn the_wire_form_is_what_the_contract_says() {
     let wire = serde_json::to_value(&found).unwrap();
     assert_eq!(
         wire["totals"],
-        serde_json::json!({ "safe": 5000, "review": 0, "keep": 0 })
+        serde_json::json!({ "safe": 0, "review": 5000, "keep": 0 })
     );
     let first = &wire["suggestions"][0];
     assert_eq!(first["id"], "pacman-cache");
-    assert_eq!(first["verdict"], "safe");
+    assert_eq!(first["verdict"], "review");
     assert_eq!(
         first["nodes"],
         serde_json::json!([find(&tree, "var/cache/pacman/pkg").0])
@@ -184,11 +182,8 @@ fn the_app_cache_reason_does_not_promise_that_everything_in_it_is_rebuilt() {
     let found = platter_rules::evaluate(&tree, &env(), &RuleSet::builtin());
 
     let cache = get(&found, "app-cache").unwrap();
-    assert_eq!(cache.verdict, Verdict::Safe);
-    assert_eq!(
-        cache.reason,
-        "Rebuilt by the apps that use it. Large downloads kept here, such as models, would have to be downloaded again."
-    );
+    assert_eq!(cache.verdict, Verdict::Review);
+    assert!(cache.reason.contains("cannot be rebuilt"), "{}", cache.reason);
 }
 
 #[test]

@@ -20,6 +20,8 @@ pub(crate) struct Found {
     ancestor: Ancestor,
     /// Which of a name rule's names matched, by index.
     pub names: Vec<usize>,
+    /// Every matched node, in the order they were met.
+    pub all: Vec<NodeId>,
 }
 
 impl Found {
@@ -31,6 +33,7 @@ impl Found {
         self.items += 1;
         self.shared_files = self.shared_files.saturating_add(tree.shared_files(node));
         self.first.get_or_insert(node);
+        self.all.push(node);
 
         self.largest.push(Reverse((allocated, Reverse(node.0))));
         if self.largest.len() > MAX_NODES {

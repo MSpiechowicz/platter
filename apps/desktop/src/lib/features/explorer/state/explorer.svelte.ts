@@ -18,12 +18,14 @@ import {
 import { itemCount } from '../layout/legibility';
 import { MAP_DEPTH } from '../layout/treemap';
 import { crumbPaths } from '../path';
-import { SEARCH_LIMIT } from '../search';
+import { normalizeQuery, SEARCH_LIMIT } from '../search';
 
 /** How many nodes the map asks for. More would be too small to see; the rest arrive as "N smaller items". */
 export const LOD_MAX_NODES = 600;
 /** Rows per request of the "In this folder" list. */
 export const PAGE_SIZE = 200;
+/** How long the search waits after the last key before it asks the backend. */
+export const QUERY_DELAY_MS = 150;
 /** How deep a chain's last folder is read: far enough for the levels inside it and for the chains among them. */
 export const EXPANSION_DEPTH = MAP_DEPTH + 2;
 /** One child holding more than this share of the folder is worth pointing out. */
@@ -40,6 +42,36 @@ interface LoadedPage {
   page: ChildrenPage;
   focus: NodeId;
   sort: SortKey;
+}
+
+/** What the backend answered to a search: the page of matches, or why it could not be read. */
+type MatchAnswer = { focus: NodeId; sort: SortKey; query: string } & (
+  { page: ChildrenPage } | { error: unknown }
+);
+
+/** The rows loaded after the first page of a list. */
+interface MoreRows {
+  base: ChildrenPage;
+  items: NodeDto[];
+}
+
+/** How many of `items` (a list of `total`, sorted by `sort`) have no size, or `undefined` while that cannot be known. */
+function uncountedIn(items: readonly NodeDto[], total: number, sort: SortKey): number | undefined {
+  const loadedZero = items.filter((item) => item.allocated === 0).length;
+
+  if (items.length >= total) {
+    return loadedZero;
+  }
+
+  // Sorted by size they are the tail, so the first one seen tells that all the rest are too.
+  return sort === 'sizeDesc' && loadedZero > 0 ? total - (items.length - loadedZero) : undefined;
+}
+
+/** How many items have a size: exact once `uncountedIn` is known, otherwise the most it can be. */
+function sizedIn(items: readonly NodeDto[], total: number, sort: SortKey): number {
+  const uncounted = uncountedIn(items, total, sort) ?? items.filter((item) => item.allocated === 0).length;
+
+  return Math.max(0, total - uncounted);
 }
 
 /** A child that holds most of the open folder. */
@@ -126,7 +158,10 @@ export class ExplorerStore {
   /** The child under the pointer, in the map or in the list. */
   hovered = $state<NodeId | null>(null);
   sort = $state<SortKey>('sizeDesc');
-  /** What the list is filtered by (a part of a name); `''` when it is not. Not saved, and cleared by `open`. */
+  /**
+   * What the list is filtered by (a part of a name); `''` when it is not. This is the query the backend is asked
+   * for: `setQuery` applies it after a short pause. Not saved, and cleared by `open`.
+   */
   query = $state('');
   /** The name of the folder being opened, for "Reading …" while its data is on the way. */
   opening = $state<string | null>(null);
@@ -146,9 +181,16 @@ export class ExplorerStore {
   // eslint-disable-next-line svelte/prefer-svelte-reactivity
   readonly #known = new Map<NodeId, string | null>();
   #reload = $state(0);
-  #more = $state<{ base: ChildrenPage; items: NodeDto[] } | null>(null);
-  /** Counts the folder and sort the list has had, so a request knows when it was left behind. */
+  /** The rows loaded after the first page of the whole folder, and after the first page of the matches. */
+  #more = $state.raw<MoreRows | null>(null);
+  #moreMatching = $state.raw<MoreRows | null>(null);
+  /** Counts the folders, sorts and queries the list has had, so a request knows when it was left behind. */
   #moreRound = 0;
+  /** The answer to the query, for the folder and sort it was asked for. */
+  #answer = $state.raw<MatchAnswer | null>(null);
+  #queryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The child that was last chosen: the details keep describing it while a search hides its row. */
+  #chosen: NodeDto | undefined;
   /** The first page together with the folder and sort it was loaded for; `page` shows just the page. */
   readonly #first: Resource<LoadedPage>;
   /** The way to `focus` while its frame is still loading; `crumbs` is the way to the shown folder. */
@@ -188,12 +230,40 @@ export class ExplorerStore {
         .then((page): LoadedPage => ({ page, focus, sort }));
     });
 
-    // While a query is active the rest of the list is loaded in the background, page after page, up to the limit.
+    // With a query the backend filters the folder: its first page of matches replaces the list. An answer for a
+    // query, folder or sort the user has left is dropped, so the last thing typed is what is shown.
     $effect(() => {
-      if (this.query !== '' && this.wantsMoreForSearch) {
-        untrack(() => void this.loadMore());
+      void this.#reload;
+
+      const { focus, sort, query } = this;
+
+      this.#answer = null;
+
+      if (query === '') {
+        return;
       }
+
+      let current = true;
+
+      this.#api.getChildren(this.scanId, focus, 0, PAGE_SIZE, sort, query).then(
+        (page) => {
+          if (current) {
+            this.#answer = { focus, sort, query, page };
+          }
+        },
+        (error: unknown) => {
+          if (current) {
+            this.#answer = { focus, sort, query, error };
+          }
+        },
+      );
+
+      return () => {
+        current = false;
+      };
     });
+
+    $effect(() => () => clearTimeout(this.#queryTimer));
 
     // Every shown folder gets its chains read deeper, a few at a time.
     $effect(() => {
@@ -209,24 +279,61 @@ export class ExplorerStore {
     });
 
     this.#first = first;
+
+    const matching = (): MatchAnswer | undefined => this.#matching;
+    const filtering = (): boolean => this.#filtering;
+
     this.page = {
       get data() {
+        const answer = matching();
+
+        if (filtering()) {
+          return answer && 'page' in answer ? answer.page : undefined;
+        }
+
         return first.data?.page;
       },
       get error() {
+        const answer = matching();
+
+        if (filtering()) {
+          return answer && 'error' in answer ? answer.error : undefined;
+        }
+
         return first.error;
       },
       get loading() {
-        return first.loading;
+        return filtering() ? matching() === undefined : first.loading;
       },
     };
   }
 
+  /** A query is applied: the list shows the matches, which the backend counts and pages. */
+  get #filtering(): boolean {
+    return this.query !== '';
+  }
+
+  /** The answer to the query that is applied now, once it has arrived. */
+  get #matching(): MatchAnswer | undefined {
+    const answer = this.#answer;
+
+    if (answer && answer.focus === this.focus && answer.sort === this.sort && answer.query === this.query) {
+      return answer;
+    }
+
+    return undefined;
+  }
+
   /**
-   * Whether the first page held in `page` was loaded for the folder and sort that are asked for now. Right after
-   * `open` or `setSort` it still holds the previous one until the new page arrives.
+   * Whether the first page held in `page` was loaded for the folder, sort and query that are asked for now. Right
+   * after `open` or `setSort` it still holds the previous one until the new page arrives; with a query there is no
+   * page at all until the matches have arrived.
    */
   get pageCurrent(): boolean {
+    if (this.#filtering) {
+      return this.page.data !== undefined;
+    }
+
     const loaded = this.#first.data;
 
     return loaded !== undefined && loaded.focus === this.focus && loaded.sort === this.sort;
@@ -377,17 +484,39 @@ export class ExplorerStore {
     return colorOf(this.colors, id);
   }
 
-  /** The loaded rows, for the list. */
-  get items(): NodeDto[] {
+  /** The loaded rows, joined once per change and not on every read. */
+  readonly #items: NodeDto[] = $derived.by(() => {
     const first = this.page.data;
 
     if (!first) {
       return [];
     }
 
-    return this.#more?.base === first ? [...first.items, ...this.#more.items] : first.items;
+    const more = this.#filtering ? this.#moreMatching : this.#more;
+
+    return more?.base === first ? [...first.items, ...more.items] : first.items;
+  });
+
+  /** The loaded rows of the whole folder, which stay while a search shows the matches. */
+  readonly #allRows: { items: NodeDto[]; total: number } | undefined = $derived.by(() => {
+    const first = this.#first.data?.page;
+
+    if (!first) {
+      return undefined;
+    }
+
+    return {
+      items: this.#more?.base === first ? [...first.items, ...this.#more.items] : first.items,
+      total: first.total,
+    };
+  });
+
+  /** The loaded rows, for the list. */
+  get items(): NodeDto[] {
+    return this.#items;
   }
 
+  /** How many items the list has: the folder's, or with a query the number of matches. */
   get total(): number {
     return this.page.data?.total ?? 0;
   }
@@ -398,7 +527,11 @@ export class ExplorerStore {
 
   /** Finds a child of the shown folder by id: in the map's data first, then in the loaded rows. */
   find(id: NodeId): NodeDto | undefined {
-    return this.topLevel.find((node) => node.id === id) ?? this.items.find((node) => node.id === id);
+    return (
+      this.topLevel.find((node) => node.id === id) ??
+      this.items.find((node) => node.id === id) ??
+      this.#allRows?.items.find((node) => node.id === id)
+    );
   }
 
   /** The selected child, or `undefined` when nothing is selected or it is not in this folder. */
@@ -407,7 +540,27 @@ export class ExplorerStore {
       return undefined;
     }
 
-    return this.selected === COLLAPSED_NODE_ID ? this.#group?.node : this.find(this.selected);
+    if (this.selected === COLLAPSED_NODE_ID) {
+      return this.#group?.node;
+    }
+
+    // A search can leave the chosen child's row out of the loaded ones; it is still the selection.
+    return this.find(this.selected) ?? (this.#chosen?.id === this.selected ? this.#chosen : undefined);
+  }
+
+  /**
+   * The folder the selection stands for, which is the one "Open folder" opens and "Show in file manager" shows: for
+   * a chain tile ("home / sam") the last folder of the chain, otherwise the selected child itself. The details of
+   * the selection come from this one node, so that its path, size and actions never describe two folders.
+   */
+  get selectedTarget(): NodeDto | undefined {
+    const chosen = this.selectedNode;
+
+    if (!chosen || this.groupSelected) {
+      return chosen;
+    }
+
+    return this.openTarget(chosen.id);
   }
 
   /** The "N smaller items" tile is selected: it is not a folder, so it has no path and cannot be opened. */
@@ -420,6 +573,11 @@ export class ExplorerStore {
    * those the backend left out of the map before (every child the map has no node for).
    */
   get highlighted(): ReadonlySet<NodeId> {
+    return this.#highlighted;
+  }
+
+  /** Worked out once per change of the rows or the selection, not on every read. */
+  readonly #highlighted: ReadonlySet<NodeId> = $derived.by(() => {
     const group = this.#group;
 
     if (!group || this.selected !== COLLAPSED_NODE_ID) {
@@ -432,13 +590,28 @@ export class ExplorerStore {
     return new SvelteSet(
       this.items.filter((item) => merged.has(item.id) || !onMap.has(item.id)).map((item) => item.id),
     );
-  }
+  });
 
-  /** The selected "smaller items" tile has rows that are not loaded yet. */
-  get groupNeedsRows(): boolean {
+  /** The selected "smaller items" tile has rows that are not loaded yet, however many rows are loaded already. */
+  get #groupIncomplete(): boolean {
     const group = this.#group;
 
-    return group !== null && this.hasMore && this.highlighted.size < itemCount(group.node);
+    return (
+      group !== null && !this.#filtering && this.hasMore && this.#highlighted.size < itemCount(group.node)
+    );
+  }
+
+  /**
+   * The selected "smaller items" tile has rows that are not loaded yet, and the list may load them in the
+   * background: up to `SEARCH_LIMIT` rows in all, and not after a request failed.
+   */
+  get groupNeedsRows(): boolean {
+    return this.#groupIncomplete && this.items.length < SEARCH_LIMIT && this.moreError === null;
+  }
+
+  /** The selected "smaller items" tile has more rows than the list loads by itself, so only the first ones are shown. */
+  get groupTruncated(): boolean {
+    return this.#groupIncomplete && this.items.length >= SEARCH_LIMIT;
   }
 
   /** The biggest child, when it holds more than `DOMINANT_SHARE` of the folder and can be opened. */
@@ -470,30 +643,35 @@ export class ExplorerStore {
     };
   }
 
-  /** A search is on and there are rows it has not looked at yet, which it is allowed to load. */
-  get wantsMoreForSearch(): boolean {
-    return (
-      this.query !== '' &&
-      this.hasMore &&
-      this.pageCurrent &&
-      !this.loadingMore &&
-      this.moreError === null &&
-      this.items.length < SEARCH_LIMIT
-    );
+  /**
+   * Sets what the list is filtered by. A query is applied after `QUERY_DELAY_MS` without another key, so typing asks
+   * the backend once; clearing it applies at once and shows the whole folder again, without asking for it.
+   */
+  setQuery(text: string): void {
+    const query = normalizeQuery(text);
+
+    clearTimeout(this.#queryTimer);
+
+    if (query === '') {
+      this.#applyQuery('');
+
+      return;
+    }
+
+    this.#queryTimer = setTimeout(() => this.#applyQuery(query), QUERY_DELAY_MS);
   }
 
-  /** The search is still waiting for pages. */
-  get searching(): boolean {
-    return this.query !== '' && this.hasMore && this.items.length < SEARCH_LIMIT && this.moreError === null;
-  }
+  #applyQuery(query: string): void {
+    if (query === this.query) {
+      return;
+    }
 
-  /** The folder has more items than the search looks through. */
-  get searchTruncated(): boolean {
-    return this.query !== '' && this.hasMore && this.items.length >= SEARCH_LIMIT;
-  }
-
-  setQuery(query: string): void {
     this.query = query;
+    this.#moreMatching = null;
+    // A request for more rows of the previous list is left behind.
+    this.#moreRound++;
+    this.loadingMore = false;
+    this.moreError = null;
   }
 
   /** The rows with a size: these are the list. */
@@ -509,28 +687,36 @@ export class ExplorerStore {
   }
 
   /**
-   * How many items of the folder have no size, or `undefined` while that cannot be known. All of them are known once
+   * How many items of the list have no size, or `undefined` while that cannot be known. All of them are known once
    * every page is loaded. Sorted by size they are the tail, so the first one seen tells that all the rest are too.
    */
   get uncountedTotal(): number | undefined {
-    const loadedZero = this.items.filter((item) => item.allocated === 0).length;
-
     if (this.page.data === undefined) {
       return undefined;
     }
 
-    if (!this.hasMore) {
-      return loadedZero;
-    }
-
-    return this.sort === 'sizeDesc' && loadedZero > 0 ? this.total - this.sizedItems.length : undefined;
+    return uncountedIn(this.items, this.total, this.sort);
   }
 
-  /** How many items have a size: exact once `uncountedTotal` is known, otherwise the most it can be. */
+  /** How many items of the list have a size: exact once `uncountedTotal` is known, otherwise the most it can be. */
   get sizedTotal(): number {
-    const uncounted = this.uncountedTotal ?? this.items.filter((item) => item.allocated === 0).length;
+    return sizedIn(this.items, this.total, this.sort);
+  }
 
-    return Math.max(0, this.total - uncounted);
+  /** How many items of the whole folder have a size, which a search does not change. */
+  get allSizedTotal(): number {
+    const all = this.#allRows;
+
+    if (!this.#filtering || !all) {
+      return this.sizedTotal;
+    }
+
+    return sizedIn(all.items, all.total, this.sort);
+  }
+
+  /** How many of the matches have a size while a query is applied, once they have arrived. */
+  get matchedTotal(): number | undefined {
+    return this.#filtering && this.page.data !== undefined ? this.sizedTotal : undefined;
   }
 
   /**
@@ -557,6 +743,7 @@ export class ExplorerStore {
     this.#trail = known >= 0 ? shown.slice(0, known + 1) : [...shown, ...(via.length > 0 ? via : [target])];
     this.opening = target.name || null;
     this.#expandRound++;
+    clearTimeout(this.#queryTimer);
     this.query = '';
 
     // The way back finds every folder it came through with its colour. A chain has one colour: its first folder's.
@@ -621,6 +808,7 @@ export class ExplorerStore {
     if (this.selected === id && this.find(id)?.hasChildren) {
       this.open(id);
     } else {
+      this.#chosen = this.find(id);
       this.selected = id;
     }
   }
@@ -639,6 +827,7 @@ export class ExplorerStore {
   /** The list starts again from its first page: forget the extra rows, and let a request in flight go. */
   #startOver(): void {
     this.#more = null;
+    this.#moreMatching = null;
     this.#moreRound++;
     this.loadingMore = false;
     this.moreError = null;
@@ -655,7 +844,7 @@ export class ExplorerStore {
       return;
     }
 
-    const { focus, sort } = this;
+    const { focus, sort, query } = this;
     const round = this.#moreRound;
     const have = this.items.length;
 
@@ -663,15 +852,23 @@ export class ExplorerStore {
     this.moreError = null;
 
     try {
-      const next = await this.#api.getChildren(this.scanId, focus, have, PAGE_SIZE, sort);
+      const next = await this.#api.getChildren(
+        this.scanId,
+        focus,
+        have,
+        PAGE_SIZE,
+        sort,
+        query === '' ? undefined : query,
+      );
 
       if (
         round === this.#moreRound &&
         this.page.data === base &&
         this.focus === focus &&
-        this.sort === sort
+        this.sort === sort &&
+        this.query === query
       ) {
-        this.#more = { base, items: [...(this.#more?.base === base ? this.#more.items : []), ...next.items] };
+        this.#keepMore(base, next.items);
       }
     } catch (error) {
       if (round === this.#moreRound) {
@@ -684,9 +881,21 @@ export class ExplorerStore {
     }
   }
 
-  /** Shows the selected child, or else the open folder, in the system file manager. */
+  /** Adds rows that arrived after the first page `base` to the list they belong to. */
+  #keepMore(base: ChildrenPage, items: NodeDto[]): void {
+    const kept = this.#filtering ? this.#moreMatching : this.#more;
+    const more: MoreRows = { base, items: [...(kept?.base === base ? kept.items : []), ...items] };
+
+    if (this.#filtering) {
+      this.#moreMatching = more;
+    } else {
+      this.#more = more;
+    }
+  }
+
+  /** Shows the selected child (a chain tile: its last folder, which "Open folder" opens), or else the open folder. */
   async reveal(): Promise<void> {
-    const id = (this.groupSelected ? undefined : this.selectedNode?.id) ?? this.shown?.focus;
+    const id = (this.groupSelected ? undefined : this.selectedTarget?.id) ?? this.shown?.focus;
 
     if (id !== undefined) {
       await this.#api.openInFileManager(this.scanId, id);

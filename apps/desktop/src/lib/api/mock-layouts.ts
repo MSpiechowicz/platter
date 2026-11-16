@@ -1,4 +1,4 @@
-import type { Category } from './types';
+import type { Category, SkipReason } from './types';
 
 /** A group of generated files. Sizes are drawn from a log-normal distribution and scaled to the bytes of the directory. */
 export interface FileGroup {
@@ -11,6 +11,10 @@ export interface FileGroup {
   sigma?: number;
   /** Mean age of the files in days. */
   ageDays?: number;
+  /** No file is younger than this many days, so a whole folder can be "not touched for N days". */
+  minAgeDays?: number;
+  /** Every Nth file is also hard-linked from somewhere else (a pnpm store does that). */
+  sharedEvery?: number;
   /** Split the files into sub-directories of `size` files each. */
   bucket?: { size: number; name: (index: number) => string };
 }
@@ -23,11 +27,26 @@ export interface DirSpec {
   files?: FileGroup;
   /** Another filesystem is mounted here: an empty `mount` node when "stay on one filesystem" is on. */
   mount?: boolean;
+  /** Why a mount is not entered. `system` mounts (`/proc`, `/sys`) are never entered; the others only when the scan stays on one disk. */
+  skipped?: SkipReason;
+  /** Small files that sit next to the sub-directories, such as `Cargo.toml`, which the rules look for. */
+  markers?: string[];
   /** A directory the scan could not list: it arrives empty, with no size, and marked `unreadable`. */
   unreadable?: boolean;
   /** A directory with nothing in it at all (not even its own block counted). */
   empty?: boolean;
 }
+
+/** Mount points of a real root filesystem: virtual ones are never entered, the rest only with "stay on one disk". */
+const MOUNTS: DirSpec[] = [
+  { name: 'boot', weight: 0, mount: true, skipped: 'otherDisk' },
+  { name: 'dev', weight: 0, mount: true, skipped: 'system' },
+  { name: 'proc', weight: 0, mount: true, skipped: 'system' },
+  { name: 'run', weight: 0, mount: true, skipped: 'system' },
+  { name: 'sys', weight: 0, mount: true, skipped: 'system' },
+  { name: 'tmp', weight: 0, mount: true, skipped: 'system' },
+  { name: 'mnt', weight: 0, mount: true, skipped: 'otherDisk' },
+];
 
 const dir = (name: string, weight: number, kids: DirSpec[]): DirSpec => ({ name, weight, kids });
 
@@ -42,12 +61,17 @@ const numbered =
   (i: number): string =>
     `${prefix}${String(i + 1).padStart(2, '0')}`;
 
-/** A typical software project: sources, a build directory and installed dependencies. */
+/**
+ * A typical software project: sources, a build directory and installed dependencies. A project that is not `active`
+ * has not been touched for a while, so its build output and dependencies are the "not touched for N days" kind.
+ */
 function project(
   name: string,
   weight: number,
-  parts: { src: number; target?: number; modules?: number },
+  parts: { src: number; target?: number; modules?: number; active?: boolean },
 ): DirSpec {
+  const idle = parts.active ? {} : { minAgeDays: 70 };
+  const markers: string[] = [];
   const kids: DirSpec[] = [
     leaf('src', parts.src, {
       count: 70,
@@ -59,6 +83,7 @@ function project(
   ];
 
   if (parts.target) {
+    markers.push('Cargo.toml');
     kids.push(
       dir('target', parts.target, [
         leaf('debug', 0.7, {
@@ -67,13 +92,15 @@ function project(
           sigma: 1.4,
           ageDays: 30,
           bucket: { size: 40, name: numbered('deps-') },
+          ...idle,
         }),
-        leaf('release', 0.3, { count: 40, category: 'build', sigma: 1.4, ageDays: 40 }),
+        leaf('release', 0.3, { count: 40, category: 'build', sigma: 1.4, ageDays: 40, ...idle }),
       ]),
     );
   }
 
   if (parts.modules) {
+    markers.push('package.json', 'pnpm-lock.yaml');
     kids.push(
       leaf('node_modules', parts.modules, {
         count: 150,
@@ -81,32 +108,38 @@ function project(
         sigma: 1.3,
         ageDays: 90,
         bucket: { size: 30, name: numbered('pkg-') },
+        sharedEvery: 3,
+        ...idle,
       }),
     );
   }
 
-  return dir(name, weight, kids);
+  return { ...dir(name, weight, kids), markers };
 }
 
 /** Contents of a home directory, weighted by typical GB. */
 function homeKids(): DirSpec[] {
   return [
     dir('Projekty', 214, [
-      project('platter', 100, { src: 4, target: 70, modules: 26 }),
-      project('rust-playground', 62, { src: 3, target: 59 }),
-      project('web-shop', 52, { src: 5, modules: 47 }),
+      project('platter', 90, { src: 4, target: 62, modules: 24, active: true }),
+      project('rust-playground', 45, { src: 3, target: 42 }),
+      project('web-shop', 40, { src: 5, modules: 35 }),
+      project('ocpp-bridge', 24, { src: 3, target: 21 }),
+      project('blog', 15, { src: 2, modules: 13 }),
     ]),
     dir('.local', 190, [
       dir('share', 190, [
         dir('Steam', 142, [
-          leaf('steamapps', 120, {
-            count: 90,
-            category: 'app',
-            sigma: 1.8,
-            ageDays: 120,
-            bucket: { size: 30, name: numbered('game-') },
-          }),
-          leaf('shadercache', 22, { count: 60, category: 'other', sigma: 1.1, ageDays: 40 }),
+          dir('steamapps', 142, [
+            leaf('common', 120, {
+              count: 90,
+              category: 'app',
+              sigma: 1.8,
+              ageDays: 120,
+              bucket: { size: 30, name: numbered('game-') },
+            }),
+            leaf('shadercache', 22, { count: 60, category: 'other', sigma: 1.1, ageDays: 40 }),
+          ]),
         ]),
         leaf('containers', 31, { count: 45, category: ['diskImage', 'other'], sigma: 1.5, ageDays: 150 }),
         leaf('Trash', 17, {
@@ -148,6 +181,8 @@ function homeKids(): DirSpec[] {
       leaf('other', 15, { count: 60, category: 'other', sigma: 1.3, ageDays: 60 }),
     ]),
     leaf('.var', 39, { count: 50, category: ['app', 'other'], sigma: 1.4, ageDays: 100 }),
+    leaf('.npm', 9, { count: 80, category: 'package', sigma: 1.1, ageDays: 120 }),
+    dir('.cargo', 7, [leaf('registry', 7, { count: 70, category: 'package', sigma: 1.2, ageDays: 150 })]),
     leaf('Documents', 12, {
       count: 120,
       category: ['document', 'archive'],
@@ -173,8 +208,9 @@ function systemKids(): DirSpec[] {
       }),
       leaf('recent', 42, { count: 24, category: 'archive', sigma: 1.1, ageDays: 12 }),
     ]),
-    dir('var', 164, [
-      dir('lib', 118, [
+    dir('var', 170, [
+      dir('lib', 124, [
+        dir('systemd', 6, [leaf('coredump', 6, { count: 12, category: 'other', sigma: 1.2, ageDays: 60 })]),
         leaf('docker', 96, {
           count: 80,
           category: 'diskImage',
@@ -203,6 +239,7 @@ function systemKids(): DirSpec[] {
       name: 'mnt',
       weight: 60,
       mount: true,
+      skipped: 'otherDisk',
       kids: [leaf('backup', 60, { count: 30, category: 'archive', sigma: 1.0 })],
     },
   ];
@@ -250,7 +287,7 @@ function skewKids(): DirSpec[] {
         bucket: { size: 30, name: numbered('game-') },
       }),
       dir('Projekty', 96, [
-        project('platter', 60, { src: 3, target: 50, modules: 7 }),
+        project('platter', 60, { src: 3, target: 50, modules: 7, active: true }),
         project('web-shop', 36, { src: 4, modules: 32 }),
       ]),
       leaf('Downloads', 14, { count: 80, category: ['archive', 'document'], sigma: 1.5, ageDays: 400 }),
@@ -272,7 +309,7 @@ function skewKids(): DirSpec[] {
     leaf('opt', 3.6, { count: 120, category: 'app', sigma: 1.3, ageDays: 200 }),
     leaf('etc', 0.017, { count: 90, category: 'other', sigma: 0.8, ageDays: 100 }),
     ...tiny,
-    ...['boot', 'dev', 'proc', 'run', 'sys', 'tmp', 'mnt'].map((name) => ({ name, weight: 0, mount: true })),
+    ...MOUNTS,
     unreadable('root'),
     unreadable('.snapshots'),
     empty('srv'),
@@ -393,7 +430,7 @@ function realKids(): DirSpec[] {
             project(
               name,
               weight,
-              name === 'platter' ? { src: 3, target: 20, modules: 5 } : { src: 2, target: 1 },
+              name === 'platter' ? { src: 3, target: 20, modules: 5, active: true } : { src: 2, target: 1 },
             ),
           ),
         ),
@@ -422,7 +459,7 @@ function realKids(): DirSpec[] {
     leaf('opt', 3.6, files(144, 'app', 1.3)),
     leaf('etc', 0.017, files(90, 'other', 0.8)),
     ...tiny,
-    ...['boot', 'dev', 'proc', 'run', 'sys', 'tmp', 'mnt'].map((name) => ({ name, weight: 0, mount: true })),
+    ...MOUNTS,
     unreadable('root'),
     unreadable('.snapshots'),
     empty('srv'),
