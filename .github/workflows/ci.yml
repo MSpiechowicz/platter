@@ -16,6 +16,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # Line tables keep file:line in panics and backtraces; full debug info only makes the build and the link
+  # slower (much slower on Windows, where it is written as PDB files).
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   rust:
@@ -35,6 +39,9 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Also after a failed run: the next run then starts from the built dependencies, not from nothing.
+          cache-on-failure: true
 
       # `platter-desktop` embeds `apps/desktop/dist` at compile time (tauri `frontendDist`), so the
       # directory must exist. Lint and tests do not depend on its content, so a stub keeps this job
@@ -82,6 +89,9 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Also after a failed run: the next run then starts from the built dependencies, not from nothing.
+          cache-on-failure: true
 
       # Same stub as in `rust`: `platter-desktop` embeds `apps/desktop/dist` at compile time.
       - name: Create a stub frontend dist
@@ -93,7 +103,7 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --locked --workspace
+        run: cargo test --locked --workspace --no-fail-fast
 
   web:
     name: Web (lint, check, test, build)

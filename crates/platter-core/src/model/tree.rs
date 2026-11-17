@@ -299,18 +299,35 @@ impl Tree {
         }
     }
 
-    /// Filesystem path of a node: the scan root joined with the names below it (lossy UTF-8).
+    /// Filesystem path of a node: the scan root joined with the names below it (lossy UTF-8), with the
+    /// separator of [`Tree::separator`].
     pub fn path_of(&self, id: NodeId) -> PathBuf {
-        let mut path = self.root_path.clone();
+        let separator = char::from(self.separator());
+        let mut path = self.root_path.clone().into_os_string();
 
         for segment in self.ancestry(id).into_iter().skip(1) {
+            let bytes = path.as_encoded_bytes();
+            if !bytes.is_empty() && bytes.last() != Some(&(separator as u8)) {
+                path.push(separator.encode_utf8(&mut [0; 4]));
+            }
             path.push(&*self.name_lossy(segment));
         }
-        path
+        PathBuf::from(path)
+    }
+
+    /// The separator between the names of a path in this tree: `/` below a root written the Unix way (it
+    /// starts with `/`), the platform's own otherwise. On Unix that is always `/`; on Windows a scan of a
+    /// drive (`C:\`) uses `\\`, and a tree built from Unix paths (the tests' fake disks) keeps `/`.
+    pub fn separator(&self) -> u8 {
+        if self.root_path.as_os_str().as_encoded_bytes().first() == Some(&b'/') {
+            b'/'
+        } else {
+            std::path::MAIN_SEPARATOR as u8
+        }
     }
 
     /// Exact filesystem path of a node as bytes: the scan root followed by the names below it, joined by
-    /// the platform path separator (no extra separator after a root that already ends in one).
+    /// [`Tree::separator`] (no extra separator after a root that already ends in one).
     ///
     /// Unlike [`Tree::path_of`] nothing is converted lossily. Names and the root are the
     /// `OsStr::as_encoded_bytes` form, which on Unix is exactly the bytes the kernel uses, so there the
@@ -318,7 +335,7 @@ impl Tree {
     /// the encoding is an implementation detail of the standard library; the bytes are only meaningful to
     /// the same build, and an adapter without a lossless way back has to fall back to [`Tree::path_of`].
     pub fn path_bytes(&self, id: NodeId) -> Vec<u8> {
-        let separator = std::path::MAIN_SEPARATOR as u8;
+        let separator = self.separator();
         let mut path = self.root_path.as_os_str().as_encoded_bytes().to_vec();
 
         for segment in self.ancestry(id).into_iter().skip(1) {
