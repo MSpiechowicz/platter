@@ -603,7 +603,7 @@ The advisor settings (the options of `configure_advisor`: "Use the local model",
 ## Frontend rules
 
 - Theme (S1): tokens on `:root` are the dark theme, `:root[data-theme='light']` the light one (`src/app.css`). No component uses a literal color; overlays, shadows and text-on-fill have tokens (`--wash-1..4`, `--raised`, `--shadow-1..3`, `--strong`, ...). `state/theme.svelte.ts` sets `data-theme` from the choice in Settings (dark by default, light, or system through `prefers-color-scheme`) and tells subscribers; the Explorer map reads `--bg` at draw time and the 3D view repaints its materials on a change. `main.ts` applies the saved choice before the app mounts. The window's own background in `tauri.conf.json` stays dark, so a light start can show a dark window for a moment before the web view paints.
-- Updates (S1): "Install updates automatically" (off by default) installs an update an automatic or manual check found, on an AppImage only, without a toast when it fails; the restart is always the user's click.
+- Updates (S1): "Install updates automatically" (on by default, owner decision 2026-11-17) installs an update an automatic or manual check found, on an AppImage only, without a toast when it fails; the restart is always the user's click.
 
 - Svelte 5 runes. Shared state lives in `src/lib/state/*.svelte.ts` modules, not in stores.
 - `src/lib/api/types.ts` mirrors the types above. `client.ts` defines the `Api` interface; `tauri.ts` and `mock.ts` implement it; `index.ts` picks one (Tauri when `window.__TAURI_INTERNALS__` exists, otherwise the mock). The app must run in a plain browser on the mock.

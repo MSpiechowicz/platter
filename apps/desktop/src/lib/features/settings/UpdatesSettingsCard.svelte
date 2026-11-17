@@ -17,10 +17,20 @@
     { value: 'never', label: 'Never' },
   ];
 
-  // A check the user asked for shows its spinner at once, and the spinner stays at least a second. The result
-  // replaces it only after that.
+  /** How long a spinner, once shown, stays (also when the answer comes at once). */
+  const MIN_SPIN_MS = 1000;
+
+  // "Check now" turns into a spinner at once, and the spinner stays at least a second. The result replaces it
+  // only after that. An automatic check in the background shows the same spinner while it runs.
   const spinner = delayed(() => updater.checking, 0);
-  const busy = $derived(updater.checking || spinner.value);
+  let holding = $state(false);
+  const busy = $derived(holding || updater.checking || spinner.value);
+
+  function checkNow(): void {
+    holding = true;
+    setTimeout(() => (holding = false), MIN_SPIN_MS);
+    void updater.check({ manual: true });
+  }
 
   /** The line under the version: what the last check found, or when one last ran. */
   const status = $derived.by(() => {
@@ -51,20 +61,24 @@
 <Card title="Updates">
   <Field label={updater.current ? `Platter ${updater.current}` : 'Platter'} description={status}>
     {#snippet control()}
-      <div class="check">
-        {#if busy}
-          <svg class="spin" viewBox="0 0 48 48" role="status" aria-label="Checking for updates">
-            <circle cx="24" cy="24" r="13.5" fill="none" stroke="var(--ring)" stroke-width="13" />
-            <g
-              ><path
-                d="M32.77,6.02A20,20 0 0 1 40.96,13.40L29.94,20.29A7,7 0 0 0 27.07,17.71Z"
-                fill="var(--accent)"
-              /></g
-            >
-          </svg>
-        {/if}
-        <Button disabled={busy} onclick={() => updater.check({ manual: true })}>Check now</Button>
-      </div>
+      <Button disabled={busy} onclick={checkNow}>
+        <span class="check">
+          {#if busy}
+            <svg class="spin" viewBox="0 0 48 48" role="status" aria-label="Checking for updates">
+              <circle cx="24" cy="24" r="13.5" fill="none" stroke="var(--ring)" stroke-width="13" />
+              <g
+                ><path
+                  d="M32.77,6.02A20,20 0 0 1 40.96,13.40L29.94,20.29A7,7 0 0 0 27.07,17.71Z"
+                  fill="var(--accent)"
+                /></g
+              >
+            </svg>
+            Checking…
+          {:else}
+            Check now
+          {/if}
+        </span>
+      </Button>
     {/snippet}
   </Field>
 
@@ -111,14 +125,14 @@
 
 <style>
   .check {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
   }
 
   .spin {
-    width: 22px;
-    height: 22px;
+    width: 15px;
+    height: 15px;
     flex: none;
   }
 

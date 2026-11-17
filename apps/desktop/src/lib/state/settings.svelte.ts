@@ -30,7 +30,7 @@ export interface SettingsData {
   advisorUseGpu: boolean;
   /** How often to check for a new version. An older save has no such value and gets the default, daily. */
   updateCheck: UpdateSchedule;
-  /** An AppImage downloads and installs an update a check found by itself. It never restarts by itself. Off by default. */
+  /** An AppImage downloads and installs an update a check found by itself. It never restarts by itself. On by default (owner, 2026-11-17). */
   autoInstallUpdates: boolean;
   /** How many old versions of each pacman package stay in its cache when it is cleaned. */
   keepPackageVersions: KeepPackageVersions;
@@ -59,7 +59,7 @@ const DEFAULTS: SettingsData = {
   advisorLogQuestions: true,
   advisorUseGpu: true,
   updateCheck: 'daily',
-  autoInstallUpdates: false,
+  autoInstallUpdates: true,
   keepPackageVersions: 2,
   askForAdmin: true,
   excludedPaths: [],

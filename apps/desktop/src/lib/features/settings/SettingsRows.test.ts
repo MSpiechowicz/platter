@@ -20,7 +20,7 @@ beforeEach(() => {
   settings.set('excludedPaths', []);
   settings.set('keepPackageVersions', 2);
   settings.set('askForAdmin', true);
-  settings.set('autoInstallUpdates', false);
+  settings.set('autoInstallUpdates', true);
   settings.set('theme', 'dark');
   theme.setChoice('dark');
   ui.toasts = [];
@@ -69,14 +69,14 @@ describe('Cleanup card', () => {
 });
 
 describe('Install updates automatically', () => {
-  it('is off by default and saves the choice', async () => {
+  it('is on by default and saves the choice', async () => {
     render(UpdatesSettingsCard);
     const toggle = screen.getByRole('switch', { name: 'Install updates automatically' }) as HTMLInputElement;
 
-    expect(toggle.checked).toBe(false);
+    expect(toggle.checked).toBe(true);
     await fireEvent.click(toggle);
 
-    expect(settings.autoInstallUpdates).toBe(true);
+    expect(settings.autoInstallUpdates).toBe(false);
   });
 });
 

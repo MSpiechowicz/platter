@@ -62,7 +62,9 @@ describe('UpdatesSettingsCard', () => {
 
     expect(screen.getByRole('status', { name: 'Checking for updates' })).toBeTruthy();
     expect(screen.getByText('Checking for updates…')).toBeTruthy();
-    expect(checkNow().disabled).toBe(true);
+    const button = screen.getByRole('button', { name: /Checking…/ }) as HTMLButtonElement;
+    expect(within(button).getByRole('status', { name: 'Checking for updates' })).toBeTruthy();
+    expect(button.disabled).toBe(true);
     expect(api.checkUpdate).toHaveBeenCalledTimes(1);
 
     // The answer is in after 200 ms, and the spinner stays.
@@ -78,6 +80,24 @@ describe('UpdatesSettingsCard', () => {
     expect(screen.getByText('Platter is up to date.')).toBeTruthy();
     expect(screen.getByText('Platter 0.1.0')).toBeTruthy();
     expect(checkNow().disabled).toBe(false);
+  });
+
+  it('turns the button into a spinner for at least a second, also when the answer is at once', async () => {
+    render(UpdatesSettingsCard);
+
+    await fireEvent.click(checkNow());
+    await tick();
+
+    expect(screen.getByRole('button', { name: /Checking…/ })).toBeTruthy();
+
+    await vi.advanceTimersByTimeAsync(900);
+    expect(screen.queryByText('Platter is up to date.')).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(200);
+    await tick();
+
+    expect(checkNow().disabled).toBe(false);
+    expect(screen.getByText('Platter is up to date.')).toBeTruthy();
   });
 
   it('says which version is available', async () => {

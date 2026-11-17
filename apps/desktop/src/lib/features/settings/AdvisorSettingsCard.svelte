@@ -178,18 +178,21 @@
     description="Each question and how Platter read it is kept in a small file on this machine, never sent anywhere. It helps to check how questions are understood."
   >
     {#snippet control(labelId, descriptionId)}
-      <div class="log">
-        <Button onclick={clearLog}>Clear log</Button>
-        <Toggle
-          checked={settings.advisorLogQuestions}
-          aria-labelledby={labelId}
-          aria-describedby={descriptionId}
-          onchange={(event) => {
-            void advisor.setLogQuestions(event.currentTarget.checked);
-            saved();
-          }}
-        />
-      </div>
+      <Toggle
+        checked={settings.advisorLogQuestions}
+        aria-labelledby={labelId}
+        aria-describedby={descriptionId}
+        onchange={(event) => {
+          void advisor.setLogQuestions(event.currentTarget.checked);
+          saved();
+        }}
+      />
+    {/snippet}
+  </Field>
+
+  <Field label="Question log" description="Removes every question kept so far from this machine.">
+    {#snippet control()}
+      <Button onclick={clearLog}>Clear log</Button>
     {/snippet}
   </Field>
 </Card>
@@ -197,11 +200,5 @@
 <style>
   .problem {
     margin: 0 0 11px;
-  }
-
-  .log {
-    display: flex;
-    align-items: center;
-    gap: 14px;
   }
 </style>

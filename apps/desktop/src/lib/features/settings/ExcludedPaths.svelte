@@ -2,6 +2,7 @@
   import { api } from '../../api';
   import { describeError } from '../../api/client';
   import { MAX_EXCLUDED } from '../../api/types';
+  import Button from '../../components/ui/Button.svelte';
   import Icon from '../../components/ui/Icon.svelte';
   import { shownPath, visibleText } from '../overview/display';
   import { cleanExcluded, settings } from '../../state/settings.svelte';
@@ -70,9 +71,9 @@
       </li>
     {/each}
     <li>
-      <button type="button" class="add" disabled={picking || full} onclick={add}>
+      <Button disabled={picking || full} onclick={add}>
         {full ? `At most ${MAX_EXCLUDED} folders` : 'Add folder…'}
-      </button>
+      </Button>
     </li>
   </ul>
 </div>
@@ -103,6 +104,7 @@
   .chips {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
     list-style: none;
     margin: 0;
@@ -142,23 +144,5 @@
   .remove:hover {
     background: var(--hover);
     color: var(--text);
-  }
-
-  .add {
-    padding: 4px 10px;
-    border: 1px dashed var(--line);
-    border-radius: 6px;
-    font: inherit;
-    font-size: 12px;
-    color: var(--muted);
-  }
-
-  .add:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .add:disabled {
-    opacity: 0.6;
   }
 </style>

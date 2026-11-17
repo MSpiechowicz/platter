@@ -66,7 +66,7 @@ describe('SettingsStore', () => {
     expect(new SettingsStore(storage).updateCheck).toBe('daily');
   });
 
-  it('keeps two package versions, asks for administrator rights and installs no update by itself by default', () => {
+  it('keeps two package versions, asks for administrator rights and installs updates by itself by default', () => {
     const storage = new MemoryStorage();
 
     storage.setItem(SETTINGS_KEY, JSON.stringify({ units: 'GiB' }));
@@ -74,7 +74,7 @@ describe('SettingsStore', () => {
 
     expect(store.keepPackageVersions).toBe(2);
     expect(store.askForAdmin).toBe(true);
-    expect(store.autoInstallUpdates).toBe(false);
+    expect(store.autoInstallUpdates).toBe(true);
   });
 
   it('keeps 1 to 3 package versions only, and restores the cleanup and update choices', () => {
@@ -87,13 +87,13 @@ describe('SettingsStore', () => {
     const first = new SettingsStore(storage);
     first.set('keepPackageVersions', 3);
     first.set('askForAdmin', false);
-    first.set('autoInstallUpdates', true);
+    first.set('autoInstallUpdates', false);
     const second = new SettingsStore(storage);
 
     expect([second.keepPackageVersions, second.askForAdmin, second.autoInstallUpdates]).toEqual([
       3,
       false,
-      true,
+      false,
     ]);
   });
 
