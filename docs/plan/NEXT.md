@@ -96,7 +96,7 @@ These come from the owner's feedback during design and the first build. Breaking
 4. **Current:** Advisor A5 (free questions about the scan; one model, the 4B). Done 2026-11-16, backend and frontend: A5.0, A5.1, A5.3, A5.4, A5.5, A5.6 (outcome: A5.7), A5.7, A5.8, A5.9, A5.10, A5.11. Open: the final correctness and security review of the facts-only flow (skipped by the owner before committing) and the owner's check in the app window.
 5. ~~Advisor on the graphics card: G1–G4.~~ Done 2026-11-17. G4 reviewed (correctness and security, with re-checks) and repaired the same day. Open: the owner's check in the app window.
 6. **Current:** History: H1–H2. Built 2026-11-17, reviewed (correctness and security, two passes). Open: the owner's check in the app window and the decisions listed under H2.
-7. **Current:** Distribution and updates: D1–D4. D1, D2 and D3 built 2026-11-17. D4 (the first CI and release run) in progress.
+7. ~~Distribution and updates: D1–D4.~~ Done 2026-11-17. `v0.1.0` is a draft release on GitHub, waiting for the owner to try it and publish it (the app's update check sees a release only once it is published).
 8. Settings completion: S1.
 9. Windows and macOS: P1–P2.
 
@@ -391,6 +391,7 @@ Target: ![Update card](screens/target-sidebar-update.png)
 #### D4. First CI run
 
 - Push a branch and fix whatever the three CI jobs report. The workflow has only been checked with `actionlint`.
+- **Status (2026-11-17):** done. CI on `main` is green (Rust, Web, cargo-deny) after three fixes: Ubuntu 22.04 has no `glslc` package (glslc and the Vulkan headers now come from LunarG's SDK 1.4.363.1, pinned by version and SHA-256, in `scripts/ci/install-linux-deps.sh`); the runner's ext4 gave a re-created folder its old inode number, so the cleanup guard took it for the planned one (the identity now includes the creation time, `ExpectedEntry::birth`); the test that showed it re-created the folder inside ext4's coarse timestamp tick (it now waits 50 ms). The release run for `v0.1.0` passed (build, sign, draft). Checked on the downloaded draft: every file matches `SHA256SUMS`, the AppImage's signature verifies with `minisign-verify` against the key in the app and a cut file fails, `latest.json` names the signed AppImage for both targets with size and the tag's notes, the deb depends on `libvulkan1`, the binary needs glibc 2.34 and carries the real public key. Not checked: the AppImage's contents (no `unsquashfs` here), and the packages started on another distribution.
 
 ---
 
