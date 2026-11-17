@@ -9,6 +9,9 @@ pub enum ScanWarning {
     /// The list of mounted filesystems could not be read, so the source could not tell which mounts it
     /// may enter and left every mount point below the root out of the scan.
     MountTableUnavailable,
+    /// Some folders the user leaves out of scans could not be found or read in time (moved, removed, on a disk
+    /// that does not answer), so they were not left out of this scan.
+    ExcludedUnresolved,
 }
 
 impl ScanWarning {
@@ -18,6 +21,9 @@ impl ScanWarning {
             ScanWarning::MountTableUnavailable => {
                 "The list of mounted disks could not be read, so other disks mounted inside this folder were \
                  left out."
+            }
+            ScanWarning::ExcludedUnresolved => {
+                "Some folders you leave out of scans could not be found, so they were scanned this time."
             }
         }
     }

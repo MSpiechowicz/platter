@@ -7,7 +7,7 @@ import {
   type MockLabel,
   type UserRuleInput,
 } from './mock-suggestions';
-import type { MockNode, MockTree } from './mock-tree';
+import { childrenOf, type MockNode, type MockTree } from './mock-tree';
 import type {
   CleanupActionKind,
   CleanupEvent,
@@ -69,6 +69,22 @@ const NESTED_REASON = 'inside another item of the plan';
 const SYMLINK_REASON = 'it is a link';
 const MOUNT_REASON = 'it is, or lies below, another mounted filesystem';
 const UNREADABLE_REASON = 'part of it could not be read';
+const EXCLUDED_REASON = 'it holds a folder you left out of scans';
+
+/** `Tree::holds_excluded`: a folder the user left out lies somewhere inside `node`. */
+function holdsExcluded(tree: MockTree, node: MockNode): boolean {
+  const pending = [...childrenOf(tree, node)];
+
+  for (let next = pending.pop(); next; next = pending.pop()) {
+    if (next.kind === 'mount' && next.skipped === 'excluded') {
+      return true;
+    }
+
+    pending.push(...childrenOf(tree, next));
+  }
+
+  return false;
+}
 
 /** The rule id and title of what the user marked by hand (`MARKED` in `crates/platter-cleanup/src/plan.rs`). */
 const MARKED_RULE = 'marked';
@@ -99,6 +115,14 @@ const DEFAULT_OPTIONS: CleanupOptions = { keepPackageVersions: 2, askForAdmin: t
 
 /** The options as `plan_cleanup` checks them: a missing value takes the default, a wrong one is `invalid`. */
 function checkOptions(options: Partial<CleanupOptions> | undefined): CleanupOptions {
+  const unknown = Object.keys(options ?? {}).find(
+    (key) => key !== 'keepPackageVersions' && key !== 'askForAdmin',
+  );
+
+  if (unknown !== undefined) {
+    return fail('invalid', `${unknown} is not a cleanup option`);
+  }
+
   const keep = options?.keepPackageVersions ?? DEFAULT_OPTIONS.keepPackageVersions;
   const admin = options?.askForAdmin ?? DEFAULT_OPTIONS.askForAdmin;
 
@@ -372,6 +396,8 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
           refused.push({ ruleId: id, path, reason: KEPT_REASON });
         } else if (!action) {
           refused.push({ ruleId: id, path, reason: NOT_CLEANED_REASON });
+        } else if (node.kind === 'dir' && holdsExcluded(tree, node)) {
+          refused.push({ ruleId: id, path, reason: EXCLUDED_REASON });
         } else {
           targets.push({ path, allocated: node.allocated });
         }
@@ -381,7 +407,8 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
         continue;
       }
 
-      // With administrator rights off, a tool that needs the password is left out at plan time.
+      // With administrator rights off, a tool that needs the password is left out at plan time. The backend lists
+      // every match of the rule here, before its guard runs. The mock lists the ones its own checks let through.
       if (action.kind === 'runTool' && action.tool.needsElevation && !options.askForAdmin) {
         leftOut.push(
           ...targets.map((target) => ({ ruleId: id, path: target.path, reason: NEEDS_ADMIN_OFF })),
@@ -553,7 +580,11 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
       return MOUNT_REASON;
     }
 
-    return node.unreadable ? UNREADABLE_REASON : undefined;
+    if (node.unreadable) {
+      return UNREADABLE_REASON;
+    }
+
+    return node.kind === 'dir' && holdsExcluded(tree, node) ? EXCLUDED_REASON : undefined;
   };
 
   /** What `plan_marked` does with marked node ids, as a description and as the group to play out. */

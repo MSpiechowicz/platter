@@ -1,11 +1,13 @@
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use platter_core::dto::{MAX_EXCLUDED, MAX_EXCLUDED_PATH_BYTES, ScanEvent, ScanId, ScanOptions};
 use platter_core::{CancelToken, DirSource, ScanConfig, scan};
+use platter_platform::Platform;
 use platter_platform::root::ResolvedRoot;
 use tauri::State;
 use tauri::ipc::Channel;
@@ -94,9 +96,15 @@ pub async fn start_pinned(
     let root = resolved.path;
 
     let excluded = options.excluded;
-    let excluded = tauri::async_runtime::spawn_blocking(move || excluded_identities(&excluded)).await?;
+    let platform = Arc::clone(&state.platform);
+    let (excluded, excluded_unresolved) = tauri::async_runtime::spawn_blocking({
+        let root = root.clone();
+        move || excluded_identities(&platform, &root, &excluded)
+    })
+    .await?;
     let config = ScanConfig {
         excluded,
+        excluded_unresolved,
         ..scan_config(options.one_file_system, resolved.identity)
     };
 
@@ -180,19 +188,87 @@ pub fn check_excluded(excluded: &[String]) -> CommandResult<()> {
     Ok(())
 }
 
-/// The `(dev, ino)` of every folder to leave out that exists now. One that was removed, is not a folder
-/// or cannot be read is skipped: a folder that is gone must not stop a scan. Blocks like
-/// [`resolve_root`], so call it off the async worker.
-pub fn excluded_identities(excluded: &[String]) -> Vec<(u64, u64)> {
-    let mut identities: Vec<(u64, u64)> = excluded
+/// How long resolving every folder to leave out may take. The scan starts after it with what was resolved.
+pub const EXCLUDED_BUDGET: Duration = Duration::from_secs(3);
+
+/// The `(dev, ino)` of every folder to leave out that exists now, and whether some could not be resolved.
+///
+/// Each path is looked at on a thread of its own and all of them together get [`EXCLUDED_BUDGET`]: a path on a
+/// network disk that does not answer must not keep a scan from starting. Such a look is left to finish on its
+/// own. The look walks the path component by component by descriptor (the entry probe of cleanup), so it does
+/// not trigger an automount at the folder itself. Only a path with a link on the way is resolved through the link instead. A folder
+/// that was removed, is not a folder, cannot be read or did not answer in time is not left out, and the
+/// second value says so (the scan carries [`ScanWarning::ExcludedUnresolved`](platter_core::ScanWarning)).
+pub fn excluded_identities(
+    platform: &Arc<Platform>,
+    root: &Path,
+    excluded: &[String],
+) -> (Vec<(u64, u64)>, bool) {
+    let (sender, receiver) = mpsc::channel();
+
+    // A path whose look could not even start is unresolved at once.
+    let mut looking = 0;
+    for (index, path) in excluded.iter().enumerate() {
+        let (sender, platform, path) = (sender.clone(), Arc::clone(platform), path.clone());
+        let spawned = thread::Builder::new()
+            .name("platter-exclude".to_owned())
+            .spawn(move || {
+                let _ = sender.send((index, identity_of(&platform, &path)));
+            });
+        looking += usize::from(spawned.is_ok());
+    }
+    drop(sender);
+
+    let deadline = Instant::now() + EXCLUDED_BUDGET;
+    let mut identities = Vec::with_capacity(excluded.len());
+    let mut resolved = vec![false; excluded.len()];
+    let mut answered = 0;
+    while answered < looking {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match receiver.recv_timeout(left) {
+            Ok((index, found)) => {
+                answered += 1;
+                resolved[index] = found.is_some();
+                identities.extend(found);
+            }
+            Err(_) => break,
+        }
+    }
+    // Only a folder inside this scan matters: one elsewhere (an unplugged disk) would not have been scanned anyway.
+    let unresolved = excluded
         .iter()
-        .filter_map(|path| platter_platform::root::resolve_root(Path::new(path)).ok())
-        .filter_map(|resolved| resolved.identity)
-        .collect();
+        .zip(&resolved)
+        .any(|(path, &done)| !done && Path::new(path).starts_with(root));
 
     identities.sort_unstable();
     identities.dedup();
-    identities
+    (identities, unresolved)
+}
+
+/// The identity of one folder to leave out, or `None` when it cannot be used.
+fn identity_of(platform: &Platform, path: &str) -> Option<(u64, u64)> {
+    #[cfg(target_os = "linux")]
+    {
+        use platter_core::{EntryKind, EntryProbe};
+
+        match platform.entry_probe.probe(path.as_bytes()) {
+            Ok(found) => match found.last()?.meta {
+                meta if meta.kind == EntryKind::Dir => return Some((meta.dev, meta.ino)),
+                // The path itself is a link: resolved through it below.
+                meta if meta.kind == EntryKind::Symlink => {}
+                _ => return None,
+            },
+            // A link on the way (`/home` on some systems): resolved through it below.
+            Err(error) if error.kind() == io::ErrorKind::NotADirectory => {}
+            Err(_) => return None,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = platform;
+
+    platter_platform::root::resolve_root(Path::new(path))
+        .ok()?
+        .identity
 }
 
 /// Runs a scan to completion and reports it: progress events while it walks, then one terminal event.

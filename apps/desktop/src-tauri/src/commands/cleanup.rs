@@ -526,7 +526,7 @@ impl From<&CleanupOptions> for CleanupOptionsDto {
 /// versions, ask for administrator rights). Anything else than 1, 2 or 3 for the versions, or a value that
 /// is not true or false for the question, is `invalid`: the values are checked here, not trusted.
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct CleanupOptionsArg {
     keep_package_versions: Option<serde_json::Value>,
     ask_for_admin: Option<serde_json::Value>,

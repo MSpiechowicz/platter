@@ -184,6 +184,69 @@ fn the_model_is_not_asked_about_an_excluded_folder() {
 }
 
 #[test]
+fn the_model_is_not_asked_about_a_folder_holding_an_excluded_one_but_about_what_is_beside_it() {
+    let mut fs = FakeFs::new();
+    fs.file("/home/u/media/keep/film.mkv", 900);
+    fs.file("/home/u/media/old/a.bin", 700);
+    let limits = CandidateLimits {
+        min_bytes: 100,
+        max: 50,
+    };
+    let candidates = |tree: &Tree| -> Vec<String> {
+        label_candidates(tree, &env(), &RuleSet::builtin(), limits)
+            .into_iter()
+            .map(|node| String::from_utf8_lossy(&tree.path_bytes(node)).into_owned())
+            .collect()
+    };
+
+    let control = scan_excluding(&fs, &[]);
+    let tree = scan_excluding(&fs, &["/home/u/media/keep"]);
+
+    assert!(
+        candidates(&control)
+            .iter()
+            .any(|path| path == "/home/u" || path == "/home/u/media")
+    );
+    let found = candidates(&tree);
+    assert!(
+        !found
+            .iter()
+            .any(|path| path == "/home/u" || path == "/home/u/media" || path == "/home"),
+        "{found:?}"
+    );
+    assert!(found.iter().any(|path| path == "/home/u/media/old"), "{found:?}");
+}
+
+#[test]
+fn a_tool_target_holding_an_excluded_folder_is_refused_too() {
+    let mut fs = FakeFs::new();
+    aged(&mut fs, "/var/log/journal/abc/system.journal", 800, 30);
+    aged(&mut fs, "/var/log/journal/def/user.journal", 200, 30);
+    let control = scan_excluding(&fs, &[]);
+    let tree = scan_excluding(&fs, &["/var/log/journal/abc"]);
+    let plan_of = |tree: &Tree| {
+        plan_cleanup(
+            tree,
+            &env(),
+            &RuleSet::builtin(),
+            &["journal"],
+            &fs,
+            &CleanupOptions::default(),
+        )
+    };
+
+    assert_eq!(
+        plan_of(&control).groups().len(),
+        1,
+        "the journal is cleaned without an exclusion"
+    );
+    let plan = plan_of(&tree);
+    assert!(plan.groups().is_empty(), "{plan:#?}");
+    assert_eq!(plan.refused.len(), 1);
+    assert_eq!(plan.refused[0].reason, Refusal::Excluded);
+}
+
+#[test]
 fn a_target_holding_an_excluded_folder_is_refused_and_a_sibling_target_is_not() {
     let mut fs = laptop();
     aged(&mut fs, "/home/u/code/rs/target/release/y", 400, 90);

@@ -681,6 +681,9 @@ fn the_options_of_a_plan_command_are_checked_and_default_when_missing() {
         let refused = resolve(bad.clone()).expect_err(&bad.to_string());
         assert_eq!(refused.code(), ApiErrorCode::Invalid, "{bad}");
     }
+    // An option this version does not know is refused when the argument is read, not ignored.
+    let unknown = serde_json::from_value::<CleanupOptionsArg>(serde_json::json!({ "skipGuard": true }));
+    assert!(unknown.is_err());
 }
 
 #[test]

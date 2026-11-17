@@ -211,3 +211,19 @@ fn a_folder_holds_an_excluded_one_only_when_it_lies_inside_it() {
     );
     assert!(!tree.holds_excluded(find(&tree, "home/me/notes.txt")));
 }
+
+#[test]
+fn folders_that_could_not_be_left_out_are_a_warning_of_the_finished_scan() {
+    let fs = project();
+    let config = ScanConfig {
+        now: Some(NOW),
+        excluded_unresolved: true,
+        ..ScanConfig::default()
+    };
+
+    let tree =
+        scan(&fs, Path::new("/home/me"), &config, &CancelToken::new(), &|_| {}).expect("the fake scans");
+
+    assert_eq!(tree.warnings(), [crate::model::ScanWarning::ExcludedUnresolved]);
+    assert_eq!(tree.totals().errors, 1);
+}

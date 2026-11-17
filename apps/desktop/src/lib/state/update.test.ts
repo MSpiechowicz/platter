@@ -464,6 +464,32 @@ describe('UpdaterStore: installing automatically', () => {
     expect(store.info?.next).toBe(OFFER.version);
   });
 
+  it('starts one install only when the user clicks Install during an automatic one', async () => {
+    const { store, api, auto } = setup();
+    let finish: () => void = () => {};
+    api.installUpdate.mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)));
+    auto.value = true;
+
+    await store.check();
+    await store.install();
+    finish();
+    await vi.waitFor(() => expect(store.phase).toBe('ready'));
+
+    expect(api.installUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('installs nothing until the next check when the setting is turned on later', async () => {
+    const { store, api, auto } = setup();
+
+    await store.check();
+    auto.value = true;
+
+    expect(api.installUpdate).not.toHaveBeenCalled();
+
+    await store.check();
+    await vi.waitFor(() => expect(api.installUpdate).toHaveBeenCalledTimes(1));
+  });
+
   it('does not install after a check that failed', async () => {
     const { store, api, auto } = setup();
     auto.value = true;

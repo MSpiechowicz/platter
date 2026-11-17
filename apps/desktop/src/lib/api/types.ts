@@ -54,7 +54,7 @@ export const MAX_EXCLUDED = 64;
 export const MAX_EXCLUDED_PATH_BYTES = 4096;
 
 /** Things the scan could not do properly; left out of the event when there are none. */
-export type ScanWarning = 'mountTableUnavailable';
+export type ScanWarning = 'mountTableUnavailable' | 'excludedUnresolved';
 
 export type ScanEvent =
   | { type: 'progress'; files: number; dirs: number; bytes: number; errors: number; currentPath: string }

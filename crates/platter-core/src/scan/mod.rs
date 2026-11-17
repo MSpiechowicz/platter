@@ -29,7 +29,7 @@ pub use progress::ProgressFn;
 
 use crate::budget::{BudgetLimits, EntryBudget, LimitHit};
 use crate::error::{ScanError, ScanLimit};
-use crate::model::{EntryKind, Tree};
+use crate::model::{EntryKind, ScanWarning, Tree};
 use crate::ports::{DirSource, SourceOptions};
 use assemble::{Assembly, assemble, root_name_len};
 use progress::{Delta, PathChain, Reporter};
@@ -72,6 +72,9 @@ pub struct ScanConfig {
     /// not entered and becomes a `mount` node of size 0 with [`SkipReason::Excluded`](crate::model::SkipReason::Excluded).
     /// The identity of the scan root is ignored, the root is always scanned.
     pub excluded: Vec<(u64, u64)>,
+    /// Some folders the user wants left out could not be resolved: the finished scan carries
+    /// [`ScanWarning::ExcludedUnresolved`] so the user learns they were scanned after all.
+    pub excluded_unresolved: bool,
 }
 
 /// Default for [`ScanConfig::max_entries`]: 30 million entries, several gigabytes at the top end. An app
@@ -94,6 +97,7 @@ impl Default for ScanConfig {
             max_name_bytes: None,
             max_memory_bytes: Some(DEFAULT_MAX_MEMORY_BYTES),
             excluded: Vec::new(),
+            excluded_unresolved: false,
         }
     }
 }
@@ -139,7 +143,10 @@ pub fn scan<S: DirSource>(
     let reporter = Reporter::new(on_progress, root_text.clone(), config.progress_interval);
 
     // A warning is a problem the source ran into while opening the root; each counts as an error too.
-    let warnings = root_info.warnings;
+    let mut warnings = root_info.warnings;
+    if config.excluded_unresolved {
+        warnings.push(ScanWarning::ExcludedUnresolved);
+    }
     reporter.add(Delta {
         errors: warnings.len() as u64,
         ..Delta::default()

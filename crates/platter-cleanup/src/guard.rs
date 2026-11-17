@@ -175,8 +175,9 @@ impl<P: EntryProbe> Guard<'_, P> {
             return Err(Refusal::Unreadable);
         }
         // A folder the user left out was not read, so it is not in the size this target was judged by.
-        // Removing the target would remove it too.
-        if is_dir && !by_tool && tree.holds_excluded(node) {
+        // Removing the target would remove it too, and so would a tool that cleans it (a journal vacuum, a
+        // package cache clean): the user said never, so a tool target is refused as well.
+        if is_dir && tree.holds_excluded(node) {
             return Err(Refusal::Excluded);
         }
 

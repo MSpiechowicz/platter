@@ -69,6 +69,8 @@ pub fn label_candidates(
         let chosen = node != tree.root()
             && !explainer.holds(node)
             && !tree.has_unreadable(node)
+            // A folder holding one the user left out is refused at plan time: go inside it instead.
+            && !tree.holds_excluded(node)
             && protected.refuses(&tree.path_bytes(node)).is_none();
 
         if chosen {

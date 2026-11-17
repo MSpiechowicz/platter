@@ -3,6 +3,7 @@
   import { describeError } from '../../api/client';
   import { MAX_EXCLUDED } from '../../api/types';
   import Icon from '../../components/ui/Icon.svelte';
+  import { shownPath, visibleText } from '../overview/display';
   import { cleanExcluded, settings } from '../../state/settings.svelte';
   import { ui } from '../../state/ui.svelte';
 
@@ -11,7 +12,10 @@
   const full = $derived(settings.excludedPaths.length >= MAX_EXCLUDED);
 
   function saved(): void {
-    ui.toast('Saved', 'The next scan leaves these folders out.');
+    ui.toast(
+      'Saved',
+      'A new scan from the Scan page leaves these folders out. Rescan keeps the list of its scan.',
+    );
   }
 
   async function add(): Promise<void> {
@@ -49,16 +53,16 @@
 <div class="excluded">
   <div class="head">
     <span class="label">Excluded paths</span>
-    <span class="hint">Never read, counted or cleaned. Applies from the next scan.</span>
+    <span class="hint">Never read, counted or cleaned. Applies to new scans.</span>
   </div>
   <ul class="chips" aria-label="Folders left out of scans">
     {#each settings.excludedPaths as path (path)}
       <li class="chip">
-        <span class="path" title={path}>{path}</span>
+        <span class="path" title={visibleText(path)}>{shownPath(path)}</span>
         <button
           type="button"
           class="remove"
-          aria-label="Stop leaving out {path}"
+          aria-label="Stop leaving out {visibleText(path)}"
           onclick={() => remove(path)}
         >
           <Icon name="close" size={12} />

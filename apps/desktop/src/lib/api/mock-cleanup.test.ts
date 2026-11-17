@@ -7,10 +7,10 @@ import type { CleanupEvent, CleanupPlanDto, ScanEvent, ScanId } from './types';
 const NOW = 1_750_000_000;
 const FAST = { durationMs: 0, now: () => NOW };
 
-function scan(api: Api, root = '/'): Promise<ScanId> {
+function scan(api: Api, root = '/', excluded: string[] = []): Promise<ScanId> {
   return new Promise((resolve, reject) => {
     api
-      .startScan({ root, oneFileSystem: true }, (event: ScanEvent) => {
+      .startScan({ root, oneFileSystem: true, excluded }, (event: ScanEvent) => {
         if (event.type === 'finished') {
           resolve(event.scanId);
         } else if (event.type === 'failed' || event.type === 'cancelled') {
@@ -468,6 +468,21 @@ async function nodeAt(api: Api, scan: ScanId, path: string): Promise<number> {
 }
 
 describe('planMarkedCleanup', () => {
+  it('refuses a folder that holds one left out of scans, as the backend guard does', async () => {
+    const api = createMockApi(FAST);
+    const id = await scan(api, '/', ['/home/demo/.cache/pip']);
+    const cache = await nodeAt(api, id, '/home/demo/.cache');
+    const downloads = await nodeAt(api, id, '/home/demo/Downloads');
+    const plan = await api.planMarkedCleanup(id, [cache, downloads]);
+
+    expect(plan.refused).toContainEqual({
+      ruleId: 'marked',
+      path: '/home/demo/.cache',
+      reason: 'it holds a folder you left out of scans',
+    });
+    expect(plan.groups[0]?.samplePaths).toEqual(['/home/demo/Downloads']);
+  });
+
   it('plans one review group that moves the marked items to the trash', async () => {
     const api = createMockApi(FAST);
     const id = await scan(api);

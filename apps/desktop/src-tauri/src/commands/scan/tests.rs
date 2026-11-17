@@ -368,9 +368,39 @@ fn the_same_folder_named_twice_is_left_out_once() {
     let dir = sample_dir();
     let photos = dir.path().join("photos").to_string_lossy().into_owned();
 
-    let identities = excluded_identities(&[photos.clone(), photos]);
+    let platform = Arc::new(platter_platform::Platform::current());
+    let (identities, unresolved) = excluded_identities(&platform, dir.path(), &[photos.clone(), photos]);
 
     assert_eq!(identities.len(), 1);
+    assert!(!unresolved);
+}
+
+#[test]
+fn a_folder_to_leave_out_that_is_gone_is_reported_and_a_link_to_one_is_followed() {
+    let dir = sample_dir();
+    let photos = dir.path().join("photos");
+    let link = dir.path().join("pictures");
+    std::os::unix::fs::symlink(&photos, &link).unwrap();
+    let platform = Arc::new(platter_platform::Platform::current());
+    let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+
+    let (found, unresolved) = excluded_identities(&platform, dir.path(), &[text(&link)]);
+    assert_eq!(found.len(), 1, "a link on the way is resolved through it");
+    assert!(!unresolved);
+
+    let (found, unresolved) = excluded_identities(
+        &platform,
+        dir.path(),
+        &[text(&photos), text(&dir.path().join("gone"))],
+    );
+    assert_eq!(found.len(), 1);
+    assert!(unresolved, "a folder that is gone is reported");
+
+    let (_, unresolved) = excluded_identities(&platform, dir.path(), &["/no/such/usb/disk".to_owned()]);
+    assert!(
+        !unresolved,
+        "a folder outside the scan would not have been scanned anyway"
+    );
 }
 
 #[test]
