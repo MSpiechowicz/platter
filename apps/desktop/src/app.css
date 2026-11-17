@@ -41,7 +41,7 @@
   --cat-other: var(--slate);
 
   --r: 10px;
-  --font: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --font: 'Inter Variable', 'Inter', 'Segoe UI', system-ui, sans-serif;
   --mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 

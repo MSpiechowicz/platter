@@ -37,9 +37,15 @@ export async function bootstrap(): Promise<void> {
     hooks.view === 'scanning' ||
     hooks.view === 'explorer' ||
     hooks.view === 'cleanup' ||
+    hooks.view === 'history' ||
     (hooks.view === 'advisor' && advisorScan())
   ) {
     const root = hooks.root ?? scan.volumes[0]?.mountPoint ?? '/';
+
+    // History waits for a scan like the other pages, and a finished scan leaves it where it is.
+    if (hooks.view === 'history') {
+      ui.go('history');
+    }
 
     // The Cleanup view's Scan step is on screen while the scan runs, so its page is chosen before it starts.
     if (hooks.view === 'scanning' && hooks.cleanup) {

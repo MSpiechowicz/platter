@@ -13,6 +13,8 @@ import type {
   EntryMatchDto,
   FolderMatchDto,
   GpuProblemChoice,
+  HistoryOverviewDto,
+  HistoryRestoreDto,
   LodNode,
   NodeDto,
   NodeId,
@@ -104,6 +106,19 @@ export interface Api {
   cancelCleanup(cleanup: CleanupId): Promise<void>;
   /** Puts back what a finished cleanup moved to the trash, once; `notFound` the second time. */
   undoCleanup(cleanup: CleanupId): Promise<UndoDto[]>;
+
+  /**
+   * The history of the disk's used space and of the cleanups, for the last `days` days (1 to 366, `invalid`
+   * otherwise). The backend picks the volume. A history file that cannot be used is not an error: the answer has a
+   * `problem` and nothing is recorded.
+   */
+  historyOverview(days: number): Promise<HistoryOverviewDto>;
+  /**
+   * Puts back, once, what one cleanup of the history moved to the trash. `notFound`: unknown cleanup. `invalid`
+   * while a cleanup, another restore or an undo runs, and while the history file cannot be used. Items that could
+   * not be put back come with an `error` and stay for another try.
+   */
+  restoreHistoryCleanup(cleanup: number): Promise<HistoryRestoreDto>;
 
   /** The local model's state, options and memory use. */
   advisorStatus(): Promise<AdvisorStatusDto>;

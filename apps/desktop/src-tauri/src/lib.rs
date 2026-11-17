@@ -66,6 +66,8 @@ pub fn run() {
             #[cfg(not(target_os = "linux"))]
             let confirm = Arc::new(commands::cleanup::NativeConfirm { app: handle });
             app.state::<AppState>().set_confirm(confirm);
+            // The day's usage of the scanned disks: now, and every hour while the app is open.
+            commands::history::spawn_sampler(Arc::clone(&app.state::<AppState>().history));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -105,6 +107,8 @@ pub fn run() {
             commands::cleanup::start_cleanup,
             commands::cleanup::cancel_cleanup,
             commands::cleanup::undo_cleanup,
+            commands::history::history_overview,
+            commands::history::restore_history_cleanup,
             commands::system::open_in_file_manager,
             commands::system::pick_folder,
             commands::system::open_external,

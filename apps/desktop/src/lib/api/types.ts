@@ -216,6 +216,62 @@ export interface UndoDto {
   error?: string;
 }
 
+/** What became of the items a cleanup moved to the trash. `notChecked`: too many items to look at, so Restore is still offered. */
+export type HistoryStatus = 'inTrash' | 'restored' | 'noLongerInTrash' | 'permanent' | 'notChecked';
+
+/** `command` is set for `tool` only, as it was run: "paccache -rk2". */
+export interface HistoryMethodDto {
+  kind: 'trash' | 'deleted' | 'emptiedTrash' | 'tool';
+  command?: string;
+}
+
+export interface HistoryCleanupDto {
+  id: number;
+  /** Unix seconds. */
+  at: number;
+  /** The local day, `YYYY-MM-DD`. */
+  day: string;
+  /** What was cleaned: suggestion or rule titles, or folder names. */
+  what: string[];
+  freed: number;
+  methods: HistoryMethodDto[];
+  status: HistoryStatus;
+  restorable: number;
+}
+
+export interface HistorySampleDto {
+  /** The local day, `YYYY-MM-DD`. */
+  day: string;
+  used: number;
+  total: number;
+}
+
+export interface HistoryOverviewDto {
+  volume?: { id: string; label: string };
+  days: number;
+  today: string;
+  /** Oldest first. `without` has one value for each sample: the used space had nothing been cleaned. */
+  samples: HistorySampleDto[];
+  without: number[];
+  /** In the window, newest first. */
+  cleanups: HistoryCleanupDto[];
+  freed: number;
+  cleanupCount: number;
+  restorable: number;
+  /** Left out when there are too few days, or the disk is not growing. */
+  growthPerDay?: number;
+  daysUntilFull?: number;
+  /** Fewer than 7 samples, or samples that span fewer than 7 days. */
+  thin: boolean;
+  /** Why nothing is recorded (the history file cannot be used). */
+  problem?: string;
+}
+
+export interface HistoryRestoreDto {
+  restored: number;
+  items: UndoDto[];
+}
+
 /** `unavailable`: the runtime is not built into this app (Windows, macOS for now). */
 export type ModelState = 'unavailable' | 'notDownloaded' | 'downloading' | 'onDisk' | 'loading' | 'loaded';
 

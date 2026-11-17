@@ -50,6 +50,19 @@ const done = (store: CleanupStore) => (): void => {
   expect(store.phase.kind).toBe('done');
 };
 
+describe('known suggestions', () => {
+  it('are known once they are loaded, and not known for a new scan until its own arrive', async () => {
+    const { store, scanId } = await setup();
+
+    expect(store.suggestionsKnown).toBe(true);
+
+    store.adopt(scanId + 1);
+
+    expect(store.suggestionsKnown).toBe(false);
+    expect(store.suggestions).toEqual([]);
+  });
+});
+
 describe('selection', () => {
   it('ticks the safe rows when the suggestions arrive, and no review or kept row', async () => {
     const { store, data } = await setup();
@@ -491,6 +504,39 @@ describe('the run', () => {
       expect(store.phase.result.undo?.error).toBe(`undo says ${code}`);
       expect(store.phase.result.undoable).toBe(undoable);
     }
+  });
+
+  it('a declined Undo dialog ("cancelled") says nothing and keeps undo offered, also after an earlier partial undo', async () => {
+    const undoCleanup = vi
+      .fn<Api['undoCleanup']>()
+      .mockResolvedValueOnce([{ path: '/home/demo/b', restored: false, error: 'something is there already' }])
+      .mockRejectedValueOnce(new ApiRequestError('cancelled', 'declined'));
+    const { store } = await setup((api) => ({ ...api, undoCleanup }));
+
+    store.select('none');
+    store.toggle(TRASH_RULE);
+    await store.cleanSelected();
+    await store.confirmReview();
+    await vi.waitFor(done(store));
+    await store.undo();
+
+    if (store.phase.kind !== 'done') {
+      throw new Error('expected a result');
+    }
+
+    const before = store.phase.result.undo;
+
+    await store.undo();
+
+    if (store.phase.kind !== 'done') {
+      throw new Error('expected a result');
+    }
+
+    expect(undoCleanup).toHaveBeenCalledTimes(2);
+    expect(store.phase.result.undo).toEqual(before);
+    expect(store.phase.result.undo?.error).toBeUndefined();
+    expect(store.phase.result.undoable).toBe(true);
+    expect(store.actions).toEqual(['undo', 'rescan']);
   });
 
   it('does not offer undo for a cleanup that moved nothing to the trash', async () => {

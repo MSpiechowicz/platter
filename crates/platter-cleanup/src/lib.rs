@@ -29,7 +29,9 @@ mod protect;
 
 pub use action::{CleanupAction, Tool, action_for};
 pub use candidates::{CandidateLimits, label_candidates};
-pub use execute::{CleanupEvent, CleanupReport, Disk, TargetOutcome, TargetResult, execute, undo};
+pub use execute::{
+    CleanupEvent, CleanupReport, Disk, TargetOutcome, TargetResult, execute, restore_one, undo,
+};
 pub use guard::{Refusal, VerifiedTarget};
 pub use kept::{KEPT_LEARNING_BUDGET, KeptFolders, with_real_keeps};
 pub use plan::{

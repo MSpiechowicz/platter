@@ -28,7 +28,7 @@ const CSS: Readonly<Record<TextFont, { weight: number; px: number; variable: '--
 };
 const FALLBACK_FAMILY: Readonly<Record<'--mono' | '--font', string>> = {
   '--mono': "'JetBrains Mono', 'Fira Code', ui-monospace, monospace",
-  '--font': "'Inter', 'Segoe UI', system-ui, sans-serif",
+  '--font': "'Inter Variable', 'Inter', 'Segoe UI', system-ui, sans-serif",
 };
 const CACHE_LIMIT = 20_000;
 

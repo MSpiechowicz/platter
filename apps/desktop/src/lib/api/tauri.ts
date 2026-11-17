@@ -14,6 +14,8 @@ import type {
   EntryMatchDto,
   FolderMatchDto,
   GpuProblemChoice,
+  HistoryOverviewDto,
+  HistoryRestoreDto,
   LodNode,
   NodeDto,
   NodeId,
@@ -118,6 +120,11 @@ export function createTauriApi(): Api {
     cancelCleanup: (cleanup: CleanupId) => callVoid('cancel_cleanup', { cleanup }),
 
     undoCleanup: (cleanup: CleanupId) => call<UndoDto[]>('undo_cleanup', { cleanup }),
+
+    historyOverview: (days: number) => call<HistoryOverviewDto>('history_overview', { days }),
+
+    restoreHistoryCleanup: (cleanup: number) =>
+      call<HistoryRestoreDto>('restore_history_cleanup', { cleanup }),
 
     advisorStatus: () => call<AdvisorStatusDto>('advisor_status'),
 

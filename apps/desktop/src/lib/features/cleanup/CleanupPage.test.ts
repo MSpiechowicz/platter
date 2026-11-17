@@ -59,7 +59,7 @@ describe('the Cleanup view', () => {
       .getAllByRole('button')
       .map((button) => button.textContent?.trim());
 
-    expect(labels).toEqual(['Scan', 'Overview', 'Explorer', 'Cleanup', 'Advisor', 'Settings']);
+    expect(labels).toEqual(['Scan', 'Overview', 'Explorer', 'Cleanup', 'Advisor', 'History', 'Settings']);
     expect(nav('Cleanup').getAttribute('aria-disabled')).toBe('true');
     expect(nav('Cleanup').getAttribute('title')).toBe('Scan a disk or folder first');
 

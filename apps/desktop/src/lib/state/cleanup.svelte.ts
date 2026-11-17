@@ -119,6 +119,8 @@ export class CleanupStore {
   /** The scan the suggestions belong to. */
   scanId = $state<ScanId | undefined>(undefined);
   suggestions = $state<SuggestionDto[]>([]);
+  /** The suggestions of `scanId` have arrived. Until then an empty list means "not known", not "none". */
+  suggestionsKnown = $state(false);
   phase = $state<CleanupPhase>({ kind: 'idle' });
   /** One plain sentence about why nothing ran ("Not cleaned.", why a plan could not be made). */
   notice = $state<string | undefined>(undefined);
@@ -360,6 +362,7 @@ export class CleanupStore {
     this.scanId = scanId;
     this.#data = data;
     this.suggestions = data?.suggestions ?? [];
+    this.suggestionsKnown = data !== undefined;
 
     if (newScan) {
       this.cleaned.clear();
@@ -544,6 +547,13 @@ export class CleanupStore {
       });
       this.#scan.markOutdated(result.scanId);
     } catch (error) {
+      // The user said no in the backend's own dialog: nothing happened, nothing is said, and Undo stays offered.
+      if (isApiError(error) && error.code === 'cancelled') {
+        this.#after(result, { undoable: true });
+
+        return;
+      }
+
       const gone = isApiError(error) && error.code === 'notFound';
 
       this.#after(result, {

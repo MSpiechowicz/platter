@@ -10,6 +10,7 @@
   import GpuProblemDialog from './lib/features/advisor/GpuProblemDialog.svelte';
   import CleanupPage from './lib/features/cleanup/CleanupPage.svelte';
   import Explorer from './lib/features/explorer/Explorer.svelte';
+  import History from './lib/features/history/History.svelte';
   import OverviewPage from './lib/features/overview/OverviewPage.svelte';
   import ScanProgress from './lib/features/scan/ScanProgress.svelte';
   import SettingsPage from './lib/features/settings/SettingsPage.svelte';
@@ -35,6 +36,7 @@
     { id: 'explorer', label: 'Explorer', icon: 'explorer' },
     { id: 'cleanup', label: 'Cleanup', icon: 'cleanup' },
     { id: 'advisor', label: 'Advisor', icon: 'advisor' },
+    { id: 'history', label: 'History', icon: 'history' },
     { id: 'settings', label: 'Settings', icon: 'settings' },
   ];
 
@@ -118,6 +120,8 @@
   <!-- One boundary per page: a page that fails shows a card, and going elsewhere starts afresh. -->
   {#if screen.id === 'settings'}
     <PageBoundary><SettingsPage /></PageBoundary>
+  {:else if screen.id === 'history'}
+    <PageBoundary><History /></PageBoundary>
   {:else if screen.id === 'advisor'}
     <PageBoundary><AdvisorPage ready={screen.scan} scanning={state.status === 'scanning'} /></PageBoundary>
   {:else if screen.id === 'progress'}

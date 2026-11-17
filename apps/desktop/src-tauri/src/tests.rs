@@ -30,6 +30,8 @@ fn app() -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
             commands::cleanup::start_cleanup,
             commands::cleanup::cancel_cleanup,
             commands::cleanup::undo_cleanup,
+            commands::history::history_overview,
+            commands::history::restore_history_cleanup,
         ])
         .build(tauri::generate_context!())
         .expect("the app builds");
@@ -114,6 +116,23 @@ fn a_scan_with_a_channel_starts_and_can_be_cancelled_twice() {
         invoke(&window, "drop_scan", json!({ "scan": id })),
         Ok(Value::Null)
     );
+}
+
+#[test]
+fn the_history_commands_take_plain_arguments_and_answer_in_camel_case() {
+    let (_app, window) = app();
+
+    let overview = invoke(&window, "history_overview", json!({ "days": 30 })).expect("an overview");
+    assert_eq!(overview["days"], 30);
+    assert_eq!(overview["thin"], true);
+    assert_eq!(overview["cleanupCount"], 0);
+    assert!(overview["samples"].as_array().is_some_and(Vec::is_empty));
+
+    let too_long = invoke(&window, "history_overview", json!({ "days": 400 })).expect_err("over a year");
+    assert_eq!(too_long["code"], "invalid");
+    let unknown =
+        invoke(&window, "restore_history_cleanup", json!({ "cleanup": 4242 })).expect_err("unknown");
+    assert_eq!(unknown["code"], "notFound");
 }
 
 #[test]

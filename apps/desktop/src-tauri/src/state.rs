@@ -30,6 +30,7 @@ use platter_platform::Platform;
 use crate::commands::advisor::AdvisorService;
 use crate::commands::advisor::log::QuestionLog;
 use crate::commands::cleanup::{CleanupRegistry, Confirm, RefuseAll};
+use crate::commands::history::{FixedVolumes, HistoryService};
 use crate::error::{CommandError, CommandResult};
 use crate::user_rules::UserRulesStore;
 
@@ -40,6 +41,8 @@ pub struct AppState {
     pub platform: Arc<Platform>,
     pub scans: Arc<ScanRegistry>,
     pub cleanups: Arc<CleanupRegistry>,
+    /// The history file: usage per day, scans and cleanups (`history.sqlite`).
+    pub history: Arc<HistoryService>,
     /// The local model: its download, its memory, its options.
     pub advisor: Arc<AdvisorService>,
     /// The user's own rules (`rules.json`): what they say now, and the only way they change.
@@ -61,6 +64,7 @@ impl AppState {
     pub fn new() -> Self {
         let mut state = Self::with_parts(AdvisorService::production(), UserRulesStore::production());
         state.question_log = Arc::new(QuestionLog::production());
+        state.history = Arc::new(HistoryService::production());
 
         state
     }
@@ -69,23 +73,32 @@ impl AppState {
     /// the user's rules are empty and cannot be added.
     #[cfg(test)]
     pub fn with_advisor(advisor: AdvisorService) -> Self {
-        Self::with_parts(advisor, UserRulesStore::new(None))
+        Self::with_parts(advisor, UserRulesStore::new(None)).with_test_history()
     }
 
     /// What most tests use: an advisor with no model runtime and no graphics card problem log, and no rules
     /// file (the user's real rules and logs are never read, and no helper process is ever started).
     #[cfg(test)]
     pub fn for_test() -> Self {
-        Self::with_parts(AdvisorService::for_test(), UserRulesStore::new(None))
+        Self::with_parts(AdvisorService::for_test(), UserRulesStore::new(None)).with_test_history()
     }
 
-    /// The state with another advisor and another place for the user's rules, and no question log (a test
-    /// that looks at the log sets `question_log`).
+    /// The same state with a history in memory on a disk that holds every path (`/`, 1000 bytes, 400 free).
+    #[cfg(test)]
+    pub fn with_test_history(mut self) -> Self {
+        self.history = Arc::new(HistoryService::in_memory(FixedVolumes::root()));
+        self
+    }
+
+    /// The state with another advisor and another place for the user's rules, no question log (a test
+    /// that looks at the log sets `question_log`) and a history in memory that lists no disk (production
+    /// sets its own).
     pub fn with_parts(advisor: AdvisorService, user_rules: UserRulesStore) -> Self {
         Self {
             platform: Arc::new(Platform::current()),
             scans: Arc::new(ScanRegistry::default()),
             cleanups: Arc::new(CleanupRegistry::default()),
+            history: Arc::new(HistoryService::in_memory(FixedVolumes::default())),
             advisor: Arc::new(advisor),
             user_rules: Arc::new(user_rules),
             question_log: Arc::new(QuestionLog::new(None)),

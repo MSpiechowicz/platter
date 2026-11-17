@@ -74,6 +74,30 @@ pub struct Disk<'a, P: EntryProbe, R: EntryRemover> {
     pub tools: Option<&'a dyn ToolRunner>,
 }
 
+/// Puts one entry that a run moved to the trash (`trashed`) back at `original`, when it is still the
+/// entry the plan saw (`identity`, and whether it `is_dir`) and nothing has taken its old name since.
+/// Never overwrites. The one way an entry is put back, for a run still in memory ([`undo`]) and for one
+/// read back from the history.
+pub fn restore_one<R: EntryRemover>(
+    remover: &R,
+    trashed: &[u8],
+    original: &[u8],
+    identity: (u64, u64),
+    is_dir: bool,
+) -> Result<(), String> {
+    let expected = ExpectedEntry {
+        dev: identity.0,
+        ino: identity.1,
+        mount_id: None,
+        is_dir,
+        root_depth: 0,
+    };
+
+    remover
+        .restore(trashed, &expected, original)
+        .map_err(|error| error.to_string())
+}
+
 /// Puts back what a run moved to the trash (`results` of its report). Each entry is checked against
 /// what the plan saw and never overwrites anything now at its old place. Returns, per trashed entry,
 /// its readable path and what happened.
@@ -85,16 +109,7 @@ pub fn undo<R: EntryRemover>(results: &[TargetResult], remover: &R) -> Vec<(Stri
             _ => None,
         })
         .map(|(result, to)| {
-            let expected = ExpectedEntry {
-                dev: result.identity.0,
-                ino: result.identity.1,
-                mount_id: None,
-                is_dir: result.is_dir,
-                root_depth: 0,
-            };
-            let outcome = remover
-                .restore(to, &expected, &result.exact)
-                .map_err(|error| error.to_string());
+            let outcome = restore_one(remover, to, &result.exact, result.identity, result.is_dir);
             (result.path.clone(), outcome)
         })
         .collect()

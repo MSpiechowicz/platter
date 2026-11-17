@@ -7,9 +7,13 @@
 //! - Only one cleanup runs at a time.
 //! - Before any plan runs, moving to the trash included, the backend asks the user in a native dialog
 //!   that it builds from its own plan.
-//! - `undo_cleanup` puts back what one run moved to the trash, from the results that run recorded.
+//! - `undo_cleanup` puts back what one run moved to the trash, from the results that run recorded. It asks
+//!   the user first, in the same kind of dialog, listing the places it puts things back to.
+//! - Each run that did something is also recorded in the history (see `history`), which can put its
+//!   trashed items back too. The two exclude each other (and a running cleanup), and an item is put back
+//!   once, whichever asks first.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -90,9 +94,20 @@ struct Inner {
     running: Option<(CleanupId, CancelToken)>,
     /// The running cleanup got past its confirmation and is acting on the disk.
     acting: bool,
-    done: Vec<(CleanupId, Vec<TargetResult>)>,
+    done: Vec<Done>,
+    /// Finished runs in `done` whose history record is still being written: no undo until it is settled.
+    awaiting_history: HashSet<CleanupId>,
     /// When the user last declined a confirmation: a new one is not shown right away.
     declined: Option<Instant>,
+}
+
+/// A finished run that can be undone: what it moved to the trash.
+#[derive(Debug)]
+pub(crate) struct Done {
+    pub cleanup: CleanupId,
+    /// The id the history keeps the run under, when it was recorded there.
+    pub history: Option<i64>,
+    pub results: Vec<TargetResult>,
 }
 
 struct Stored {
@@ -154,7 +169,7 @@ impl CleanupRegistry {
 
     /// Stores a plan made without user rules (generation 0).
     #[cfg(test)]
-    fn store(&self, scan: ScanId, plan: CleanupPlan) -> PlanId {
+    pub(crate) fn store(&self, scan: ScanId, plan: CleanupPlan) -> PlanId {
         self.store_made_with(scan, plan, 0, |_| true)
             .expect("an unconditional store succeeds")
     }
@@ -226,7 +241,15 @@ impl CleanupRegistry {
 
     /// Takes a plan out (it can be started once) and reserves the single running slot for it. A busy
     /// slot is `invalid` and leaves the plan in place; an unknown or used plan is `notFound`.
-    fn take_and_reserve(self: &Arc<Self>, id: PlanId) -> CommandResult<Reservation> {
+    ///
+    /// `restoring` says whether things are being put back. It is asked with the registry locked and before
+    /// the plan is taken, and a restore takes its slot before it looks for a running cleanup: so either this
+    /// sees the restore and leaves the plan in place (`invalid`), or the restore sees this cleanup.
+    pub(crate) fn take_and_reserve(
+        self: &Arc<Self>,
+        id: PlanId,
+        restoring: &dyn Fn() -> bool,
+    ) -> CommandResult<Reservation> {
         let mut inner = self.lock();
         if inner.running.is_some() {
             return Err(CommandError::invalid("a cleanup is already running"));
@@ -240,6 +263,11 @@ impl CleanupRegistry {
         if inner.declined.is_some_and(|at| at.elapsed() < DECLINE_PAUSE) {
             return Err(CommandError::invalid(
                 "a cleanup was just declined, so wait a moment",
+            ));
+        }
+        if restoring() {
+            return Err(CommandError::invalid(
+                "things are being put back, so start the cleanup when that has finished",
             ));
         }
         let stored = inner
@@ -274,7 +302,7 @@ impl CleanupRegistry {
         }
     }
 
-    fn is_running(&self) -> bool {
+    pub(crate) fn is_running(&self) -> bool {
         self.lock().running.is_some()
     }
 
@@ -284,19 +312,41 @@ impl CleanupRegistry {
 
     /// Keeps a run's results for undo. A run that touched nothing keeps no record (it would only push
     /// a real one out); a run that emptied the trash makes every older record useless.
-    fn record(&self, cleanup: CleanupId, results: Vec<TargetResult>, emptied_trash: bool) {
+    #[cfg(test)]
+    pub(crate) fn record(
+        &self,
+        cleanup: CleanupId,
+        history: Option<i64>,
+        results: Vec<TargetResult>,
+        emptied_trash: bool,
+    ) {
+        keep(&mut self.lock(), cleanup, history, results, emptied_trash);
+    }
+
+    /// As `record`, for a run whose history record is written next: it cannot be undone before
+    /// [`Self::settle`] says the record is there (or that there is none), so an undo and the history
+    /// never both think they own its items.
+    pub(crate) fn record_awaiting_history(
+        &self,
+        cleanup: CleanupId,
+        results: Vec<TargetResult>,
+        emptied_trash: bool,
+    ) {
         let mut inner = self.lock();
-        if emptied_trash {
-            inner.done.clear();
+        if keep(&mut inner, cleanup, None, results, emptied_trash) {
+            inner.awaiting_history.insert(cleanup);
         }
-        if results
-            .iter()
-            .any(|result| matches!(result.outcome, TargetOutcome::Trashed(_)))
+    }
+
+    /// The history record of a run is written (`history` is its id) or will not be: undo may use the run.
+    /// Settling twice is fine, and a later settling without an id keeps the id of an earlier one.
+    pub(crate) fn settle(&self, cleanup: CleanupId, history: Option<i64>) {
+        let mut inner = self.lock();
+        inner.awaiting_history.remove(&cleanup);
+        if let Some(history) = history
+            && let Some(done) = inner.done.iter_mut().find(|done| done.cleanup == cleanup)
         {
-            inner.done.push((cleanup, results));
-            if inner.done.len() > MAX_DONE {
-                inner.done.remove(0);
-            }
+            done.history = Some(history);
         }
     }
 
@@ -329,23 +379,91 @@ impl CleanupRegistry {
         }
     }
 
-    /// The results of a finished run, taken out: a run is undone once.
-    fn take_done(&self, cleanup: CleanupId) -> CommandResult<Vec<TargetResult>> {
-        let mut inner = self.lock();
-        let position = inner
+    /// The place of a finished run in `done`, when it can be undone now.
+    fn position_of(inner: &Inner, cleanup: CleanupId) -> CommandResult<usize> {
+        if inner.awaiting_history.contains(&cleanup) {
+            return Err(CommandError::invalid(
+                "the cleanup is still being recorded, so undo in a moment",
+            ));
+        }
+
+        inner
             .done
             .iter()
-            .position(|(id, _)| *id == cleanup)
-            .ok_or_else(|| CommandError::not_found(format!("cleanup {cleanup} cannot be undone")))?;
-        Ok(inner.done.remove(position).1)
+            .position(|done| done.cleanup == cleanup)
+            .ok_or_else(|| CommandError::not_found(format!("cleanup {cleanup} cannot be undone")))
+    }
+
+    /// What an undo of a finished run would put back, as the original path and the size of each entry,
+    /// without taking the run (so a declined confirmation leaves it as it was).
+    pub(crate) fn trashed_by(&self, cleanup: CleanupId) -> CommandResult<Vec<(Vec<u8>, u64)>> {
+        let inner = self.lock();
+        let position = Self::position_of(&inner, cleanup)?;
+
+        Ok(inner.done[position]
+            .results
+            .iter()
+            .filter(|result| matches!(result.outcome, TargetOutcome::Trashed(_)))
+            .map(|result| (result.exact.clone(), result.allocated))
+            .collect())
+    }
+
+    /// The results of a finished run, taken out: a run is undone once.
+    pub(crate) fn take_done(&self, cleanup: CleanupId) -> CommandResult<Done> {
+        let mut inner = self.lock();
+        let position = Self::position_of(&inner, cleanup)?;
+
+        Ok(inner.done.remove(position))
+    }
+
+    /// The results of the run the history keeps under `history`, taken out so that an undo cannot put
+    /// them back while the history does; `None` when it is not (or no longer) there.
+    pub(crate) fn take_by_history(&self, history: i64) -> Option<Done> {
+        let mut inner = self.lock();
+        let position = inner.done.iter().position(|done| done.history == Some(history))?;
+
+        Some(inner.done.remove(position))
     }
 
     /// Puts back the results whose undo failed, so it can be tried again.
-    fn keep_for_retry(&self, cleanup: CleanupId, results: Vec<TargetResult>) {
-        if !results.is_empty() {
-            self.lock().done.push((cleanup, results));
+    pub(crate) fn keep_for_retry(&self, done: Done) {
+        if !done.results.is_empty() {
+            self.lock().done.push(done);
         }
     }
+}
+
+/// Keeps `results` as a run that can be undone, when it moved something to the trash. Returns whether it
+/// did.
+fn keep(
+    inner: &mut Inner,
+    cleanup: CleanupId,
+    history: Option<i64>,
+    results: Vec<TargetResult>,
+    emptied_trash: bool,
+) -> bool {
+    if emptied_trash {
+        inner.done.clear();
+        inner.awaiting_history.clear();
+    }
+    if !results
+        .iter()
+        .any(|result| matches!(result.outcome, TargetOutcome::Trashed(_)))
+    {
+        return false;
+    }
+
+    inner.done.push(Done {
+        cleanup,
+        history,
+        results,
+    });
+    if inner.done.len() > MAX_DONE {
+        let gone = inner.done.remove(0);
+        inner.awaiting_history.remove(&gone.cleanup);
+    }
+
+    true
 }
 
 // ---- Wire types (sent only; nothing here is ever read back from the web view) ----
@@ -515,45 +633,78 @@ pub fn cancel_cleanup(state: State<'_, AppState>, cleanup: CleanupId) -> Command
     Ok(())
 }
 
-/// Puts back what a finished cleanup moved to the trash (once).
+/// Puts back what a finished cleanup moved to the trash (once). Asks for confirmation first, in a native
+/// dialog listing what goes back: a refused confirmation is the error `cancelled`, and leaves the run
+/// as it was.
 #[tauri::command]
 pub async fn undo_cleanup(state: State<'_, AppState>, cleanup: CleanupId) -> CommandResult<Vec<UndoDto>> {
     undo_run(&state, cleanup).await
 }
 
 pub async fn undo_run(state: &AppState, cleanup: CleanupId) -> CommandResult<Vec<UndoDto>> {
+    // One restore at a time: this and a restore from the history never put the same entry back together.
+    let Some(_restoring) = state.history.begin_restore() else {
+        return Err(CommandError::invalid(
+            "something is being put back, so undo when it has finished",
+        ));
+    };
     // Not while a cleanup runs: it could be emptying the trash that is being restored from.
     if state.cleanups.is_running() {
         return Err(CommandError::invalid(
             "a cleanup is running, so undo when it has finished",
         ));
     }
-    let results = state.cleanups.take_done(cleanup)?;
-    let kept = results.clone();
+    // Looked at, not taken: a refused request shows no dialog, and a declined one leaves the run as it was.
+    let asked = state.cleanups.trashed_by(cleanup)?;
+    confirm_put_back(state, &asked).await?;
+    // The dialog may have been open for a long time. Nothing can have started or put anything back
+    // meanwhile (this holds the restoring slot), and the run is checked again as it is taken.
+    let done = state.cleanups.take_done(cleanup)?;
+    let history = done.history;
+    let kept = done.results.clone();
+    let results = done.results;
     let platform = Arc::clone(&state.platform);
 
     let worked = tauri::async_runtime::spawn_blocking(move || {
         let undone = undo(&results, &platform.entry_remover);
         // What could not be put back stays, so undo can be tried again.
-        let failed: Vec<TargetResult> = results
+        let (failed, back): (Vec<_>, Vec<_>) = results
             .into_iter()
             .filter(|result| matches!(result.outcome, TargetOutcome::Trashed(_)))
             .zip(&undone)
-            .filter(|(_, (_, outcome))| outcome.is_err())
-            .map(|(result, _)| result)
-            .collect();
-        (undone, failed)
+            .partition(|(_, (_, outcome))| outcome.is_err());
+        let failed: Vec<TargetResult> = failed.into_iter().map(|(result, _)| result).collect();
+        let back: Vec<TargetResult> = back.into_iter().map(|(result, _)| result).collect();
+        (undone, failed, back)
     })
     .await;
-    let Ok((undone, failed)) = worked else {
+    let Ok((undone, failed, back)) = worked else {
         // Some entries may be back already: the disk changed, and every entry stays for a retry
         // (one that is back is refused next time, since its trash record is gone).
-        state.cleanups.keep_for_retry(cleanup, kept);
+        state.cleanups.keep_for_retry(Done {
+            cleanup,
+            history,
+            results: kept,
+        });
         state.scans.disk_changed();
         return Err(CommandError::io("putting things back stopped unexpectedly"));
     };
 
-    state.cleanups.keep_for_retry(cleanup, failed);
+    state.cleanups.keep_for_retry(Done {
+        cleanup,
+        history,
+        results: failed,
+    });
+    if let Some(history) = history {
+        let paths: Vec<(Vec<u8>, Vec<u8>)> = back
+            .into_iter()
+            .filter_map(|result| match result.outcome {
+                TargetOutcome::Trashed(to) => Some((result.exact, to)),
+                _ => None,
+            })
+            .collect();
+        state.history.mark_undone(history, &paths);
+    }
     // Putting things back changed the disk too.
     state.scans.disk_changed();
 
@@ -721,8 +872,11 @@ pub async fn plan_marked_nodes(
 }
 
 pub async fn start(state: &AppState, plan_id: PlanId, emit: Emit) -> CommandResult<CleanupId> {
-    // From here on the slot is released when `reservation` is dropped, however this function ends.
-    let reservation = state.cleanups.take_and_reserve(plan_id)?;
+    // From here on the slot is released when `reservation` is dropped, however this function ends. Not while
+    // things are being put back: the registry asks, with its lock held, and then leaves the plan in place.
+    let reservation = state
+        .cleanups
+        .take_and_reserve(plan_id, &|| state.history.is_restoring())?;
     let scan = reservation.scan;
     let plan = Arc::clone(&reservation.plan);
 
@@ -755,6 +909,7 @@ pub async fn start(state: &AppState, plan_id: PlanId, emit: Emit) -> CommandResu
     let platform = Arc::clone(&state.platform);
     let scans = Arc::clone(&state.scans);
     let cleanups = Arc::clone(&state.cleanups);
+    let history = Arc::clone(&state.history);
     let spawned = thread::Builder::new()
         .name(format!("platter-cleanup-{cleanup}"))
         .spawn(move || {
@@ -796,15 +951,45 @@ pub async fn start(state: &AppState, plan_id: PlanId, emit: Emit) -> CommandResu
                     cleanup_id: cleanup,
                 },
             };
-            cleanups.record(cleanup, results, emptied_trash);
-            // The slot is free before the UI hears the run ended, so it can start the next one.
+            let groups: Vec<(&str, CleanupAction)> = plan
+                .groups()
+                .iter()
+                .map(|group| (group.rule_id(), group.action()))
+                .collect();
+            // Kept for undo first, but not undoable until the history has settled its record (below).
+            cleanups.record_awaiting_history(cleanup, results.clone(), emptied_trash);
+            // The slot is free before anything touches the history file, so a slow or locked file never
+            // holds up the next cleanup.
             drop(reservation);
+
+            // Whatever the history does (it may be slow, or panic), the run is settled and the UI hears of
+            // its end.
+            let settled = Settled {
+                cleanups: &cleanups,
+                cleanup,
+            };
+            history.record_run(plan.scan_root(), &groups, &results, outcome.as_ref().ok(), |id| {
+                cleanups.settle(cleanup, Some(id))
+            });
+            drop(settled);
             emit(event);
         });
 
     // A failed spawn drops the closure, and with it the reservation.
     spawned?;
     Ok(cleanup)
+}
+
+/// Lets undo use a run once the history is done with it, however the worker gets there.
+struct Settled<'a> {
+    cleanups: &'a CleanupRegistry,
+    cleanup: CleanupId,
+}
+
+impl Drop for Settled<'_> {
+    fn drop(&mut self) {
+        self.cleanups.settle(self.cleanup, None);
+    }
 }
 
 /// The plan is still young enough, and its scan still exists and still describes the disk.
@@ -843,7 +1028,7 @@ fn action_dto(action: CleanupAction) -> ActionDto {
     }
 }
 
-fn command_text(action: CleanupAction) -> Option<(String, bool)> {
+pub(crate) fn command_text(action: CleanupAction) -> Option<(String, bool)> {
     match action {
         CleanupAction::RunTool(tool) => Some((
             format!("{} {}", tool.program(), tool.args().join(" ")),
@@ -853,7 +1038,7 @@ fn command_text(action: CleanupAction) -> Option<(String, bool)> {
     }
 }
 
-fn title_of(rule_id: &str) -> String {
+pub(crate) fn title_of(rule_id: &str) -> String {
     if rule_id == platter_cleanup::MARKED {
         return "Marked in the Explorer".to_owned();
     }
@@ -982,17 +1167,75 @@ pub fn question(plan: &CleanupPlan) -> Option<Question> {
         }
     }
 
-    let mut text = lines.join("\n");
+    Some(Question {
+        title: "Clean up?".to_owned(),
+        text: capped(lines.join("\n")),
+        accept: "Clean up",
+    })
+}
+
+/// `text`, cut to [`QUESTION_CHARS`] characters.
+fn capped(mut text: String) -> String {
     if text.chars().count() > QUESTION_CHARS {
         text = text.chars().take(QUESTION_CHARS).collect();
         text.push_str("\n…");
     }
 
-    Some(Question {
-        title: "Clean up?".to_owned(),
-        text,
-        accept: "Clean up",
-    })
+    text
+}
+
+/// The confirmation for putting entries back from the trash: what comes first is how many and how big,
+/// then up to [`SAMPLE_PATHS`] of the places they go back to (as in [`question`], shown safely). Each
+/// entry is its original path and its size.
+pub(crate) fn put_back_question(items: &[(Vec<u8>, u64)]) -> Question {
+    let size = human_bytes(items.iter().map(|(_, size)| *size).fold(0, u64::saturating_add));
+    let count = items.len();
+    let mut lines = vec![
+        "Platter is about to put the following back from the trash, to where it was before the cleanup. \
+         Nothing that is there now is overwritten."
+            .to_owned(),
+        String::new(),
+        format!(
+            "• Put back: {count} {}, {size}",
+            if count == 1 { "item" } else { "items" }
+        ),
+    ];
+
+    if count > 0 {
+        lines.push(String::new());
+        lines.push("Items:".to_owned());
+        for (original, _) in items.iter().take(SAMPLE_PATHS) {
+            lines.push(format!("    {}", shown_path(&String::from_utf8_lossy(original))));
+        }
+        if count > SAMPLE_PATHS {
+            lines.push(format!("    … and {} more", count - SAMPLE_PATHS));
+        }
+    }
+
+    Question {
+        title: "Put back?".to_owned(),
+        text: capped(lines.join("\n")),
+        accept: "Put back",
+    }
+}
+
+/// Asks the user, in the backend's own dialog, to put `items` back. A refusal, or a dialog that fails, is
+/// `cancelled`. Unlike a declined cleanup it does not pause the next confirmation: nothing is started.
+pub(crate) async fn confirm_put_back(state: &AppState, items: &[(Vec<u8>, u64)]) -> CommandResult<()> {
+    let question = put_back_question(items);
+    let confirm = state.confirm();
+    let approved = tauri::async_runtime::spawn_blocking(move || confirm.confirm(&question))
+        .await
+        .unwrap_or(false);
+
+    if approved {
+        Ok(())
+    } else {
+        Err(CommandError::new(
+            platter_core::dto::ApiErrorCode::Cancelled,
+            "putting things back was not confirmed",
+        ))
+    }
 }
 
 /// A path as the confirmation shows it (see [`question`]).
@@ -1206,4 +1449,4 @@ impl Confirm for RefuseAll {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

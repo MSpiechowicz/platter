@@ -30,6 +30,8 @@ function lazyApi(load: () => Promise<Api>): Api {
     startCleanup: async (plan, onEvent) => (await impl()).startCleanup(plan, onEvent),
     cancelCleanup: async (cleanup) => (await impl()).cancelCleanup(cleanup),
     undoCleanup: async (cleanup) => (await impl()).undoCleanup(cleanup),
+    historyOverview: async (days) => (await impl()).historyOverview(days),
+    restoreHistoryCleanup: async (cleanup) => (await impl()).restoreHistoryCleanup(cleanup),
     advisorStatus: async () => (await impl()).advisorStatus(),
     watchAdvisor: async (onEvent) => (await impl()).watchAdvisor(onEvent),
     configureAdvisor: async (options) => (await impl()).configureAdvisor(options),
@@ -92,6 +94,7 @@ function selectApi(): Api {
     dominant: hooks.dominant,
     warnings: hooks.warn ? ['mountTableUnavailable'] : undefined,
     advisor: advisorHooks(),
+    history: hooks.history ? { variant: hooks.history } : undefined,
     userRules:
       hooks.rules === 'broken'
         ? { broken: true }

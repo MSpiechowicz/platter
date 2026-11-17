@@ -36,6 +36,7 @@ platter-core.workspace = true
 platter-platform.workspace = true
 platter-rules.workspace = true
 platter-cleanup.workspace = true
+platter-history.workspace = true
 platter-ai.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -53,5 +54,6 @@ gtk = "0.18"
 platter-core = { workspace = true, features = ["testing"] }
 platter-platform = { workspace = true, features = ["testing"] }
 platter-ai = { workspace = true, features = ["testing"] }
+platter-history = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tauri = { workspace = true, features = ["test"] }

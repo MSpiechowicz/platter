@@ -25,6 +25,7 @@ const ALL_OFF = {
   ask: null,
   chat: null,
   rules: null,
+  history: null,
 };
 
 describe('parseHooks', () => {
@@ -163,6 +164,15 @@ describe('parseHooks', () => {
     expect(parseHooks('?view=advisor&advisor=loaded&chat=12', false).chat).toBe(12);
     expect(parseHooks('?view=advisor&chat=many', false).chat).toBeNull();
     expect(parseHooks('?view=advisor&chat=12', true)).toEqual(ALL_OFF);
+  });
+
+  it('reads the history view and the state of the history mock, outside Tauri only', () => {
+    expect(parseHooks('?view=history', false).view).toBe('history');
+    expect(parseHooks('?view=history&history=thin', false).history).toBe('thin');
+    expect(parseHooks('?view=history&history=broken', false).history).toBe('broken');
+    expect(parseHooks('?view=history&history=whatever', false).history).toBeNull();
+    expect(parseHooks('?view=history', false).history).toBeNull();
+    expect(parseHooks('?view=history&history=empty', true).history).toBeNull();
   });
 
   it('reads the hook that seeds the user rules, or breaks their file, outside Tauri only', () => {

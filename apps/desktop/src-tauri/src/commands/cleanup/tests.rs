@@ -11,7 +11,7 @@ use crate::commands::advisor::{AdvisorOptionsDto, UnloadAfterDto};
 use crate::commands::scan;
 use crate::state::LabelSet;
 
-struct Approve;
+pub(crate) struct Approve;
 
 impl Confirm for Approve {
     fn confirm(&self, _question: &Question) -> bool {
@@ -19,8 +19,50 @@ impl Confirm for Approve {
     }
 }
 
+/// A dialog that answers as told, can be told otherwise, remembers what it was asked, and can run
+/// something while it is open (the user takes their time).
+pub(crate) struct Dialog {
+    approve: std::sync::atomic::AtomicBool,
+    asked: Mutex<Vec<Question>>,
+    meanwhile: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl Dialog {
+    pub(crate) fn answering(approve: bool) -> Arc<Self> {
+        Arc::new(Self {
+            approve: std::sync::atomic::AtomicBool::new(approve),
+            asked: Mutex::new(Vec::new()),
+            meanwhile: Mutex::new(None),
+        })
+    }
+
+    pub(crate) fn answer(&self, approve: bool) {
+        self.approve.store(approve, Ordering::SeqCst);
+    }
+
+    pub(crate) fn asked(&self) -> Vec<Question> {
+        lock(&self.asked).clone()
+    }
+
+    /// Runs `work` while the next question is open, before it is answered.
+    pub(crate) fn while_open(&self, work: impl FnOnce() + Send + 'static) {
+        *lock(&self.meanwhile) = Some(Box::new(work));
+    }
+}
+
+impl Confirm for Dialog {
+    fn confirm(&self, question: &Question) -> bool {
+        lock(&self.asked).push(question.clone());
+        if let Some(work) = lock(&self.meanwhile).take() {
+            work();
+        }
+
+        self.approve.load(Ordering::SeqCst)
+    }
+}
+
 /// Scans `root` with the real reader and waits for the tree.
-fn scanned(state: &AppState, root: &Path) -> ScanId {
+pub(crate) fn scanned(state: &AppState, root: &Path) -> ScanId {
     let (sender, receiver) = mpsc::channel();
     let id = tauri::async_runtime::block_on(scan::start(
         state,
@@ -44,7 +86,7 @@ fn scanned(state: &AppState, root: &Path) -> ScanId {
 }
 
 /// An idle Rust project in a temp folder (everything dated 400 days back).
-fn project() -> (tempfile::TempDir, PathBuf) {
+pub(crate) fn project() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
     fs::create_dir_all(root.join("p/target/debug")).unwrap();
@@ -67,7 +109,7 @@ fn project() -> (tempfile::TempDir, PathBuf) {
     (dir, root)
 }
 
-fn plan_of(state: &AppState, scan: ScanId, rules: &[&str]) -> CommandResult<CleanupPlanDto> {
+pub(crate) fn plan_of(state: &AppState, scan: ScanId, rules: &[&str]) -> CommandResult<CleanupPlanDto> {
     tauri::async_runtime::block_on(plan(
         state,
         scan,
@@ -75,7 +117,7 @@ fn plan_of(state: &AppState, scan: ScanId, rules: &[&str]) -> CommandResult<Clea
     ))
 }
 
-fn start_of(
+pub(crate) fn start_of(
     state: &AppState,
     plan_id: PlanId,
 ) -> (CommandResult<CleanupId>, mpsc::Receiver<CleanupEventDto>) {
@@ -90,7 +132,7 @@ fn start_of(
     (started, receiver)
 }
 
-fn until_finished(receiver: &mpsc::Receiver<CleanupEventDto>) -> Vec<CleanupEventDto> {
+pub(crate) fn until_finished(receiver: &mpsc::Receiver<CleanupEventDto>) -> Vec<CleanupEventDto> {
     let mut events = Vec::new();
     loop {
         let event = receiver.recv_timeout(Duration::from_secs(30)).unwrap();
@@ -246,8 +288,8 @@ fn one_run_at_a_time_and_a_reservation_frees_its_slot_however_it_ends() {
     let first = registry.store(1, CleanupPlan::default());
     let second = registry.store(1, CleanupPlan::default());
 
-    let running = registry.take_and_reserve(first).unwrap();
-    let Err(busy) = registry.take_and_reserve(second) else {
+    let running = registry.take_and_reserve(first, &|| false).unwrap();
+    let Err(busy) = registry.take_and_reserve(second, &|| false) else {
         panic!("the slot is taken");
     };
     assert_eq!(busy.code(), ApiErrorCode::Invalid, "a busy slot");
@@ -258,9 +300,53 @@ fn one_run_at_a_time_and_a_reservation_frees_its_slot_however_it_ends() {
         "dropping the reservation frees the slot"
     );
     assert!(
-        registry.take_and_reserve(second).is_ok(),
+        registry.take_and_reserve(second, &|| false).is_ok(),
         "the waiting plan was not used up"
     );
+}
+
+#[test]
+fn a_plan_stays_startable_when_a_restore_began_after_the_first_look() {
+    let registry = Arc::new(CleanupRegistry::default());
+    let plan = registry.store(1, CleanupPlan::default());
+
+    // The restore is seen under the registry lock, so the plan has not been taken yet.
+    let Err(refused) = registry.take_and_reserve(plan, &|| true) else {
+        panic!("things are being put back");
+    };
+
+    assert_eq!(refused.code(), ApiErrorCode::Invalid);
+    assert!(registry.has_plan(plan), "the plan was not used up");
+    assert!(!registry.is_running(), "and no slot is held");
+    assert!(
+        registry.take_and_reserve(plan, &|| false).is_ok(),
+        "the retry finds the plan"
+    );
+}
+
+#[test]
+fn a_run_cannot_be_undone_while_its_history_record_is_being_written() {
+    let registry = CleanupRegistry::default();
+    let trashed = TargetResult {
+        rule_id: "old-downloads",
+        path: "/a".to_owned(),
+        exact: b"/a".to_vec(),
+        identity: (1, 2),
+        is_dir: false,
+        allocated: 1,
+        outcome: TargetOutcome::Trashed(b"/t/files/x".to_vec()),
+    };
+
+    registry.record_awaiting_history(5, vec![trashed], false);
+    let waiting = registry.take_done(5).unwrap_err();
+    registry.settle(5, Some(42));
+    let settled = registry.take_done(5).unwrap();
+    // A later settling without an id (the worker's guard) does not forget the id.
+    registry.keep_for_retry(settled);
+    registry.settle(5, None);
+
+    assert_eq!(waiting.code(), ApiErrorCode::Invalid);
+    assert_eq!(registry.take_by_history(42).map(|done| done.cleanup), Some(5));
 }
 
 #[test]
@@ -276,8 +362,8 @@ fn only_runs_that_trashed_something_are_kept_for_undo_and_emptying_the_trash_for
         outcome: TargetOutcome::Trashed(b"/t/files/x".to_vec()),
     };
 
-    registry.record(1, Vec::new(), false);
-    registry.record(2, vec![trashed("/a")], false);
+    registry.record(1, None, Vec::new(), false);
+    registry.record(2, None, vec![trashed("/a")], false);
     assert_eq!(
         registry.take_done(1).unwrap_err().code(),
         ApiErrorCode::NotFound,
@@ -290,11 +376,11 @@ fn only_runs_that_trashed_something_are_kept_for_undo_and_emptying_the_trash_for
         "undone once"
     );
 
-    registry.keep_for_retry(2, taken);
+    registry.keep_for_retry(taken);
     assert!(registry.take_done(2).is_ok(), "what failed can be tried again");
 
-    registry.record(3, vec![trashed("/b")], false);
-    registry.record(4, Vec::new(), true);
+    registry.record(3, None, vec![trashed("/b")], false);
+    registry.record(4, None, Vec::new(), true);
     assert_eq!(
         registry.take_done(3).unwrap_err().code(),
         ApiErrorCode::NotFound,
@@ -435,10 +521,50 @@ fn every_plan_with_something_to_do_is_asked_about_and_the_question_is_safe_to_sh
 }
 
 #[test]
+fn the_question_about_putting_back_names_a_bounded_number_of_places_and_shows_them_safely() {
+    let many: Vec<(Vec<u8>, u64)> = (0..30)
+        .map(|number| (format!("/home/u/file{number}").into_bytes(), 1024))
+        .collect();
+
+    let asked = put_back_question(&many);
+
+    assert!(
+        asked.text.contains("• Put back: 30 items, 30.0 KiB"),
+        "{}",
+        asked.text
+    );
+    assert_eq!(asked.text.matches("\n    /home/u/file").count(), SAMPLE_PATHS);
+    assert!(asked.text.contains("… and 10 more"), "{}", asked.text);
+    assert!(!asked.text.contains(';'), "{}", asked.text);
+
+    let crafted = vec![
+        (b"/home/u/x\n\n\xe2\x80\xaetxt.exe".to_vec(), 1),
+        (b"/home/u/bad\xff".to_vec(), 1),
+        (format!("/home/u/{}", "n".repeat(300)).into_bytes(), 1),
+    ];
+    let asked = put_back_question(&crafted);
+    assert!(!asked.text.contains('\u{202e}'), "{}", asked.text);
+    assert!(
+        asked.text.contains("\\u{a}\\u{a}\\u{202e}txt.exe"),
+        "{}",
+        asked.text
+    );
+    assert!(asked.text.contains("not valid text"), "{}", asked.text);
+    assert!(
+        asked.text.lines().all(|line| line.chars().count() < 200),
+        "{}",
+        asked.text
+    );
+
+    let huge: Vec<(Vec<u8>, u64)> = (0..50_000).map(|_| (vec![b'x'; 5000], 1)).collect();
+    assert!(put_back_question(&huge).text.chars().count() <= QUESTION_CHARS + 2);
+}
+
+#[test]
 fn undo_waits_for_a_running_cleanup_and_quitting_does_not_wait_for_an_unanswered_dialog() {
     let state = AppState::for_test();
     let plan = state.cleanups.store(1, CleanupPlan::default());
-    let reservation = state.cleanups.take_and_reserve(plan).unwrap();
+    let reservation = state.cleanups.take_and_reserve(plan, &|| false).unwrap();
 
     let busy = tauri::async_runtime::block_on(undo_run(&state, 1)).unwrap_err();
     assert_eq!(busy.code(), ApiErrorCode::Invalid, "not while a cleanup runs");

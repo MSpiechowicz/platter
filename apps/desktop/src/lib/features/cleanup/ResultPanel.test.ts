@@ -1,5 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Api } from '../../api/client';
+import { ApiRequestError } from '../../api/client';
 import { settings } from '../../state/settings.svelte';
 import { basisOf } from './model';
 import ResultPanel from './ResultPanel.svelte';
@@ -12,8 +14,11 @@ beforeEach(() => {
 const basis = { used: 1408 * GB, capacity: 1900 * GB };
 
 /** A store whose run has ended with `extra` as its last event. */
-async function ended(extra: Parameters<typeof finish>[2] = {}): Promise<Fixture> {
-  const context = await fixture();
+async function ended(
+  extra: Parameters<typeof finish>[2] = {},
+  change?: Parameters<typeof fixture>[0],
+): Promise<Fixture> {
+  const context = await fixture(change);
 
   await context.store.cleanSelected();
   cleanGroup(context.send, 'target');
@@ -113,6 +118,28 @@ describe('ResultPanel', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
 
     expect(undo).toHaveBeenCalledOnce();
+  });
+
+  it('keeps offering Undo, and says nothing, when the backend dialog for Undo is declined', async () => {
+    const undoCleanup = vi
+      .fn<Api['undoCleanup']>()
+      .mockRejectedValueOnce(new ApiRequestError('cancelled', 'declined'))
+      .mockResolvedValueOnce([{ path: '/home/demo/target', restored: true }]);
+    const context = await ended({ canUndo: true }, (api) => ({ ...api, undoCleanup }));
+
+    render(ResultPanel, { props: { store: context.store, basis } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+
+    await waitFor(() => expect(undoCleanup).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy());
+    expect(screen.queryByText(/Could not undo/)).toBeNull();
+    expect(screen.getByRole('status').textContent).not.toMatch(/Put back/);
+
+    // The next click asks again, and an approved Undo goes through as before.
+    await fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Put back 1 item.'));
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
   });
 
   it('scans again through the store', async () => {

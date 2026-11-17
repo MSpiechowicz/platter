@@ -3,7 +3,8 @@
  * They never change what the app does for a user who does not type them, and they are ignored
  * inside the Tauri window, where nobody can type a URL anyway.
  */
-export type HookView = 'start' | 'scanning' | 'overview' | 'explorer' | 'cleanup' | 'advisor' | 'settings';
+export type HookView =
+  'start' | 'scanning' | 'overview' | 'explorer' | 'cleanup' | 'advisor' | 'history' | 'settings';
 
 /** Where the advisor mock starts: not downloaded, a download held at 40%, a download that failed at 40%, on disk, or loaded into RAM. */
 export type HookAdvisor = 'none' | 'downloading' | 'failed' | 'disk' | 'loaded';
@@ -17,6 +18,9 @@ export type HookGpu = 'fallback' | 'none';
 
 /** What went wrong on the graphics card in the `gpuProblem` hook: see `GpuProblemWhat`. */
 export type HookGpuProblem = 'crash' | 'hang' | 'error';
+
+/** What the history mock holds: too few days to say anything, no day at all, a history file that cannot be used, or a disk that does not grow. */
+export type HookHistory = 'thin' | 'empty' | 'broken' | 'flat';
 
 export interface TestHooks {
   /**
@@ -80,6 +84,8 @@ export interface TestHooks {
    * (`rules=broken`).
    */
   rules: 'seed' | 'broken' | null;
+  /** What the history mock holds (`history=thin`); without it, a disk cleaned five times in 90 days. */
+  history: HookHistory | null;
 }
 
 const VIEWS: readonly string[] = [
@@ -89,8 +95,11 @@ const VIEWS: readonly string[] = [
   'explorer',
   'cleanup',
   'advisor',
+  'history',
   'settings',
 ];
+
+const HISTORY_STATES: readonly string[] = ['thin', 'empty', 'broken', 'flat'];
 
 const ADVISOR_STATES: readonly string[] = ['none', 'downloading', 'failed', 'disk', 'loaded'];
 
@@ -118,6 +127,7 @@ const NO_HOOKS: TestHooks = {
   ask: null,
   chat: null,
   rules: null,
+  history: null,
 };
 
 function isInsideTauri(): boolean {
@@ -151,6 +161,7 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
   const advisor = params.get('advisor');
   const gpu = params.get('gpu');
   const gpuProblem = params.get('gpuProblem');
+  const history = params.get('history');
 
   return {
     view: view !== null && VIEWS.includes(view) ? (view as HookView) : null,
@@ -175,6 +186,7 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
     labels: params.has('labels'),
     ask: params.get('ask')?.trim() || null,
     chat: wholeNumber(params.get('chat')),
+    history: history !== null && HISTORY_STATES.includes(history) ? (history as HookHistory) : null,
     rules: params.get('rules') === 'broken' ? 'broken' : params.has('rules') ? 'seed' : null,
   };
 }

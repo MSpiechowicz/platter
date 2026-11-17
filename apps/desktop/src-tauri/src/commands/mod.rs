@@ -2,6 +2,7 @@
 
 pub mod advisor;
 pub mod cleanup;
+pub mod history;
 pub mod query;
 pub mod rules;
 pub mod scan;

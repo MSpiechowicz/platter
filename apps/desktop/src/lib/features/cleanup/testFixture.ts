@@ -83,11 +83,14 @@ export interface Fixture {
   send: (event: CleanupEvent) => void;
 }
 
-/** A store over a finished mock scan, loaded with `DATA`, whose backend plans what it is asked and holds the run. */
-export async function fixture(): Promise<Fixture> {
+/**
+ * A store over a finished mock scan, loaded with `DATA`, whose backend plans what it is asked and holds the run.
+ * `change` may replace parts of that backend.
+ */
+export async function fixture(change: (api: Api) => Api = (api) => api): Promise<Fixture> {
   let send: (event: CleanupEvent) => void = () => {};
   const mock = createMockApi({ durationMs: 0 });
-  const api: Api = {
+  const api: Api = change({
     ...mock,
     planCleanup: vi.fn<Api['planCleanup']>(async (_scan, ids) =>
       planOf(
@@ -100,7 +103,7 @@ export async function fixture(): Promise<Fixture> {
 
       return 77;
     }),
-  };
+  });
   const scan = new ScanStore(api);
 
   await scan.start({ root: '/', oneFileSystem: true });

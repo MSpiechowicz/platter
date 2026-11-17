@@ -1,6 +1,7 @@
 import { ApiRequestError, type Api } from './client';
 import { createMockAdvisor, type MockAdvisorOptions, type MockLabelRuns } from './mock-advisor';
 import { createMockCleanup } from './mock-cleanup';
+import { createMockHistory, type MockHistoryOptions } from './mock-history';
 import { createMockUserRules, type MockUserRulesOptions } from './mock-user-rules';
 import { toDto } from './mock-dto';
 import { REAL_BYTES, REAL_ROOT, SKEW_BYTES, SKEW_ROOT } from './mock-layouts';
@@ -109,6 +110,10 @@ export interface MockOptions {
   advisor?: MockAdvisorOptions;
   /** Test hook: the rules the user's rule list starts with, or a broken rules file (see `mock-user-rules.ts`). */
   userRules?: MockUserRulesOptions;
+  /** Test hook: the history the History view shows (see `mock-history.ts`). */
+  history?: MockHistoryOptions;
+  /** Test hook: the answer of the Undo confirmation dialog (default: confirmed; see `mock-cleanup.ts`). */
+  confirmUndo?: () => boolean;
 }
 
 /** Elapsed time reported for an instant scan, so the header does not read "in 0 s". */
@@ -335,6 +340,8 @@ export function createMockApi(options: MockOptions = {}): Api {
   );
   const { view: userRulesView, ...userRulesApi } = userRules;
 
+  const history = createMockHistory({ now: clock, ...options.history });
+
   const { advisorEnabled, ...advisor } = createMockAdvisor(
     {
       treeOf: (scan) => scanOf(scan).tree,
@@ -364,6 +371,7 @@ export function createMockApi(options: MockOptions = {}): Api {
       outdated.add(scan);
       labelRuns.delete(scan);
     },
+    confirmUndo: options.confirmUndo,
   });
 
   const run = (record: ScanRecord, id: ScanId): void => {
@@ -548,6 +556,8 @@ export function createMockApi(options: MockOptions = {}): Api {
     ...advisor,
 
     ...userRulesApi,
+
+    ...history,
 
     async openInFileManager(scan, node) {
       nodeOf(scan, node);

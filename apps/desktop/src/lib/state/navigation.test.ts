@@ -71,6 +71,16 @@ describe('resolveScreen', () => {
     expect(Object.values(screenIds('settings'))).toEqual(Array(5).fill('settings'));
   });
 
+  it('shows History only for a ready scan, progress while scanning, else the start screen', () => {
+    expect(screenIds('history')).toEqual({
+      idle: 'start',
+      scanning: 'progress',
+      ready: 'history',
+      cancelled: 'start',
+      failed: 'start',
+    });
+  });
+
   it('shows the Advisor view only for a ready scan, progress while scanning, else the start screen', () => {
     expect(screenIds('advisor')).toEqual({
       idle: 'start',
@@ -102,16 +112,19 @@ describe('highlightedPage', () => {
     expect(highlightedPage(resolveScreen(running, 'settings'))).toBe('settings');
     expect(highlightedPage(resolveScreen(running, 'advisor'))).toBe('scan');
     expect(highlightedPage(resolveScreen(ready, 'advisor'))).toBe('advisor');
+    expect(highlightedPage(resolveScreen(states.idle as ScanState, 'history'))).toBe('scan');
+    expect(highlightedPage(resolveScreen(ready, 'history'))).toBe('history');
   });
 });
 
 describe('isPageAvailable', () => {
-  it('opens Overview, Explorer, Cleanup and Advisor only for a ready scan', () => {
+  it('opens Overview, Explorer, Cleanup, Advisor and History only for a ready scan', () => {
     for (const [name, state] of Object.entries(states)) {
       expect(isPageAvailable('overview', state.status), name).toBe(name === 'ready');
       expect(isPageAvailable('explorer', state.status), name).toBe(name === 'ready');
       expect(isPageAvailable('cleanup', state.status), name).toBe(name === 'ready');
       expect(isPageAvailable('advisor', state.status), name).toBe(name === 'ready');
+      expect(isPageAvailable('history', state.status), name).toBe(name === 'ready');
     }
   });
 
@@ -124,12 +137,13 @@ describe('isPageAvailable', () => {
 });
 
 describe('pageAfterScan', () => {
-  it('goes to Overview, but leaves Settings, Advisor and Cleanup alone', () => {
+  it('goes to Overview, but leaves Settings, History, Advisor and Cleanup alone', () => {
     expect(pageAfterScan('scan')).toBe('overview');
     expect(pageAfterScan('overview')).toBe('overview');
     expect(pageAfterScan('explorer')).toBe('overview');
     expect(pageAfterScan('settings')).toBe('settings');
     expect(pageAfterScan('cleanup')).toBe('cleanup');
     expect(pageAfterScan('advisor')).toBe('advisor');
+    expect(pageAfterScan('history')).toBe('history');
   });
 });

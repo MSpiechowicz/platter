@@ -264,18 +264,35 @@ describe('the app', () => {
     expect(screen.getByRole('button', { name: 'Expand menu' })).toBeTruthy();
   });
 
-  it('has an Advisor item between Cleanup and Settings that waits for a scan, and no History item', async () => {
+  it('has an Advisor item between Cleanup and Settings that waits for a scan, and a History item before Settings', async () => {
     render(App);
 
     const labels = within(screen.getByRole('navigation', { name: 'Main' }))
       .getAllByRole('button')
       .map((button) => button.textContent?.trim());
 
-    expect(labels).toEqual(['Scan', 'Overview', 'Explorer', 'Cleanup', 'Advisor', 'Settings']);
+    expect(labels).toEqual(['Scan', 'Overview', 'Explorer', 'Cleanup', 'Advisor', 'History', 'Settings']);
     // Like Overview, Explorer and Cleanup: nothing to show before a scan (owner decision).
     expect(nav('Advisor').getAttribute('aria-disabled')).toBe('true');
     expect(nav('Advisor').getAttribute('aria-disabled')).toBe(nav('Overview').getAttribute('aria-disabled'));
     expect(screen.queryByText('ADVISOR')).toBeNull();
+  });
+
+  it('keeps History disabled until a scan is ready, like the other pages, then opens it', async () => {
+    render(App);
+
+    expect(nav('History').getAttribute('aria-disabled')).toBe('true');
+    expect(nav('History').getAttribute('aria-disabled')).toBe(nav('Overview').getAttribute('aria-disabled'));
+    expect(nav('History').querySelector('svg')).toBeTruthy();
+
+    await startScan();
+    await waitFor(() => expect(scan.state.status).toBe('ready'), { timeout: 3000 });
+    await waitFor(() => expect(nav('History').getAttribute('aria-disabled')).toBeNull());
+    await fireEvent.click(nav('History'));
+
+    expect(await screen.findByText('HISTORY')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: /^Cleanups/ }, { timeout: 3000 })).toBeTruthy();
+    expect(nav('History').getAttribute('aria-current')).toBe('page');
   });
 
   it('opens the Advisor view once a scan is ready, and disables it again while a new scan runs', async () => {

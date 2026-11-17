@@ -1,4 +1,6 @@
 import { mount } from 'svelte';
+// Inter ships with the app (SIL Open Font License), so text looks and centres the same on every machine.
+import '@fontsource-variable/inter/index.css';
 import './app.css';
 import App from './App.svelte';
 import { trackInputModality } from './lib/focus';

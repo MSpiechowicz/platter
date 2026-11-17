@@ -1,6 +1,6 @@
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
@@ -10,6 +10,7 @@ use platter_platform::root::ResolvedRoot;
 use tauri::State;
 use tauri::ipc::Channel;
 
+use crate::commands::history::HistoryService;
 use crate::error::{CommandError, CommandResult};
 use crate::state::{AppState, ScanRegistry};
 
@@ -95,6 +96,7 @@ pub async fn start_pinned(
 
     let platform = Arc::clone(&state.platform);
     let registry = Arc::clone(&state.scans);
+    let emit = recording(Arc::clone(&state.history), root.clone(), emit);
     let spawned = thread::Builder::new()
         .name(format!("platter-scan-driver-{id}"))
         .spawn(move || {
@@ -115,6 +117,16 @@ pub async fn start_pinned(
     }
 
     Ok(id)
+}
+
+/// `emit`, and the history hears of a scan that finished (and takes the day's first usage sample).
+fn recording(history: Arc<HistoryService>, root: PathBuf, emit: EmitFn) -> EmitFn {
+    Arc::new(move |event| {
+        if let ScanEvent::Finished { totals, .. } = &event {
+            history.record_scan(&root, totals);
+        }
+        emit(event);
+    })
 }
 
 /// The scan settings the app uses.

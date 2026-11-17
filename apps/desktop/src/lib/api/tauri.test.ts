@@ -8,6 +8,38 @@ import { isApiError } from './client';
 import { createMockApi } from './mock';
 import { createTauriApi } from './tauri';
 
+describe('the Tauri history commands', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(null);
+  });
+
+  it('asks for the overview by the number of days, and restores a cleanup by its id', async () => {
+    const overview = { days: 90, samples: [] };
+    const restored = { restored: 2, items: [] };
+
+    invoke.mockResolvedValueOnce(overview).mockResolvedValueOnce(restored);
+
+    const api = createTauriApi();
+
+    expect(await api.historyOverview(90)).toBe(overview);
+    expect(await api.restoreHistoryCleanup(5)).toBe(restored);
+    expect(invoke.mock.calls).toEqual([
+      ['history_overview', { days: 90 }],
+      ['restore_history_cleanup', { cleanup: 5 }],
+    ]);
+  });
+
+  it('turns a refusal into an API error with its code', async () => {
+    invoke.mockRejectedValueOnce({ code: 'invalid', message: 'a cleanup is running' });
+
+    await expect(createTauriApi().restoreHistoryCleanup(5)).rejects.toMatchObject({
+      code: 'invalid',
+      message: 'a cleanup is running',
+    });
+  });
+});
+
 describe('the Tauri advisor commands', () => {
   beforeEach(() => {
     invoke.mockReset();

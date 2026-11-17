@@ -391,6 +391,19 @@ describe('undoCleanup', () => {
     await expect(api.undoCleanup(cleanup)).rejects.toMatchObject({ code: 'notFound' });
   });
 
+  it('rejects with "cancelled" when the confirmation is declined, and can still be undone after', async () => {
+    let approve = false;
+    const api = createMockApi({ ...FAST, confirmUndo: () => approve });
+    const id = await scan(api);
+    const { id: cleanup } = await runPlan(api, await api.planCleanup(id, ['old-downloads', 'rust-target']));
+
+    await expect(api.undoCleanup(cleanup)).rejects.toMatchObject({ code: 'cancelled' });
+
+    approve = true;
+
+    await expect(api.undoCleanup(cleanup)).resolves.not.toHaveLength(0);
+  });
+
   it('is notFound for an unknown cleanup and while the cleanup is still running', async () => {
     const api = createMockApi({ ...FAST, durationMs: 200 });
     const id = await scan(api);

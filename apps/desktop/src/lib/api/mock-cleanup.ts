@@ -48,7 +48,8 @@ import type {
  * - `freed` is the sum of what was deleted, emptied or cleaned by a tool (not what was trashed, which
  *   frees nothing yet), as the mock cannot measure a disk.
  * - Confirmation: the backend asks the user in a native dialog before anything that cannot be undone and rejects
- *   with `cancelled` when declined. A browser has no such dialog, so `startCleanup` simply proceeds.
+ *   with `cancelled` when declined. A browser has no such dialog, so `startCleanup` simply proceeds. `undoCleanup`
+ *   asks the `confirmUndo` hook (default: yes) and rejects with `cancelled` when it says no.
  */
 
 /** The limits of the backend. */
@@ -129,7 +130,7 @@ const ACTIONS: Record<string, Action> = {
 /** The groups are planned in the table's order, the model's labels after them. */
 const RULE_ORDER = new Map([...RULE_IDS, ADVISOR_ID].map((id, index) => [id, index]));
 
-const fail = (code: 'notFound' | 'invalid', message: string): never => {
+const fail = (code: 'notFound' | 'invalid' | 'cancelled', message: string): never => {
   throw new ApiRequestError(code, message);
 };
 
@@ -179,6 +180,8 @@ export interface MockCleanupHost {
   outdated: ReadonlySet<ScanId>;
   /** A cleanup ran on the scan: it is outdated from now on, and its labels are gone. */
   outdate(scan: ScanId): void;
+  /** Test hook: the answer of the Undo confirmation dialog (default: confirmed). */
+  confirmUndo?: () => boolean;
 }
 
 export type MockCleanupApi = Pick<
@@ -237,6 +240,7 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
   const plans = new Map<PlanId, StoredPlan>();
   /** Scans a cleanup has run on: they no longer describe the disk. */
   const { outdated } = host;
+  const confirmUndo = host.confirmUndo ?? (() => true);
   /** Finished runs: the paths each moved to the trash, until it is undone. */
   const done = new Map<CleanupId, string[]>();
   let running: Running | null = null;
@@ -675,6 +679,11 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
 
       if (!paths) {
         return fail('notFound', `cleanup ${cleanup} cannot be undone`);
+      }
+
+      // The backend's native dialog: declined, nothing is put back and Undo stays possible.
+      if (!confirmUndo()) {
+        return fail('cancelled', 'The undo was not confirmed.');
       }
 
       done.delete(cleanup);
