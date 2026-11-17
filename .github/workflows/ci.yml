@@ -144,6 +144,8 @@ jobs:
             if ($LASTEXITCODE -eq 0) { throw "$($shell): a changed setup was accepted." }
           }
           Write-Host 'install.ps1: checked in both shells.'
+          # The last run above failed on purpose; its exit code must not become the step's.
+          exit 0
 
   web:
     name: Web (lint, check, test, build)

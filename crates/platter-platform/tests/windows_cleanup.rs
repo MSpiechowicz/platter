@@ -141,6 +141,11 @@ fn write_marker(entries: &[(String, String, String)]) {
 /// Puts back every setting that is in the marker: what an earlier run that was killed (or timed out) left
 /// changed. Also run by the watchdog before it fails a test, whose thread may never get to put its own back.
 fn restore_leftovers() {
+    // Only a run that may change the settings puts old ones back: a plain `cargo test` never writes the
+    // registry, not even from a marker a killed run left.
+    if std::env::var("PLATTER_TEST_CHANGE_RECYCLE_BIN").as_deref() != Ok("1") {
+        return;
+    }
     for (key, name, value) in read_marker() {
         put_back(&key, &name, (!value.is_empty()).then_some(value.as_str()));
     }
