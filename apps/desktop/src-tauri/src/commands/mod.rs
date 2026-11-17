@@ -8,4 +8,5 @@ pub mod rules;
 pub mod scan;
 pub mod suggestions;
 pub mod system;
+pub mod update;
 pub mod volumes;

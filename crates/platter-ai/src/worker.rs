@@ -142,6 +142,11 @@ pub enum Device {
 /// The problem shown when the model was moved from a graphics card to the processor.
 pub const GPU_FALLBACK: &str = "The graphics card could not run the model, so it runs on the processor.";
 
+/// The problem shown when the helper on the graphics card failed after an answer: the model was unloaded, and
+/// the next load uses the processor.
+pub const GPU_LOST: &str =
+    "The graphics card stopped working, so the model was unloaded. It loads on the processor next time.";
+
 /// The problem shown when the model stopped on the processor.
 pub const STOPPED: &str = "The model stopped unexpectedly.";
 
@@ -1074,17 +1079,37 @@ impl Worker {
         });
     }
 
-    /// Frees the runtime without letting a panic out. What it reports of its process is not asked: the
-    /// model is being dropped.
+    /// Frees the runtime without letting a panic out. The card the model is loaded on, if any, is the one an
+    /// incident of the unloading belongs to (see [`drop_engine_from`](Self::drop_engine_from)).
     fn drop_engine(&mut self) {
+        let card = self
+            .loaded
+            .as_ref()
+            .and_then(|loaded| loaded.card.as_ref())
+            .map(|card| card.name.clone());
+
+        self.drop_engine_from(card.as_deref());
+    }
+
+    /// Frees the runtime without letting a panic out. The process may have failed to stop in time, or may have
+    /// died while idle: that is told now, as an incident of `card` (the one the model was on, none for the
+    /// processor), so that it cannot be taken later for what a later call did.
+    fn drop_engine_from(&mut self, card: Option<&str>) {
         self.shared.forget_process();
         let _ = catch_unwind(AssertUnwindSafe(|| self.engine.unload()));
+
+        note_incident(&mut *self.engine, &self.shared, card.is_some(), card, None);
     }
 
     /// Ends a job: no job runs, the idle clock starts again, and the speed of the last answer and the video
     /// memory in use are shown.
     fn finish_job(&mut self, speed: Option<f64>) {
+        let had_model = self.loaded.is_some();
         let video_bytes = self.video_in_use();
+        if had_model && self.loaded.is_none() {
+            // The helper on the card died after the answer: the answer stands, the model is on disk.
+            self.lose_model(GPU_LOST.to_owned());
+        }
         self.recover(|inner| {
             if inner.status.state == ModelState::Loaded && video_bytes.is_some() {
                 inner.status.video_bytes = video_bytes;
@@ -1264,11 +1289,13 @@ impl Worker {
     }
 
     /// Tells what a job's [`Fallback`] did: the model moved to the processor, or was lost on the way.
+    ///
+    /// The card was blocked when the incident was told (`note_incident`). It is not blocked again here: an
+    /// owner who answered "Try the card again" while the job still ran keeps that answer.
     fn after_job_on(&mut self, moved: Moved) {
         match moved {
             Moved::No => {}
             Moved::ToProcessor => {
-                self.shared.gpu_failed.store(true, Ordering::SeqCst);
                 self.shared.change(|inner| {
                     inner.status.device = Some(Device::Cpu);
                     inner.status.video_bytes = None;
@@ -1276,7 +1303,6 @@ impl Worker {
                 });
             }
             Moved::Lost(problem) => {
-                self.shared.gpu_failed.store(true, Ordering::SeqCst);
                 self.lose_model(problem);
             }
             Moved::Stopped => self.lose_model(STOPPED.to_owned()),
@@ -1446,7 +1472,7 @@ impl Worker {
                 _ => "The model runtime stopped unexpectedly.".to_owned(),
             };
             note_incident(&mut *self.engine, &self.shared, true, Some(&failed), Some(&text));
-            self.drop_engine();
+            self.drop_engine_from(Some(&failed));
             card = None;
             if let Some(problem) = self.not_enough_memory(spec.min_free_bytes) {
                 return self.fail_load(
@@ -1467,7 +1493,7 @@ impl Worker {
         match loaded {
             Ok(Ok(_)) if !self.shared.lock().status.options.enabled => {
                 // Switched off while it loaded.
-                self.drop_engine();
+                self.drop_engine_from(card.as_ref().map(|card| card.description.as_str()));
                 self.fail_load(
                     ModelState::OnDisk,
                     "The local model is switched off in the settings.".to_owned(),
@@ -1491,7 +1517,13 @@ impl Worker {
                 let pid = self.engine.process_id();
                 let video_bytes = self.video_in_use();
                 if self.loaded.is_none() {
-                    // The card's driver took the helper down at once: it is told, and the model is on disk.
+                    // The card's driver took the helper down at once: it is told, the card is blocked, and the
+                    // load is made again, on the processor (with the processor's memory check).
+                    // The state stays `Loading` meanwhile, so no second load is accepted.
+                    if self.card_failed() {
+                        return self.load();
+                    }
+                    self.lose_model(GPU_LOST.to_owned());
                     return self.shared.status();
                 }
 
@@ -1508,7 +1540,7 @@ impl Worker {
             }
             Ok(Err(error)) => self.fail_load(ModelState::OnDisk, error.to_string()),
             Err(_) => {
-                self.drop_engine();
+                self.drop_engine_from(card.as_ref().map(|card| card.description.as_str()));
                 self.fail_load(
                     ModelState::OnDisk,
                     "The model runtime stopped unexpectedly.".to_owned(),
@@ -1531,13 +1563,15 @@ impl Worker {
 
     /// Video memory the loaded model takes: its card's free memory before the load less what is free
     /// now. `None` on the processor or when the card cannot be read. When asking the runtime shows that its
-    /// process failed, the incident is told and the model is on disk.
+    /// process failed, the incident is told, the runtime is dropped and `self.loaded` is `None`: the caller
+    /// says what the status is then.
     fn video_in_use(&mut self) -> Option<u64> {
         let card = self.loaded.as_ref()?.card.clone()?;
         let gpus = catch_unwind(AssertUnwindSafe(|| self.engine.gpus())).ok()?;
 
         if note_incident(&mut *self.engine, &self.shared, true, Some(&card.name), None) {
-            self.lose_model(GPU_FALLBACK.to_owned());
+            self.drop_engine();
+            self.loaded = None;
             return None;
         }
         let now = gpus.iter().find(|found| found.index == card.index)?.free_bytes;
@@ -1607,7 +1641,7 @@ impl Worker {
             } else {
                 self.shared.status()
             };
-            if status.problem.as_deref() == Some(GPU_FALLBACK) {
+            if matches!(status.problem.as_deref(), Some(GPU_FALLBACK | GPU_LOST)) {
                 return self.shared.change(|inner| inner.status.problem = None);
             }
             if misplaced {
@@ -1717,7 +1751,23 @@ impl<'a> Fallback<'a> {
 
     /// Moves the model to the processor. `Err` with the text for the user when it cannot be.
     fn move_to_processor(&mut self) -> Result<(), String> {
+        let card = self
+            .loaded
+            .as_ref()
+            .and_then(|loaded| loaded.card.as_ref())
+            .map(|card| card.name.clone());
+
         self.engine.unload();
+        // What the helper's end left (it did not stop in time, or had died idle) is the card's, and is told
+        // now: the load on the processor below takes what is left to be the processor's.
+        note_incident(
+            &mut *self.engine,
+            self.shared,
+            card.is_some(),
+            card.as_deref(),
+            None,
+        );
+
         let Some(loaded) = self.loaded.as_mut() else {
             return Err("The model is not loaded.".to_owned());
         };
@@ -1807,6 +1857,15 @@ impl Engine for Fallback<'_> {
         }
 
         self.shared.forget_process();
+        if self.shared.job_cancel.load(Ordering::SeqCst) {
+            // The job was cancelled (or the app is closing) while the card failed: the model is not moved
+            // to the processor only to be cancelled there. It loads on the processor at the next job.
+            self.engine.unload();
+            // A helper that did not stop when it was unloaded is told now, for this card.
+            note_incident(&mut *self.engine, self.shared, true, Some(&card.name), None);
+            self.give_up(Moved::Lost(GPU_LOST.to_owned()));
+            return Err(AiError::Cancelled);
+        }
         match self.move_to_processor() {
             Ok(()) => {
                 self.moved = Moved::ToProcessor;

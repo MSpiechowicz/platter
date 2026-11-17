@@ -7,7 +7,8 @@
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,8 +17,8 @@ use platter_ai::testing::{
     FakeControl, FakeEngine, Fault, Phase, SpawnerControl, ThreadSpawner, card, tiny_spec,
 };
 use platter_ai::{
-    AiError, Engine, Exit, IncidentKind, Limits, Placement, ProcessEngine, RuntimeProcess, Spawned, Spawner,
-    VerifiedModel, Waited, verify,
+    AiError, Engine, Exit, GpuDevice, IncidentKind, Limits, Placement, ProcessEngine, RuntimeProcess,
+    Spawned, Spawner, VerifiedModel, Waited, verify,
 };
 use platter_platform::RuntimeMode;
 
@@ -44,6 +45,8 @@ fn quick() -> Limits {
         stall: Duration::from_millis(150),
         cancel_grace: Duration::from_millis(200),
         shutdown: Duration::from_millis(500),
+        write: Duration::from_secs(2),
+        kill: Duration::from_secs(2),
     }
 }
 
@@ -184,6 +187,62 @@ fn a_card_that_is_not_the_one_that_was_listed_is_refused() {
     assert_eq!(rig.engine.process_id(), None);
     assert_eq!(rig.spawner.running(), 0);
     assert!(rig.control.calls().iter().all(|call| !call.starts_with("load")));
+}
+
+/// A card whose texts are what a hostile helper might write: close to a megabyte, with control characters.
+fn hostile_card() -> GpuDevice {
+    let mut card = card(
+        1,
+        &format!("{}\u{1b}[31m\nred", "d".repeat(700 * 1024)),
+        23_000,
+        false,
+    );
+    card.name = format!("Vulkan\u{1b}[0m\u{7}{}", "n".repeat(100 * 1024));
+    card
+}
+
+fn assert_shown_safely(card: &GpuDevice) {
+    for text in [&card.name, &card.description] {
+        assert!(text.chars().count() <= 120, "{}", text.chars().count());
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+        assert!(!text.is_empty());
+    }
+}
+
+#[test]
+fn the_text_of_a_card_is_cleaned_and_cut_whoever_lists_it() {
+    let mut rig = rig();
+    rig.control.set_gpus(vec![hostile_card()]);
+
+    // By the helper of its own that lists the cards.
+    let probed = rig.engine.gpus();
+    assert_eq!(probed.len(), 1);
+    assert_shown_safely(&probed[0]);
+    assert!(probed[0].description.starts_with("ddd"));
+
+    // By the helper the model runs in.
+    rig.control.set_gpus(vec![card(1, XTX, 23_000, false)]);
+    rig.load_on_card();
+    rig.control.set_gpus(vec![hostile_card()]);
+    let loaded = rig.engine.gpus();
+    assert_eq!(loaded.len(), 1);
+    assert_shown_safely(&loaded[0]);
+    assert_eq!(rig.engine.take_incident(), None);
+}
+
+#[test]
+fn at_most_sixteen_cards_are_taken_from_a_helper() {
+    let mut rig = rig();
+    rig.control.set_gpus(
+        (0..40)
+            .map(|n| card(n, &format!("Card {n}"), 8_000, false))
+            .collect(),
+    );
+
+    let cards = rig.engine.gpus();
+
+    assert_eq!(cards.len(), 16);
+    assert_eq!(cards[15].description, "Card 15", "the first ones, in order");
 }
 
 #[test]
@@ -422,6 +481,30 @@ fn on_the_processor_a_helper_that_ignores_a_cancel_is_killed_after_the_grace() {
 }
 
 #[test]
+fn on_a_card_a_helper_that_keeps_showing_progress_and_ignores_a_cancel_is_killed_after_the_grace() {
+    static CANCEL: AtomicBool = AtomicBool::new(false);
+    let mut rig = rig();
+    rig.load_on_card();
+    rig.spawner.fault(RuntimeMode::Gpu, Phase::Judge, Fault::Chatter);
+    raise_after(&CANCEL, Duration::from_millis(100));
+    let began = Instant::now();
+
+    let failed = rig.judge_until(&CANCEL);
+    let incident = rig.engine.take_incident().expect("an incident");
+
+    assert!(matches!(failed, Err(AiError::Run(_))), "{failed:?}");
+    assert_eq!(incident.what, IncidentKind::Hang);
+    assert_eq!(incident.exit, Some(Exit::Signal(9)), "it was killed");
+    assert!(
+        began.elapsed() >= Duration::from_millis(300),
+        "after the cancel and the whole grace: {:?}",
+        began.elapsed()
+    );
+    assert!(began.elapsed() < Duration::from_secs(3), "{:?}", began.elapsed());
+    assert_eq!(rig.spawner.running(), 0);
+}
+
+#[test]
 fn a_helper_that_hangs_while_loading_is_killed_when_the_load_runs_out_of_time() {
     let mut rig = rig_with(Limits {
         load: Duration::from_millis(200),
@@ -442,9 +525,27 @@ fn a_helper_that_hangs_while_loading_is_killed_when_the_load_runs_out_of_time() 
 
 struct Scripted {
     script: Option<Box<dyn FnOnce(UnixStream) + Send>>,
+    /// The process does not end when it is killed (it is stuck in a driver).
+    stuck: bool,
 }
 
 struct Stand;
+
+/// A process that is never gone, whatever is done to it.
+struct Stuck;
+
+impl RuntimeProcess for Stuck {
+    fn id(&self) -> u32 {
+        2
+    }
+
+    fn kill(&mut self) {}
+
+    fn wait_for(&mut self, timeout: Duration) -> Waited {
+        thread::sleep(timeout);
+        Waited::Running
+    }
+}
 
 impl RuntimeProcess for Stand {
     fn id(&self) -> u32 {
@@ -465,7 +566,11 @@ impl Spawner for Scripted {
         thread::spawn(move || script(helper));
 
         Ok(Spawned {
-            process: Box::new(Stand),
+            process: if self.stuck {
+                Box::new(Stuck)
+            } else {
+                Box::new(Stand)
+            },
             socket: app,
             stderr: Box::new(std::io::empty()),
         })
@@ -476,9 +581,33 @@ fn scripted(limits: Limits, script: impl FnOnce(UnixStream) + Send + 'static) ->
     ProcessEngine::with_limits(
         Scripted {
             script: Some(Box::new(script)),
+            stuck: false,
         },
         limits,
     )
+}
+
+fn stuck(limits: Limits, script: impl FnOnce(UnixStream) + Send + 'static) -> ProcessEngine<Scripted> {
+    ProcessEngine::with_limits(
+        Scripted {
+            script: Some(Box::new(script)),
+            stuck: true,
+        },
+        limits,
+    )
+}
+
+/// Says hello, takes the load and says it is done, then reads until the app lets go.
+fn loaded_then_quiet(peer: UnixStream) {
+    hello(&peer, PROTOCOL_VERSION);
+    let mut lines = LineReader::new(peer.try_clone().unwrap());
+    let Request::Load { threads, .. } = next_request(&mut lines) else {
+        panic!("a load comes first");
+    };
+    write_message(&peer, &Reply::Loaded { millis: 1, threads }).unwrap();
+
+    let mut sink = Vec::new();
+    let _ = (&peer).read_to_end(&mut sink);
 }
 
 fn hello(peer: &UnixStream, version: u32) {
@@ -610,6 +739,124 @@ fn a_reply_for_another_question_is_ignored() {
 
     let answer = engine.judge("p", "g", 4, &AtomicBool::new(false));
 
+    assert_eq!(answer.unwrap().text, "fresh");
+    assert_eq!(engine.take_incident(), None);
+}
+
+#[test]
+fn a_helper_that_is_not_gone_after_the_kill_is_waited_for_once_and_then_left_alone() {
+    let (_dir, model) = model();
+    let mut engine = stuck(
+        Limits {
+            shutdown: Duration::from_millis(100),
+            kill: Duration::from_millis(600),
+            ..quick()
+        },
+        loaded_then_quiet,
+    );
+    engine.load(&model, 1, Placement::Cpu).unwrap();
+    let began = Instant::now();
+
+    engine.unload();
+
+    // The time to stop, and one wait for it after the kill: not the second wait that letting go of it made.
+    assert!(
+        began.elapsed() >= Duration::from_millis(700),
+        "{:?}",
+        began.elapsed()
+    );
+    assert!(
+        began.elapsed() < Duration::from_millis(1_100),
+        "{:?}",
+        began.elapsed()
+    );
+    let incident = engine.take_incident().expect("an incident");
+    assert_eq!((incident.what, incident.exit), (IncidentKind::Hang, None));
+}
+
+#[test]
+fn a_helper_that_does_not_read_is_a_hang_when_a_request_cannot_be_written() {
+    let (_dir, model) = model();
+    let mut engine = scripted(
+        Limits {
+            write: Duration::from_millis(200),
+            ..quick()
+        },
+        |peer| {
+            hello(&peer, PROTOCOL_VERSION);
+            let mut lines = LineReader::new(peer.try_clone().unwrap());
+            let Request::Load { threads, .. } = next_request(&mut lines) else {
+                panic!("a load comes first");
+            };
+            write_message(&peer, &Reply::Loaded { millis: 1, threads }).unwrap();
+            // Nothing is read from here on, for longer than any test waits.
+            thread::sleep(Duration::from_secs(3));
+        },
+    );
+    engine.load(&model, 1, Placement::Cpu).unwrap();
+    let big = "x".repeat(MAX_LINE_BYTES - 1_000);
+    let began = Instant::now();
+
+    let failed = engine.judge(&big, "g", 4, &AtomicBool::new(false));
+    let incident = engine.take_incident().expect("an incident");
+
+    assert!(matches!(failed, Err(AiError::Run(_))), "{failed:?}");
+    assert_eq!(incident.what, IncidentKind::Hang);
+    assert!(began.elapsed() < Duration::from_secs(2), "{:?}", began.elapsed());
+    assert_eq!(engine.process_id(), None);
+}
+
+#[test]
+fn what_a_helper_writes_while_nobody_asks_is_held_back_and_its_next_answer_still_comes() {
+    static WRITTEN: AtomicUsize = AtomicUsize::new(0);
+    let (_dir, model) = model();
+    let mut engine = scripted(quick(), |peer| {
+        hello(&peer, PROTOCOL_VERSION);
+        let mut lines = LineReader::new(peer.try_clone().unwrap());
+        let Request::Load { threads, .. } = next_request(&mut lines) else {
+            panic!("a load comes first");
+        };
+        write_message(&peer, &Reply::Loaded { millis: 1, threads }).unwrap();
+
+        // From now on it writes progress for a question nobody asked, as fast as the socket takes it. This
+        // thread is its only writer, and gives the answer to the question that does come.
+        let (asked, question) = mpsc::channel();
+        let writer = peer.try_clone().unwrap();
+        thread::spawn(move || {
+            loop {
+                let reply = match question.try_recv() {
+                    Ok(id) => Reply::Generation {
+                        id,
+                        text: "fresh".to_owned(),
+                        tokens: 1,
+                        tokens_per_s: 1.0,
+                    },
+                    Err(_) => Reply::Progress { id: Some(9_999) },
+                };
+                if write_message(&writer, &reply).is_err() {
+                    return;
+                }
+                WRITTEN.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let Request::Judge { id, .. } = next_request(&mut lines) else {
+            panic!("a question comes next");
+        };
+        asked.send(id).unwrap();
+        let mut sink = Vec::new();
+        let _ = (&peer).read_to_end(&mut sink);
+    });
+    engine.load(&model, 1, Placement::Cpu).unwrap();
+
+    // Idle: the flood stops at what the queue and the socket hold, far short of what it could write.
+    thread::sleep(Duration::from_millis(600));
+    let held = WRITTEN.load(Ordering::SeqCst);
+    thread::sleep(Duration::from_millis(200));
+
+    assert!(held < 20_000, "{held} messages were taken while nobody asked");
+    assert_eq!(WRITTEN.load(Ordering::SeqCst), held, "and it waits there");
+    let answer = engine.judge("p", "g", 4, &AtomicBool::new(false));
     assert_eq!(answer.unwrap().text, "fresh");
     assert_eq!(engine.take_incident(), None);
 }

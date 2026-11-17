@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Each test loads `bootstrap` afresh with its own URL hooks.
 const state = vi.hoisted(() => ({ calls: [] as string[] }));
@@ -19,7 +19,7 @@ async function boot(hooks: Record<string, unknown>) {
     hooks: {
       view: null,
       mini: false,
-      update: false,
+      update: null,
       overlays: false,
       root: null,
       advisor: null,
@@ -30,7 +30,11 @@ async function boot(hooks: Record<string, unknown>) {
 
   const { advisor } = await import('./state/advisor.svelte');
   const { settings } = await import('./state/settings.svelte');
+  const { updater } = await import('./state/update.svelte');
   const { bootstrap } = await import('./bootstrap');
+
+  const check = vi.spyOn(updater, 'check').mockResolvedValue();
+  const start = vi.spyOn(updater, 'start').mockImplementation(() => {});
 
   vi.spyOn(advisor, 'configure').mockImplementation(async () => {
     state.calls.push(`configure:${settings.advisorEnabled}`);
@@ -41,7 +45,7 @@ async function boot(hooks: Record<string, unknown>) {
 
   await bootstrap();
 
-  return { advisor, settings };
+  return { advisor, settings, check, start };
 }
 
 describe('bootstrap: the advisor', () => {
@@ -82,5 +86,39 @@ describe('bootstrap: the advisor', () => {
     expect(settings.advisorEnabled).toBe(true);
     expect(state.calls).toEqual(['configure:true', 'mock:loaded', 'watch']);
     expect(localStorage.getItem('platter.settings')).toBeNull();
+  });
+});
+
+describe('bootstrap: the update schedule', () => {
+  beforeEach(() => {
+    state.calls = [];
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+  });
+
+  it('does not check for updates in the mock', async () => {
+    const { check, start } = await boot({});
+
+    expect(start).not.toHaveBeenCalled();
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it('starts the schedule with the real backend, and leaves the first check to it', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+
+    const { check, start } = await boot({});
+
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it('checks at once and starts the schedule in the mock when the update hook is set', async () => {
+    const { check, start } = await boot({ update: 'install' });
+
+    expect(check).toHaveBeenCalledWith({ manual: false });
+    expect(start).toHaveBeenCalledTimes(1);
   });
 });

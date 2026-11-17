@@ -17,6 +17,7 @@ import {
   ramShare,
   ramText,
   receivedText,
+  shortCardName,
   sourceLabel,
   speedText,
   splitParts,
@@ -266,5 +267,32 @@ describe('askReadiness', () => {
     expect(reason({ status: statusOf('loaded', { labelling: { scan: 1, done: 1, total: 4 } }) })).toMatch(
       /labelling/,
     );
+  });
+});
+
+describe('shortCardName', () => {
+  it('drops the closing group of the driver and keeps the rest', () => {
+    expect(shortCardName('AMD Radeon RX 7900 XTX (RADV NAVI31)')).toBe('AMD Radeon RX 7900 XTX');
+    expect(shortCardName('Card   (RADV)  ')).toBe('Card');
+    expect(shortCardName('Card (a) (b)')).toBe('Card (a)');
+  });
+
+  it('keeps the whole name when nothing else is left or the group is not a plain closing one', () => {
+    expect(shortCardName('(RADV NAVI31)')).toBe('(RADV NAVI31)');
+    expect(shortCardName('  (RADV)')).toBe('  (RADV)');
+    expect(shortCardName('Card')).toBe('Card');
+    expect(shortCardName('Card (a (b))')).toBe('Card (a (b))');
+    expect(shortCardName('Card (a) b)')).toBe('Card (a) b)');
+    expect(shortCardName('Card a)')).toBe('Card a)');
+    expect(shortCardName('Card (a) b')).toBe('Card (a) b');
+  });
+
+  it('is quick on a long run of spaces and on a long name', () => {
+    const started = performance.now();
+
+    expect(shortCardName(' '.repeat(1e5) + 'x')).toBe(' '.repeat(1e5) + 'x');
+    expect(shortCardName(`${'x'.repeat(1e5)} (RADV)`)).toBe('x'.repeat(1e5));
+    expect(shortCardName('('.repeat(1e5) + ')')).toBe('('.repeat(1e5 - 1));
+    expect(performance.now() - started).toBeLessThan(50);
   });
 });

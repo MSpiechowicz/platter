@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name={{name}}
+Comment=See what is using your disk
+Exec={{exec}}
+Icon={{icon}}
+Terminal=false
+Categories=Utility;System;
+StartupWMClass=Platter

@@ -53,6 +53,9 @@ function lazyApi(load: () => Promise<Api>): Api {
     addUserRule: async (scan, node, verdict) => (await impl()).addUserRule(scan, node, verdict),
     removeUserRule: async (id) => (await impl()).removeUserRule(id),
     resetUserRules: async () => (await impl()).resetUserRules(),
+    checkUpdate: async () => (await impl()).checkUpdate(),
+    installUpdate: async (onProgress) => (await impl()).installUpdate(onProgress),
+    restartApp: async () => (await impl()).restartApp(),
     openInFileManager: async (scan, node) => (await impl()).openInFileManager(scan, node),
     openExternal: async (link) => (await impl()).openExternal(link),
   };
@@ -94,6 +97,7 @@ function selectApi(): Api {
     dominant: hooks.dominant,
     warnings: hooks.warn ? ['mountTableUnavailable'] : undefined,
     advisor: advisorHooks(),
+    update: hooks.update ? { offer: { canInstall: hooks.update !== 'package' } } : undefined,
     history: hooks.history ? { variant: hooks.history } : undefined,
     userRules:
       hooks.rules === 'broken'

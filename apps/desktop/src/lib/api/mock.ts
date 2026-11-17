@@ -1,6 +1,7 @@
 import { ApiRequestError, type Api } from './client';
 import { createMockAdvisor, type MockAdvisorOptions, type MockLabelRuns } from './mock-advisor';
 import { createMockCleanup } from './mock-cleanup';
+import { createMockUpdate, type MockUpdateOptions } from './mock-update';
 import { createMockHistory, type MockHistoryOptions } from './mock-history';
 import { createMockUserRules, type MockUserRulesOptions } from './mock-user-rules';
 import { toDto } from './mock-dto';
@@ -33,6 +34,7 @@ export const EXTERNAL_URLS: Record<ExternalLink, string> = {
   source: REPOSITORY,
   issues: `${REPOSITORY}/issues`,
   license: `${REPOSITORY}/blob/main/LICENSE`,
+  releases: `${REPOSITORY}/releases/latest`,
 };
 
 export const MOCK_VOLUMES: VolumeDto[] = [
@@ -112,6 +114,8 @@ export interface MockOptions {
   userRules?: MockUserRulesOptions;
   /** Test hook: the history the History view shows (see `mock-history.ts`). */
   history?: MockHistoryOptions;
+  /** Test hook: the update the mock finds (default: none; see `mock-update.ts`). */
+  update?: MockUpdateOptions;
   /** Test hook: the answer of the Undo confirmation dialog (default: confirmed; see `mock-cleanup.ts`). */
   confirmUndo?: () => boolean;
 }
@@ -341,6 +345,7 @@ export function createMockApi(options: MockOptions = {}): Api {
   const { view: userRulesView, ...userRulesApi } = userRules;
 
   const history = createMockHistory({ now: clock, ...options.history });
+  const update = createMockUpdate(options.update);
 
   const { advisorEnabled, ...advisor } = createMockAdvisor(
     {
@@ -558,6 +563,8 @@ export function createMockApi(options: MockOptions = {}): Api {
     ...userRulesApi,
 
     ...history,
+
+    ...update,
 
     async openInFileManager(scan, node) {
       nodeOf(scan, node);

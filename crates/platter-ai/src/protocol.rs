@@ -122,6 +122,10 @@ impl ErrorKind {
 /// The most characters of the helper's text that are kept.
 pub const MAX_ERROR_CHARS: usize = 300;
 
+/// The most characters of the name and the description of a card. The app keeps a card's text cleaned to this
+/// length, and the helper compares the card it is asked to load in the same form.
+pub const CARD_TEXT_CHARS: usize = 120;
+
 /// `text` as it may be shown: line breaks and tabs become spaces, other control characters go, the ends are
 /// trimmed and at most `max_chars` characters stay (a longer text ends in an ellipsis).
 pub fn clean_text(text: &str, max_chars: usize) -> String {

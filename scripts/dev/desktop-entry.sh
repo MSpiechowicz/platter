@@ -7,9 +7,11 @@
 #   scripts/dev/desktop-entry.sh remove
 set -eu
 
-repo=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+repo=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 data=${XDG_DATA_HOME:-$HOME/.local/share}
-entry=$data/applications/platter.desktop
+entry=$data/applications/Platter.desktop
+# The name this script used before the app id became "Platter".
+old_entry=$data/applications/platter.desktop
 icons=$repo/apps/desktop/src-tauri/icons
 binary=$repo/target/release/platter
 
@@ -29,7 +31,8 @@ case ${1:-install} in
     cp "$icons/128x128@2x.png" "$data/icons/hicolor/256x256/apps/platter.png"
     cp "$icons/icon.png" "$data/icons/hicolor/512x512/apps/platter.png"
     cp "$icons/icon.svg" "$data/icons/hicolor/scalable/apps/platter.svg"
-    # The file name and StartupWMClass must match the window's app id ("platter").
+    # The file name and StartupWMClass must match the window's app id ("Platter", APP_ID in lib.rs).
+    rm -f "$old_entry"
     cat > "$entry" <<DESKTOP
 [Desktop Entry]
 Type=Application
@@ -39,12 +42,12 @@ Exec="$binary"
 Icon=platter
 Terminal=false
 Categories=Utility;System;
-StartupWMClass=platter
+StartupWMClass=Platter
 DESKTOP
     echo "Installed $entry"
     ;;
   remove)
-    rm -f "$entry" "$data/icons/hicolor/scalable/apps/platter.svg"
+    rm -f "$entry" "$old_entry" "$data/icons/hicolor/scalable/apps/platter.svg"
     for size in 32x32 128x128 256x256 512x512; do rm -f "$data/icons/hicolor/$size/apps/platter.png"; done
     echo "Removed the Platter desktop entry and icons"
     ;;

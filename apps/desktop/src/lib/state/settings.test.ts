@@ -56,6 +56,16 @@ describe('SettingsStore', () => {
     expect(JSON.parse(storage.getItem(SETTINGS_KEY) ?? '{}')).toMatchObject({ advisorUseGpu: true });
   });
 
+  it('checks for updates daily, also for a save made before the setting existed', () => {
+    expect(new SettingsStore(new MemoryStorage()).updateCheck).toBe('daily');
+
+    const storage = new MemoryStorage();
+
+    storage.setItem(SETTINGS_KEY, JSON.stringify({ units: 'GiB' }));
+
+    expect(new SettingsStore(storage).updateCheck).toBe('daily');
+  });
+
   it('saves a change and restores it in a new store', () => {
     const storage = new MemoryStorage();
     const first = new SettingsStore(storage);
@@ -69,6 +79,7 @@ describe('SettingsStore', () => {
     first.set('advisorUnloadAfter', 'windowClose');
     first.set('advisorLogQuestions', false);
     first.set('advisorUseGpu', false);
+    first.set('updateCheck', 'weekly');
 
     const second = new SettingsStore(storage);
 
@@ -81,6 +92,7 @@ describe('SettingsStore', () => {
     expect(second.advisorUnloadAfter).toBe('windowClose');
     expect(second.advisorLogQuestions).toBe(false);
     expect(second.advisorUseGpu).toBe(false);
+    expect(second.updateCheck).toBe('weekly');
   });
 
   it('ignores values of the wrong type and keeps the defaults for them', () => {
@@ -97,6 +109,7 @@ describe('SettingsStore', () => {
         advisorUnloadAfter: 'never',
         advisorLogQuestions: 'no',
         advisorUseGpu: 'no',
+        updateCheck: 'hourly',
         extra: 1,
       }),
     );
@@ -111,6 +124,7 @@ describe('SettingsStore', () => {
     expect(settings.advisorUnloadAfter).toBe('fiveMinutes');
     expect(settings.advisorLogQuestions).toBe(true);
     expect(settings.advisorUseGpu).toBe(true);
+    expect(settings.updateCheck).toBe('daily');
   });
 
   it('ignores the model choice an older version saved, and does not write it back', () => {

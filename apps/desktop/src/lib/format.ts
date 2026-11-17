@@ -73,6 +73,28 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
 
+/** "just now", "5 minutes ago", "2 hours ago", "3 days ago" from the time that has passed. A time in the future counts as now. */
+export function formatAgo(elapsedMs: number): string {
+  const minutes = Math.floor(Math.max(0, elapsedMs) / 60_000);
+
+  if (minutes < 1) {
+    return 'just now';
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days >= 1) {
+    return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+  }
+
+  if (hours >= 1) {
+    return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  }
+
+  return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
+}
+
 const DATE_FORMAT = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 
 /**

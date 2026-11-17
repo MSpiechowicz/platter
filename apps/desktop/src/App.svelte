@@ -27,7 +27,7 @@
   import { scan } from './lib/state/scan.svelte';
   import { settings } from './lib/state/settings.svelte';
   import { ui, type Page } from './lib/state/ui.svelte';
-  import { updater } from './lib/state/update.svelte';
+  import { updater, type UpdateAction } from './lib/state/update.svelte';
   import { viewport } from './lib/state/viewport.svelte';
 
   const NAV: (NavItem & { id: Page })[] = [
@@ -80,20 +80,18 @@
     }
   });
 
-  function onUpdate(action: 'install' | 'later' | 'restart'): void {
+  function onUpdate(action: UpdateAction): void {
     if (action === 'install') {
       // The progress bar needs the full sidebar.
       settings.set('sidebarCollapsed', false);
-      updater.install();
+      void updater.install();
+    } else if (action === 'open') {
+      void updater.openReleases();
     } else if (action === 'later') {
       updater.later();
-      ui.toast('Update postponed', 'Platter will remind you tomorrow.', 'info');
+      ui.toast('Update postponed', 'The notice comes back after the next update check.', 'info');
     } else {
-      ui.toast(
-        'Restarting Platter',
-        `Version ${updater.info?.next ?? ''} is installed when the app starts again.`,
-        'info',
-      );
+      void updater.restart();
     }
   }
 </script>
@@ -113,6 +111,7 @@
       update={updater.info}
       updatePhase={updater.phase}
       updateProgress={updater.progress}
+      updateIndeterminate={updater.indeterminate}
       onupdate={onUpdate}
     />
   {/snippet}

@@ -91,6 +91,8 @@ pub enum ExternalLink {
     Source,
     Issues,
     License,
+    /// The newest release, for an install that a package manager updates.
+    Releases,
 }
 
 impl ExternalLink {
@@ -99,6 +101,7 @@ impl ExternalLink {
             Self::Source => "https://github.com/MSpiechowicz/platter",
             Self::Issues => "https://github.com/MSpiechowicz/platter/issues",
             Self::License => "https://www.gnu.org/licenses/gpl-3.0.html",
+            Self::Releases => "https://github.com/MSpiechowicz/platter/releases/latest",
         }
     }
 }

@@ -29,6 +29,8 @@ import type {
   SortKey,
   SuggestionsDto,
   SummaryDto,
+  UpdateCheck,
+  UpdateProgress,
   UndoDto,
   UserRulesDto,
   UserVerdict,
@@ -184,6 +186,17 @@ export function createTauriApi(): Api {
     resetUserRules: () => call<UserRulesDto>('reset_user_rules'),
 
     openInFileManager: (scan: ScanId, node: NodeId) => callVoid('open_in_file_manager', { scan, node }),
+
+    checkUpdate: () => call<UpdateCheck>('check_update'),
+
+    installUpdate(onProgress: (progress: UpdateProgress) => void): Promise<void> {
+      const channel = new Channel<UpdateProgress>();
+      channel.onmessage = onProgress;
+
+      return callVoid('install_update', { onProgress: channel });
+    },
+
+    restartApp: () => callVoid('restart_app'),
 
     openExternal: (link: ExternalLink) => callVoid('open_external', { link }),
   };

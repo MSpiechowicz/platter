@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tooltip } from '../ui/tooltip.svelte';
-  import type { UpdateInfo, UpdatePhase } from '../../state/update.svelte';
+  import type { UpdateAction, UpdateInfo, UpdatePhase } from '../../state/update.svelte';
   import Bar from '../ui/Bar.svelte';
   import Button from '../ui/Button.svelte';
   import Icon from '../ui/Icon.svelte';
@@ -10,12 +10,18 @@
     phase: UpdatePhase;
     /** Download progress, 0 to 1. */
     progress: number;
+    /** The download has no known size, or the install is running: the bar slides instead of filling. */
+    indeterminate?: boolean;
     /** The sidebar is the 60 px rail: only a download button with a dot is shown. */
     collapsed: boolean;
-    onaction: (action: 'install' | 'later' | 'restart') => void;
+    onaction: (action: UpdateAction) => void;
   }
 
-  let { info, phase, progress, collapsed, onaction }: Props = $props();
+  let { info, phase, progress, indeterminate = false, collapsed, onaction }: Props = $props();
+
+  /** What the main button does: install the update here, or open the release page. */
+  const mainAction = $derived<UpdateAction>(info.canInstall ? 'install' : 'open');
+  const railLabel = $derived(info.canInstall ? `Update to Platter ${info.next}` : `Get Platter ${info.next}`);
 
   const notes = $derived({
     title: `New in ${info.next}`,
@@ -29,9 +35,9 @@
     <button
       type="button"
       class="ubtn"
-      title="Update to Platter {info.next}"
-      aria-label="Update to Platter {info.next}"
-      onclick={() => onaction('install')}
+      title={railLabel}
+      aria-label={railLabel}
+      onclick={() => onaction(mainAction)}
     >
       <Icon name="download" />
       <i></i>
@@ -44,17 +50,24 @@
         <Icon name="info" size={15} stroke={1.5} />
       </button>
     </div>
-    <div class="uv">Platter {info.next} · {info.size}</div>
+    <div class="uv">Platter {info.next}{info.size ? ` · ${info.size}` : ''}</div>
 
     {#if phase === 'available'}
       <div class="ub">
-        <Button variant="primary" size="sm" onclick={() => onaction('install')}>Install</Button>
+        <Button variant="primary" size="sm" onclick={() => onaction(mainAction)}>
+          {info.canInstall ? 'Install' : 'Get it'}
+        </Button>
         <Button size="sm" onclick={() => onaction('later')}>Later</Button>
       </div>
-    {:else if phase === 'downloading'}
+    {:else if phase === 'downloading' || phase === 'installing'}
+      {@const what = phase === 'downloading' ? 'Downloading' : 'Installing'}
       <div class="progress">
-        <Bar value={progress} label="Downloading {info.next}" />
-        <span>Downloading {info.next}…</span>
+        <Bar
+          value={progress}
+          indeterminate={indeterminate || phase === 'installing'}
+          label="{what} {info.next}"
+        />
+        <span>{what} {info.next}…</span>
       </div>
     {:else}
       <div class="ub one">

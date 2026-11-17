@@ -9,7 +9,7 @@ export default tseslint.config(
   ...tseslint.configs.strict,
   ...svelte.configs['flat/recommended'],
   {
-    languageOptions: { globals: { ...globals.browser, ...globals.node } },
+    languageOptions: { globals: { ...globals.browser, ...globals.node, __APP_VERSION__: 'readonly' } },
   },
   {
     files: ['**/*.svelte', '**/*.svelte.ts'],

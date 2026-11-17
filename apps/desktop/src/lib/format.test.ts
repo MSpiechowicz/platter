@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   baseName,
+  formatAgo,
   formatCount,
   formatDate,
   formatDateTime,
@@ -44,6 +45,24 @@ describe('formatCount', () => {
   it('groups thousands', () => {
     expect(formatCount(2184331)).toBe('2,184,331');
     expect(formatCount(0)).toBe('0');
+  });
+});
+
+describe('formatAgo', () => {
+  const MINUTE = 60_000;
+
+  it('says how long ago in the largest whole unit', () => {
+    expect(formatAgo(30_000)).toBe('just now');
+    expect(formatAgo(MINUTE)).toBe('1 minute ago');
+    expect(formatAgo(5 * MINUTE)).toBe('5 minutes ago');
+    expect(formatAgo(60 * MINUTE)).toBe('1 hour ago');
+    expect(formatAgo(150 * MINUTE)).toBe('2 hours ago');
+    expect(formatAgo(24 * 60 * MINUTE)).toBe('1 day ago');
+    expect(formatAgo(3 * 24 * 60 * MINUTE)).toBe('3 days ago');
+  });
+
+  it('counts a time in the future as now', () => {
+    expect(formatAgo(-5 * MINUTE)).toBe('just now');
   });
 });
 

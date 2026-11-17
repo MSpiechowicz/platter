@@ -16,7 +16,14 @@
 //!   includes a first run, so compiling the driver's pipelines is covered by the load's own limit.
 //! - On the processor there is no stall limit (a slow answer is just slow; the job's own time ends it by
 //!   raising the cancel flag), but a helper that has been told to cancel and still does not answer within
-//!   [`Limits::cancel_grace`] is killed.
+//!   [`Limits::cancel_grace`] is killed. So is a helper on a card that keeps showing progress and ignores a
+//!   cancel for that long.
+//! - A helper that does not read what is written to it for [`Limits::write`]: a hang, and it is killed.
+//!
+//! The helper is not trusted: the cards it lists are cleaned and counted, and what it writes while nobody
+//! asks is held back by a queue of a few messages (the helper then waits on its write) and is never stored
+//! without limit. A process that does not end when it is killed (stuck in a driver call) is left to a thread
+//! that reaps it, so nothing here waits for it for ever.
 //!
 //! Starting a helper is behind [`Spawner`], so tests run the helper's side on a thread (see
 //! `testing::ThreadSpawner`) and no test starts a process or touches a graphics card.
@@ -26,8 +33,8 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::process::Child;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::{Child, ExitStatus};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -39,7 +46,8 @@ use crate::engine::{
     AiError, Engine, Exit, Generation, GpuDevice, IncidentKind, LoadInfo, Placement, RuntimeIncident,
 };
 use crate::protocol::{
-    ErrorKind, LineReader, MAX_ERROR_CHARS, PROTOCOL_VERSION, Reply, Request, clean_text, write_message,
+    CARD_TEXT_CHARS, ErrorKind, LineReader, MAX_ERROR_CHARS, PROTOCOL_VERSION, Reply, Request, clean_text,
+    write_message,
 };
 use crate::verify::VerifiedModel;
 
@@ -58,6 +66,10 @@ pub struct Limits {
     pub cancel_grace: Duration,
     /// A helper that was told to stop may take this long to exit.
     pub shutdown: Duration,
+    /// A request may take this long to be written to a helper (one that does not read stalls the write).
+    pub write: Duration,
+    /// A helper that was killed may take this long to be gone.
+    pub kill: Duration,
 }
 
 impl Default for Limits {
@@ -69,6 +81,8 @@ impl Default for Limits {
             stall: Duration::from_secs(5),
             cancel_grace: Duration::from_secs(30),
             shutdown: Duration::from_secs(2),
+            write: Duration::from_secs(5),
+            kill: Duration::from_secs(2),
         }
     }
 }
@@ -127,31 +141,65 @@ impl Spawner for RealSpawner {
         let child = platter_platform::spawn_advisor_runtime(&self.program, model, mode)?;
 
         Ok(Spawned {
-            process: Box::new(RealProcess { child: child.child }),
+            process: Box::new(RealProcess {
+                child: Some(child.child),
+            }),
             socket: child.socket,
             stderr: Box::new(child.stderr),
         })
     }
 }
 
-struct RealProcess {
-    child: Child,
+/// A child process, as [`RealProcess`] needs it. [`Child`] is the real one.
+trait ChildProcess: Send + 'static {
+    fn id(&self) -> u32;
+    fn kill(&mut self);
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>>;
+    fn wait(&mut self) -> io::Result<ExitStatus>;
 }
 
-impl RuntimeProcess for RealProcess {
+impl ChildProcess for Child {
     fn id(&self) -> u32 {
-        self.child.id()
+        Child::id(self)
     }
 
     fn kill(&mut self) {
-        let _ = self.child.kill();
+        let _ = Child::kill(self);
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        Child::try_wait(self)
+    }
+
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        Child::wait(self)
+    }
+}
+
+struct RealProcess<C: ChildProcess = Child> {
+    /// Taken by the drop, which hands it to a reaper when it is not gone.
+    child: Option<C>,
+}
+
+impl<C: ChildProcess> RuntimeProcess for RealProcess<C> {
+    fn id(&self) -> u32 {
+        self.child.as_ref().map_or(0, ChildProcess::id)
+    }
+
+    fn kill(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            child.kill();
+        }
     }
 
     fn wait_for(&mut self, timeout: Duration) -> Waited {
+        let Some(child) = self.child.as_mut() else {
+            return Waited::Exited(None);
+        };
         let deadline = Instant::now() + timeout;
 
         loop {
-            match self.child.try_wait() {
+            match child.try_wait() {
                 Ok(Some(status)) => {
                     return Waited::Exited(platter_platform::describe_exit(&status).map(exit_of));
                 }
@@ -167,12 +215,44 @@ impl RuntimeProcess for RealProcess {
     }
 }
 
-impl Drop for RealProcess {
+impl<C: ChildProcess> Drop for RealProcess<C> {
     fn drop(&mut self) {
-        // Nothing is left running, and nothing is left to be waited for.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+
+        child.kill();
+        if !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+
+        // Not gone yet. Whoever let go of it has waited for it for a while already (see `Helper`), and a
+        // process stuck in a graphics driver may never end, so this does not wait: a thread of its own
+        // does, and the process is reaped whenever it is gone.
+        STUCK.fetch_add(1, Ordering::SeqCst);
+        let reaper = thread::Builder::new()
+            .name("platter-runtime-reaper".to_owned())
+            .spawn(move || {
+                let _ = child.wait();
+                STUCK.fetch_sub(1, Ordering::SeqCst);
+            });
+        // Without a reaper (no thread could start) the process is still stuck, and stays counted.
+        let _ = reaper;
     }
+}
+
+/// Helpers that were killed but have not ended yet (stuck in a graphics driver), each with a reaper thread.
+static STUCK: AtomicUsize = AtomicUsize::new(0);
+
+/// No new helper starts while this many are stuck: each one may hold memory, video memory and threads that
+/// only a restart of the computer gives back.
+const MAX_STUCK: usize = 2;
+
+/// Why no helper may start now: too many earlier ones are stuck. `None` when one may.
+fn too_many_stuck() -> Option<String> {
+    (STUCK.load(Ordering::SeqCst) >= MAX_STUCK).then(|| {
+        "Earlier model processes are stuck in the graphics driver and cannot be ended. Restart the computer to use the advisor again.".to_owned()
+    })
 }
 
 fn exit_of(exit: platter_platform::Exit) -> Exit {
@@ -184,8 +264,11 @@ fn exit_of(exit: platter_platform::Exit) -> Exit {
 
 /// How long to look at the processes' last words after one has ended.
 const STDERR_SETTLE: Duration = Duration::from_millis(300);
-/// How long to wait for a process that was killed to be gone.
-const KILL_SETTLE: Duration = Duration::from_secs(2);
+/// How many messages the helper may have written that nobody has asked for yet. Past it the reader waits,
+/// and with it the helper's write.
+const EVENT_QUEUE: usize = 32;
+/// The most cards a helper may list.
+const MAX_CARDS: usize = 16;
 /// How often a waiting call looks at its cancel flag and its clocks.
 const TICK: Duration = Duration::from_millis(10);
 
@@ -220,11 +303,14 @@ impl<S: Spawner> ProcessEngine<S> {
     /// Starts a helper and waits for it to say hello. A helper that could not start (the system refused
     /// it) is an error with text; one that started and failed is an incident as well.
     fn start(&mut self, model: Option<File>, mode: RuntimeMode) -> Result<Helper, String> {
+        if let Some(problem) = too_many_stuck() {
+            return Err(problem);
+        }
         let spawned = self
             .spawner
             .spawn(model, mode)
             .map_err(|error| format!("The model runtime could not start: {error}"))?;
-        let mut helper = Helper::new(spawned, mode)
+        let mut helper = Helper::new(spawned, mode, self.limits)
             .map_err(|error| format!("The model runtime could not start: {error}"))?;
 
         match helper.next_reply(self.limits.probe, |_| false) {
@@ -268,7 +354,7 @@ impl<S: Spawner> ProcessEngine<S> {
             return;
         }
 
-        let _ = write_message(&helper.socket, &Request::Shutdown {});
+        let _ = helper.send(&Request::Shutdown {});
         if helper.process.wait_for(self.limits.shutdown) == Waited::Running {
             self.incident = Some(helper.retire(
                 IncidentKind::Hang,
@@ -335,9 +421,9 @@ impl<S: Spawner> Engine for ProcessEngine<S> {
             placement,
             card,
         };
-        if write_message(&helper.socket, &request).is_err() {
-            self.incident = Some(helper.fail(&Failure::Closed("the helper was gone".to_owned()), "load"));
-            return Err(AiError::Load(Failure::lost()));
+        if let Err(failure) = helper.send(&request) {
+            self.incident = Some(helper.fail(&failure, "load the model"));
+            return Err(AiError::Load(failure.sentence()));
         }
 
         let loaded = helper.next_reply(self.limits.load, |reply| matches!(reply, Reply::Progress { .. }));
@@ -390,12 +476,9 @@ impl<S: Spawner> Engine for ProcessEngine<S> {
             grammar: grammar.to_owned(),
             max_tokens,
         };
-        let sent = write_message(&helper.socket, &request);
-
-        let result = match sent {
-            Ok(()) => self.wait_for_generation(&mut helper, id, cancel),
-            Err(_) => Err(Failure::Closed("the helper was gone".to_owned())),
-        };
+        let result = helper
+            .send(&request)
+            .and_then(|()| self.wait_for_generation(&mut helper, id, cancel));
 
         match result {
             Ok(done) => {
@@ -433,8 +516,8 @@ impl<S: Spawner> ProcessEngine<S> {
 
         loop {
             if cancelled_at.is_none() && cancel.load(Ordering::Relaxed) {
-                // A write that fails is a helper that is gone, and the wait below finds that out.
-                let _ = write_message(&helper.socket, &Request::Cancel { id });
+                // A write that fails is a helper that is gone or stuck, and the wait below finds that out.
+                let _ = helper.send(&Request::Cancel { id });
                 cancelled_at = Some(Instant::now());
             }
 
@@ -473,8 +556,8 @@ impl<S: Spawner> ProcessEngine<S> {
             if on_card && last_progress.elapsed() >= self.limits.stall {
                 return Err(Failure::Stalled(self.limits.stall));
             }
-            if !on_card
-                && let Some(at) = cancelled_at
+            // On a card as well: a helper that shows progress and does not stop is not working for anybody.
+            if let Some(at) = cancelled_at
                 && at.elapsed() >= self.limits.cancel_grace
             {
                 return Err(Failure::NotCancelled(self.limits.cancel_grace));
@@ -499,13 +582,17 @@ enum Failure {
     TimedOut(Duration),
     /// Told to cancel, and no answer.
     NotCancelled(Duration),
+    /// A request that it did not take: it does not read.
+    NotRead(Duration),
 }
 
 impl Failure {
     fn kind(&self) -> IncidentKind {
         match self {
             Self::Closed(_) => IncidentKind::Crash,
-            Self::Stalled(_) | Self::TimedOut(_) | Self::NotCancelled(_) => IncidentKind::Hang,
+            Self::Stalled(_) | Self::TimedOut(_) | Self::NotCancelled(_) | Self::NotRead(_) => {
+                IncidentKind::Hang
+            }
         }
     }
 
@@ -540,6 +627,10 @@ impl Failure {
                     after.as_secs_f64()
                 )
             }
+            Self::NotRead(after) => format!(
+                "It did not take a request within {} s when it was asked to {doing}.",
+                after.as_secs_f64()
+            ),
         }
     }
 }
@@ -552,6 +643,9 @@ struct Helper {
     stderr: Arc<StderrTail>,
     stderr_ended: Receiver<()>,
     mode: RuntimeMode,
+    limits: Limits,
+    /// It was killed and did not go within [`Limits::kill`]: it is not waited for again.
+    abandoned: bool,
 }
 
 enum Event {
@@ -561,14 +655,18 @@ enum Event {
 }
 
 impl Helper {
-    fn new(spawned: Spawned, mode: RuntimeMode) -> io::Result<Self> {
+    fn new(spawned: Spawned, mode: RuntimeMode, limits: Limits) -> io::Result<Self> {
         let Spawned {
             process,
             socket,
             stderr,
         } = spawned;
 
-        let (events, replies) = mpsc::channel();
+        // A helper that does not read must not keep the app in a write for ever. (The option is the
+        // socket's, so it holds for the clone the reader thread has as well.)
+        socket.set_write_timeout(Some(limits.write))?;
+
+        let (events, replies) = mpsc::sync_channel(EVENT_QUEUE);
         let mut lines = LineReader::new(socket.try_clone()?);
         thread::Builder::new()
             .name("platter-runtime-reader".to_owned())
@@ -603,6 +701,17 @@ impl Helper {
             stderr: tail,
             stderr_ended,
             mode,
+            limits,
+            abandoned: false,
+        })
+    }
+
+    /// Writes a request. A write that fails is a helper that is gone, one that times out a helper that does
+    /// not read.
+    fn send(&self, request: &Request) -> Result<(), Failure> {
+        write_message(&self.socket, request).map_err(|error| match error.kind() {
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => Failure::NotRead(self.limits.write),
+            _ => Failure::Closed("the helper was gone".to_owned()),
         })
     }
 
@@ -626,11 +735,10 @@ impl Helper {
 
     /// Asks the helper which graphics cards there are.
     fn ask_cards(&mut self, within: Duration) -> Result<Vec<GpuDevice>, Failure> {
-        write_message(&self.socket, &Request::Gpus {})
-            .map_err(|_| Failure::Closed("the helper was gone".to_owned()))?;
+        self.send(&Request::Gpus {})?;
 
         match self.next_reply(within, |reply| matches!(reply, Reply::Progress { .. }))? {
-            Reply::Gpus { cards } => Ok(cards),
+            Reply::Gpus { cards } => Ok(clean_cards(cards)),
             other => Err(Failure::Closed(format!(
                 "it answered the list of cards with {}",
                 describe(&other)
@@ -648,9 +756,12 @@ impl Helper {
         self.process.kill();
         let _ = self.socket.shutdown(std::net::Shutdown::Both);
 
-        let exit = match self.process.wait_for(KILL_SETTLE) {
+        let exit = match self.process.wait_for(self.limits.kill) {
             Waited::Exited(exit) => exit,
-            Waited::Running => None,
+            Waited::Running => {
+                self.abandoned = true;
+                None
+            }
         };
 
         self.incident(what, exit, detail)
@@ -679,8 +790,23 @@ impl Drop for Helper {
         // Whatever way a helper is let go of, nothing of it is left running.
         self.process.kill();
         let _ = self.socket.shutdown(std::net::Shutdown::Both);
-        let _ = self.process.wait_for(KILL_SETTLE);
+        if !self.abandoned {
+            let _ = self.process.wait_for(self.limits.kill);
+        }
     }
+}
+
+/// The cards a helper listed, as they may be shown: at most [`MAX_CARDS`], their texts cleaned and cut.
+fn clean_cards(cards: Vec<GpuDevice>) -> Vec<GpuDevice> {
+    cards
+        .into_iter()
+        .take(MAX_CARDS)
+        .map(|card| GpuDevice {
+            name: clean_text(&card.name, CARD_TEXT_CHARS),
+            description: clean_text(&card.description, CARD_TEXT_CHARS),
+            ..card
+        })
+        .collect()
 }
 
 fn describe(reply: &Reply) -> &'static str {
@@ -790,6 +916,79 @@ mod tests {
         assert!(kept.len() <= TAIL_BYTES, "{}", kept.len());
         assert!(kept.lines().all(|line| line.chars().count() <= LINE_CHARS));
         assert!(!kept.contains('y'), "the endless line was long gone");
+    }
+
+    /// A process that does not end when it is killed: its wait lasts until it is released (or five seconds).
+    struct Stuck {
+        killed: Arc<AtomicBool>,
+        reaped: Arc<AtomicBool>,
+        release: Receiver<()>,
+    }
+
+    impl ChildProcess for Stuck {
+        fn id(&self) -> u32 {
+            3
+        }
+
+        fn kill(&mut self) {
+            self.killed.store(true, Ordering::SeqCst);
+        }
+
+        fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> io::Result<ExitStatus> {
+            let _ = self.release.recv_timeout(Duration::from_secs(5));
+            self.reaped.store(true, Ordering::SeqCst);
+
+            Ok(std::os::unix::process::ExitStatusExt::from_raw(9))
+        }
+    }
+
+    #[test]
+    fn a_process_that_is_not_gone_after_the_kill_is_left_to_a_reaper_and_the_drop_does_not_wait() {
+        // The only test that makes processes stuck, so the count of stuck helpers is its own.
+        let stuck = |killed: &Arc<AtomicBool>, reaped: &Arc<AtomicBool>| {
+            let (release, released) = mpsc::channel();
+            let process = RealProcess {
+                child: Some(Stuck {
+                    killed: Arc::clone(killed),
+                    reaped: Arc::clone(reaped),
+                    release: released,
+                }),
+            };
+            (process, release)
+        };
+        let (killed, reaped) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let (process, release) = stuck(&killed, &reaped);
+        let began = Instant::now();
+
+        drop(process);
+
+        assert!(began.elapsed() < Duration::from_secs(1), "{:?}", began.elapsed());
+        assert!(killed.load(Ordering::SeqCst));
+        assert!(!reaped.load(Ordering::SeqCst), "it is still not gone");
+        assert_eq!(too_many_stuck(), None, "one stuck helper does not stop the next");
+
+        // A second stuck one: no new helper starts until one of them is gone.
+        let (killed_too, reaped_too) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let (process_too, release_too) = stuck(&killed_too, &reaped_too);
+        drop(process_too);
+        assert!(too_many_stuck().is_some());
+
+        // When it is gone at last, the reaper reaps it.
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !reaped.load(Ordering::SeqCst) || too_many_stuck().is_some() {
+            assert!(Instant::now() < deadline, "the reaper did not wait for it");
+            thread::sleep(Duration::from_millis(5));
+        }
+        release_too.send(()).unwrap();
+        while !reaped_too.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the reaper did not wait for it");
+            thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]

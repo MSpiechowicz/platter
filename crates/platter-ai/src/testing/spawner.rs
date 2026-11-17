@@ -22,12 +22,16 @@ use crate::verify::VerifiedModel;
 /// The step of a helper's work a fault happens in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// Listing the graphics cards.
+    /// Listing the graphics cards, before the model is loaded (also the listing a load makes).
     Probe,
+    /// Listing the graphics cards once the model is loaded in this helper (the video memory in use).
+    Cards,
     /// Loading the model.
     Load,
     /// Answering (the first call that comes).
     Judge,
+    /// Freeing the model when the helper is told to stop.
+    Unload,
 }
 
 /// What goes wrong.
@@ -37,6 +41,9 @@ pub enum Fault {
     Crash { exit: Exit, stderr: Vec<String> },
     /// The helper stops answering and shows no progress, until it is killed.
     Hang,
+    /// The helper keeps showing progress and ignores a cancel, until it is killed (or, so that a test that
+    /// finds no kill ends, for five seconds).
+    Chatter,
 }
 
 struct Planned {
@@ -124,6 +131,7 @@ impl Spawner for ThreadSpawner {
             life: Arc::clone(&life),
             socket: helper_end.try_clone()?,
             stderr: stderr_write,
+            loaded: false,
         };
 
         self.shared.running.fetch_add(1, Ordering::SeqCst);
@@ -220,6 +228,8 @@ struct Faulty {
     /// The helper's end of the connection.
     socket: UnixStream,
     stderr: UnixStream,
+    /// The model is loaded in this helper.
+    loaded: bool,
 }
 
 impl Faulty {
@@ -250,13 +260,21 @@ impl Faulty {
                     thread::sleep(Duration::from_millis(1));
                 }
             }
+            Fault::Chatter => {
+                let began = Instant::now();
+                while !self.life.killed.load(Ordering::SeqCst) && began.elapsed() < Duration::from_secs(5) {
+                    self.inner.report_progress();
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
         }
     }
 }
 
 impl Engine for Faulty {
     fn gpus(&mut self) -> Vec<GpuDevice> {
-        if let Some(fault) = self.planned(Phase::Probe) {
+        let phase = if self.loaded { Phase::Cards } else { Phase::Probe };
+        if let Some(fault) = self.planned(phase) {
             self.go_wrong(fault);
             return Vec::new();
         }
@@ -275,10 +293,17 @@ impl Engine for Faulty {
             return Err(AiError::Load("the helper went wrong".to_owned()));
         }
 
-        self.inner.load(model, threads, placement)
+        let loaded = self.inner.load(model, threads, placement);
+        self.loaded = loaded.is_ok();
+
+        loaded
     }
 
     fn unload(&mut self) {
+        self.loaded = false;
+        if let Some(fault) = self.planned(Phase::Unload) {
+            self.go_wrong(fault);
+        }
         self.inner.unload();
     }
 

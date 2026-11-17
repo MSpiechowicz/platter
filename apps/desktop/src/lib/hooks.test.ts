@@ -5,7 +5,7 @@ const ALL_OFF = {
   view: null,
   mini: false,
   static: false,
-  update: false,
+  update: null,
   ready: false,
   mounts: false,
   root: null,
@@ -83,6 +83,13 @@ describe('parseHooks', () => {
 
   it('ignores Explorer hooks with bad values', () => {
     expect(parseHooks('?ex=cube&pick=-1&focus=abc&mark=x,-2', false)).toEqual(ALL_OFF);
+  });
+
+  it('reads which update the mock finds: one the app installs, or one a package manager installs', () => {
+    expect(parseHooks('?update', false).update).toBe('install');
+    expect(parseHooks('?update=package', false).update).toBe('package');
+    expect(parseHooks('?update=other', false).update).toBe('install');
+    expect(parseHooks('?update=package', true).update).toBeNull();
   });
 
   it('reads the marks of the Explorer as a list of children', () => {

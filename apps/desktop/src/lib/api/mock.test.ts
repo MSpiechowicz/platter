@@ -713,14 +713,26 @@ describe('openExternal', () => {
     await api.openExternal('source');
     await api.openExternal('issues');
     await api.openExternal('license');
+    await api.openExternal('releases');
 
     expect(open.mock.calls).toEqual([
       ['https://github.com/MSpiechowicz/platter', '_blank', 'noopener'],
       ['https://github.com/MSpiechowicz/platter/issues', '_blank', 'noopener'],
       ['https://github.com/MSpiechowicz/platter/blob/main/LICENSE', '_blank', 'noopener'],
+      ['https://github.com/MSpiechowicz/platter/releases/latest', '_blank', 'noopener'],
     ]);
 
     open.mockRestore();
+  });
+});
+
+describe('the update commands', () => {
+  it('finds no update unless the test hook offers one', async () => {
+    expect(await createMockApi(FAST).checkUpdate()).toEqual({ current: '0.1.0', update: null });
+
+    const found = await createMockApi({ ...FAST, update: { offer: { canInstall: false } } }).checkUpdate();
+
+    expect(found.update).toMatchObject({ version: '0.2.0', canInstall: false });
   });
 });
 

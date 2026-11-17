@@ -11,9 +11,10 @@
 //! The Linux code is in `linux::runtime`; other Unix systems get functions that fail with `Unsupported`,
 //! and systems without Unix sockets do not get the module at all (the advisor is unavailable there).
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -109,24 +110,57 @@ pub fn describe_exit(status: &ExitStatus) -> Option<Exit> {
 }
 
 /// The environment of a helper, from the variables of the parent: nothing but the ones it needs. `HOME`
-/// (where the driver keeps its caches), `XDG_CACHE_HOME` and `LD_LIBRARY_PATH` (an AppImage's libraries)
-/// when they are set, and `LANG=C`. A helper for the processor also gets `GGML_VK_VISIBLE_DEVICES` empty,
-/// which shows the runtime no graphics card at all (it takes every one when the variable is missing).
+/// (where the driver keeps its caches) and `XDG_CACHE_HOME` when they are set, `LANG=C`, and
+/// `VK_LOADER_LAYERS_DISABLE=~implicit~`, which keeps the Vulkan loader from starting the implicit layers that
+/// other programs install (overlays, capture tools) in the helper. `LD_LIBRARY_PATH` (an AppImage's libraries)
+/// is kept only when `APPIMAGE` is set and not empty, and then only its absolute, non-empty components: a
+/// relative one would lead to whatever folder the helper runs in. A helper for the processor also gets
+/// `GGML_VK_VISIBLE_DEVICES` empty, which shows the runtime no graphics card at all (it takes every one when
+/// the variable is missing).
 pub fn runtime_environment(
     vars: impl Iterator<Item = (OsString, OsString)>,
     mode: RuntimeMode,
 ) -> Vec<(OsString, OsString)> {
-    const KEPT: [&str; 3] = ["HOME", "XDG_CACHE_HOME", "LD_LIBRARY_PATH"];
+    const KEPT: [&str; 2] = ["HOME", "XDG_CACHE_HOME"];
 
+    let vars: Vec<(OsString, OsString)> = vars.collect();
     let mut environment: Vec<(OsString, OsString)> = vars
+        .iter()
         .filter(|(name, _)| KEPT.iter().any(|kept| name == kept))
+        .cloned()
         .collect();
+
+    let in_appimage = vars
+        .iter()
+        .any(|(name, value)| name == "APPIMAGE" && !value.is_empty());
+    if in_appimage {
+        let library_path = vars
+            .iter()
+            .find(|(name, _)| name == "LD_LIBRARY_PATH")
+            .and_then(|(_, value)| absolute_components(value));
+        if let Some(library_path) = library_path {
+            environment.push(("LD_LIBRARY_PATH".into(), library_path));
+        }
+    }
+
     environment.push(("LANG".into(), "C".into()));
+    environment.push(("VK_LOADER_LAYERS_DISABLE".into(), "~implicit~".into()));
     if mode == RuntimeMode::Cpu {
         environment.push(("GGML_VK_VISIBLE_DEVICES".into(), OsString::new()));
     }
 
     environment
+}
+
+/// The components of a colon separated path list that are absolute, joined again. `None` when none is left.
+fn absolute_components(list: &OsStr) -> Option<OsString> {
+    let kept: Vec<&[u8]> = list
+        .as_bytes()
+        .split(|byte| *byte == b':')
+        .filter(|component| component.first() == Some(&b'/'))
+        .collect();
+
+    (!kept.is_empty()).then(|| OsString::from_vec(kept.join(&b':')))
 }
 
 #[cfg(test)]
@@ -155,6 +189,7 @@ mod tests {
                 ("HOME", "/home/user"),
                 ("PATH", "/usr/bin"),
                 ("XDG_CACHE_HOME", "/cache"),
+                ("APPIMAGE", "/opt/Platter.AppImage"),
                 ("LD_LIBRARY_PATH", "/app/lib"),
                 ("LD_PRELOAD", "/evil.so"),
                 ("VK_INSTANCE_LAYERS", "x"),
@@ -169,7 +204,16 @@ mod tests {
             .map(|(name, _)| name.to_string_lossy())
             .collect();
         names.sort();
-        assert_eq!(names, ["HOME", "LANG", "LD_LIBRARY_PATH", "XDG_CACHE_HOME"]);
+        assert_eq!(
+            names,
+            [
+                "HOME",
+                "LANG",
+                "LD_LIBRARY_PATH",
+                "VK_LOADER_LAYERS_DISABLE",
+                "XDG_CACHE_HOME"
+            ]
+        );
         assert_eq!(
             lookup(&environment, "LANG"),
             Some("C".into()),
@@ -179,11 +223,70 @@ mod tests {
     }
 
     #[test]
+    fn the_implicit_vulkan_layers_are_always_disabled() {
+        for mode in [RuntimeMode::Probe, RuntimeMode::Cpu, RuntimeMode::Gpu] {
+            let environment = runtime_environment(vars(&[("VK_LOADER_LAYERS_DISABLE", "")]), mode);
+
+            assert_eq!(
+                lookup(&environment, "VK_LOADER_LAYERS_DISABLE"),
+                Some("~implicit~".into())
+            );
+            assert_eq!(
+                environment
+                    .iter()
+                    .filter(|(name, _)| name == "VK_LOADER_LAYERS_DISABLE")
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn the_library_path_is_kept_only_in_an_appimage_and_only_its_absolute_components() {
+        let path = |pairs: &[(&str, &str)]| {
+            lookup(
+                &runtime_environment(vars(pairs), RuntimeMode::Gpu),
+                "LD_LIBRARY_PATH",
+            )
+        };
+
+        assert_eq!(
+            path(&[("LD_LIBRARY_PATH", "/app/lib")]),
+            None,
+            "not in an AppImage"
+        );
+        assert_eq!(
+            path(&[("APPIMAGE", ""), ("LD_LIBRARY_PATH", "/app/lib")]),
+            None,
+            "an empty APPIMAGE is none"
+        );
+        assert_eq!(
+            path(&[("APPIMAGE", "/x"), ("LD_LIBRARY_PATH", "/app/lib")]),
+            Some("/app/lib".into())
+        );
+        assert_eq!(
+            path(&[
+                ("APPIMAGE", "/x"),
+                ("LD_LIBRARY_PATH", ":lib:/app/lib::./here:/usr/lib:")
+            ]),
+            Some("/app/lib:/usr/lib".into()),
+            "empty and relative components are dropped"
+        );
+        assert_eq!(
+            path(&[("APPIMAGE", "/x"), ("LD_LIBRARY_PATH", ":rel:")]),
+            None,
+            "nothing absolute is nothing"
+        );
+        assert_eq!(path(&[("APPIMAGE", "/x")]), None, "not made up");
+    }
+
+    #[test]
     fn variables_that_are_not_set_are_not_made_up() {
         let environment = runtime_environment(vars(&[("HOME", "/home/user")]), RuntimeMode::Probe);
 
         assert_eq!(lookup(&environment, "XDG_CACHE_HOME"), None);
         assert_eq!(lookup(&environment, "LD_LIBRARY_PATH"), None);
+        assert_eq!(lookup(&environment, "APPIMAGE"), None);
     }
 
     #[test]

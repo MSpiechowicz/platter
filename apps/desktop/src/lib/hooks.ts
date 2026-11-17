@@ -22,6 +22,9 @@ export type HookGpuProblem = 'crash' | 'hang' | 'error';
 /** What the history mock holds: too few days to say anything, no day at all, a history file that cannot be used, or a disk that does not grow. */
 export type HookHistory = 'thin' | 'empty' | 'broken' | 'flat';
 
+/** Which update the mock finds: one the app installs itself, or one a package manager installs. */
+export type HookUpdate = 'install' | 'package';
+
 export interface TestHooks {
   /**
    * Jump to a view; `overview`, `scanning`, `explorer` and `cleanup` start a scan on the mock first, and so does
@@ -32,8 +35,11 @@ export interface TestHooks {
   mini: boolean;
   /** No animations or transitions, and the mock scan finishes at once. */
   static: boolean;
-  /** Show the sidebar update notice with demo data. */
-  update: boolean;
+  /**
+   * The mock finds an update and shows the sidebar notice: `update` for one this copy installs itself, and
+   * `update=package` for one a package manager installs (the notice offers the release page).
+   */
+  update: HookUpdate | null;
   /** With `view=start`: finish a mock scan first, so the start screen is shown with a result ready. */
   ready: boolean;
   /** A mock volume list where one filesystem is mounted several times (btrfs subvolumes). */
@@ -107,7 +113,7 @@ const NO_HOOKS: TestHooks = {
   view: null,
   mini: false,
   static: false,
-  update: false,
+  update: null,
   ready: false,
   mounts: false,
   root: null,
@@ -167,7 +173,7 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
     view: view !== null && VIEWS.includes(view) ? (view as HookView) : null,
     mini: params.has('mini'),
     static: params.has('static'),
-    update: params.has('update'),
+    update: params.has('update') ? (params.get('update') === 'package' ? 'package' : 'install') : null,
     ready: params.has('ready'),
     mounts: params.has('mounts'),
     root: params.get('root'),

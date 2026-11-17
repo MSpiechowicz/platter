@@ -15,7 +15,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::engine::{AiError, Engine, Placement};
-use crate::protocol::{LineReader, PROTOCOL_VERSION, Reply, Request, write_message};
+use crate::protocol::{
+    CARD_TEXT_CHARS, LineReader, PROTOCOL_VERSION, Reply, Request, clean_text, write_message,
+};
 use crate::verify::{VerifiedModel, VerifyError};
 
 /// The exit code of a helper that was told to stop, or whose app went away.
@@ -195,13 +197,14 @@ fn load<E: Engine>(
 }
 
 /// Why the card at `index` is not the one the app chose, when it is not: the cards may be listed in
-/// another order by another process.
+/// another order by another process. The app holds card names cleaned and cut (`CARD_TEXT_CHARS`), so the
+/// name found here is compared in that form.
 fn wrong_card<E: Engine>(engine: &mut E, index: usize, wanted: Option<&str>) -> Option<String> {
     let found = engine
         .gpus()
         .into_iter()
         .find(|card| card.index == index)
-        .map(|card| card.description);
+        .map(|card| clean_text(&card.description, CARD_TEXT_CHARS));
 
     match (found.as_deref(), wanted) {
         (Some(found), Some(wanted)) if found == wanted => None,

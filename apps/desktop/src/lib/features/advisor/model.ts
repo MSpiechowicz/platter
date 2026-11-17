@@ -174,7 +174,18 @@ export function deviceText(status: AdvisorStatusDto, short = false): string {
 
 /** The card's name without the driver's closing "(RADV NAVI31)"; the whole name when nothing else is left. */
 export function shortCardName(name: string): string {
-  return name.replace(/\s*\([^()]*\)\s*$/, '') || name;
+  const trimmed = name.trimEnd();
+  if (!trimmed.endsWith(')')) {
+    return name;
+  }
+
+  // The last "(" is the only one that can open the closing group, and nothing inside it may close or open.
+  const open = trimmed.lastIndexOf('(');
+  if (open === -1 || trimmed.indexOf(')', open) !== trimmed.length - 1) {
+    return name;
+  }
+
+  return trimmed.slice(0, open).trimEnd() || name;
 }
 
 /** What the dialog says about a graphics card problem, to be shown with hidden characters made visible. */
@@ -192,7 +203,7 @@ export function gpuProblemText(problem: GpuProblemDto): string {
         : `The graphics card reported an error (${card}).`,
   }[problem.what];
 
-  return `${what} Platter switched to the processor and finished the job there.`;
+  return `${what} Platter stopped using the card for now. The model runs on the processor until you choose.`;
 }
 
 const GPU_PROBLEM_WORDS: Record<GpuProblemWhat, string> = {

@@ -3,6 +3,9 @@ import type { SizeUnits } from '../format';
 
 export type ExplorerView = 'flat' | '3d';
 
+/** How often Platter looks for a new version in the background. `never` turns off only the automatic checks. */
+export type UpdateSchedule = 'sixHours' | 'daily' | 'weekly' | 'never';
+
 export interface SettingsData {
   units: SizeUnits;
   reduceMotion: boolean;
@@ -19,7 +22,11 @@ export interface SettingsData {
   advisorLogQuestions: boolean;
   /** Run the model on a graphics card when one fits it. An older save has no such value and gets the default, on. */
   advisorUseGpu: boolean;
+  /** How often to check for a new version. An older save has no such value and gets the default, daily. */
+  updateCheck: UpdateSchedule;
 }
+
+const UPDATE_SCHEDULES: readonly UpdateSchedule[] = ['sixHours', 'daily', 'weekly', 'never'];
 
 const UNLOAD_AFTER: readonly UnloadAfter[] = ['oneMinute', 'fiveMinutes', 'windowClose'];
 
@@ -35,6 +42,7 @@ const DEFAULTS: SettingsData = {
   advisorUnloadAfter: 'fiveMinutes',
   advisorLogQuestions: true,
   advisorUseGpu: true,
+  updateCheck: 'daily',
 };
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
@@ -69,6 +77,10 @@ function sanitize(raw: unknown): Partial<SettingsData> {
     clean.advisorUnloadAfter = value.advisorUnloadAfter as UnloadAfter;
   }
 
+  if (UPDATE_SCHEDULES.includes(value.updateCheck as UpdateSchedule)) {
+    clean.updateCheck = value.updateCheck as UpdateSchedule;
+  }
+
   for (const key of [
     'reduceMotion',
     'oneFileSystem',
@@ -95,6 +107,7 @@ export class SettingsStore implements SettingsData {
   advisorUnloadAfter = $state<UnloadAfter>(DEFAULTS.advisorUnloadAfter);
   advisorLogQuestions = $state(DEFAULTS.advisorLogQuestions);
   advisorUseGpu = $state(DEFAULTS.advisorUseGpu);
+  updateCheck = $state<UpdateSchedule>(DEFAULTS.updateCheck);
 
   readonly #storage: StorageLike | null;
 
@@ -132,6 +145,7 @@ export class SettingsStore implements SettingsData {
       advisorUnloadAfter: this.advisorUnloadAfter,
       advisorLogQuestions: this.advisorLogQuestions,
       advisorUseGpu: this.advisorUseGpu,
+      updateCheck: this.updateCheck,
     };
 
     try {

@@ -28,6 +28,8 @@ import type {
   SortKey,
   SuggestionsDto,
   SummaryDto,
+  UpdateCheck,
+  UpdateProgress,
   UndoDto,
   UserRulesDto,
   UserVerdict,
@@ -258,6 +260,22 @@ export interface Api {
   resetUserRules(): Promise<UserRulesDto>;
 
   openInFileManager(scan: ScanId, node: NodeId): Promise<void>;
+
+  /**
+   * Asks the release server whether a newer version exists, and keeps the offer for `installUpdate`. `update` is null
+   * when this is the newest version. Rejects (`io`) when the server cannot be reached or its answer cannot be used.
+   */
+  checkUpdate(): Promise<UpdateCheck>;
+
+  /**
+   * Downloads the update the last `checkUpdate` found, checks its signature and replaces the AppImage. `onProgress`
+   * gets the download, then `installing`. Resolves when it is installed. `invalid` when this copy is not an AppImage
+   * (`canInstall` is false) or no check found an update.
+   */
+  installUpdate(onProgress: (progress: UpdateProgress) => void): Promise<void>;
+
+  /** Ends the app and starts it again, from the installed update. */
+  restartApp(): Promise<void>;
 
   /** Opens one of the fixed project pages in the system browser (`target=_blank` does nothing inside the Tauri window). */
   openExternal(link: ExternalLink): Promise<void>;

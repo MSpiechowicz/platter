@@ -3,7 +3,8 @@
 //! The parent starts the helper with `Command`, handing over three descriptors by `Stdio`: a socket as
 //! standard input, the model file (or the null device) as standard output, and a pipe as standard error.
 //! No `pre_exec` and no `unsafe`: standard descriptors are the only thing handed over, and the socket's
-//! parent end and every other descriptor are close-on-exec (the standard library opens them so).
+//! parent end and every other descriptor are close-on-exec (the standard library opens them so). The helper
+//! runs in `/` with a cleared environment.
 
 use std::fs::File;
 use std::io;
@@ -34,6 +35,8 @@ pub fn spawn(program: &Path, model: Option<File>, mode: RuntimeMode) -> io::Resu
     command
         .arg(ADVISOR_RUNTIME_ARG)
         .env_clear()
+        // Nothing relative to where the app was started leads into the helper.
+        .current_dir("/")
         .envs(runtime_environment(std::env::vars_os(), mode))
         .stdin(Stdio::from(OwnedFd::from(helper_end)))
         .stdout(standard_output)
@@ -112,7 +115,7 @@ mod tests {
         std::fs::write(&model_path, b"weights").unwrap();
         let program = script_program(
             dir.path(),
-            "read line <&0\necho \"got $line\" >&0\ncat <&1 >&2\nenv >&2\nexit 7",
+            "read line <&0\necho \"got $line\" >&0\ncat <&1 >&2\nenv >&2\necho \"cwd=$(pwd)\" >&2\nexit 7",
         );
 
         let child = spawn(&program, Some(File::open(&model_path).unwrap()), RuntimeMode::Cpu).unwrap();
@@ -134,6 +137,11 @@ mod tests {
             "standard output is the model file"
         );
         assert!(diagnostics.contains("LANG=C") && diagnostics.contains("GGML_VK_VISIBLE_DEVICES=\n"));
+        assert!(diagnostics.contains("VK_LOADER_LAYERS_DISABLE=~implicit~\n"));
+        assert!(
+            diagnostics.contains("cwd=/\n"),
+            "the helper runs in /: {diagnostics}"
+        );
         assert!(
             !diagnostics.lines().any(|line| line.starts_with("PATH=")),
             "the environment is cleared: {diagnostics}"

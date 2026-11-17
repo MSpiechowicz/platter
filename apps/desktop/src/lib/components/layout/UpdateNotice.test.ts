@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
-import type { UpdateInfo } from '../../state/update.svelte';
+import type { UpdateInfo, UpdatePhase } from '../../state/update.svelte';
 import UpdateNotice from './UpdateNotice.svelte';
 
 const info: UpdateInfo = {
@@ -9,10 +9,17 @@ const info: UpdateInfo = {
   size: '14 MB',
   notes: ['Faster scans'],
   checked: '2 hours ago',
+  canInstall: true,
 };
 
 function setup(
-  props: { phase?: 'available' | 'downloading' | 'ready'; progress?: number; collapsed?: boolean } = {},
+  props: {
+    info?: UpdateInfo;
+    phase?: UpdatePhase;
+    progress?: number;
+    indeterminate?: boolean;
+    collapsed?: boolean;
+  } = {},
 ) {
   const onaction = vi.fn();
 
@@ -36,12 +43,46 @@ describe('UpdateNotice', () => {
     expect(onaction.mock.calls).toEqual([['install'], ['later']]);
   });
 
+  it('leaves the size out when the release does not say', () => {
+    setup({ info: { ...info, size: '' } });
+
+    expect(screen.getByText('Platter 0.2.0')).toBeTruthy();
+  });
+
+  it('offers "Get it" and Later when a package manager installs the update', async () => {
+    const onaction = setup({ info: { ...info, canInstall: false } });
+
+    expect(screen.getByText('Update available')).toBeTruthy();
+    expect(screen.getByText('Platter 0.2.0 · 14 MB')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Install' })).toBeNull();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Get it' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Later' }));
+
+    expect(onaction.mock.calls).toEqual([['open'], ['later']]);
+  });
+
   it('shows download progress instead of the buttons', () => {
     setup({ phase: 'downloading', progress: 0.4 });
 
     expect(screen.getByText('Downloading 0.2.0…')).toBeTruthy();
     expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('40');
     expect(screen.queryByRole('button', { name: 'Install' })).toBeNull();
+  });
+
+  it('slides the bar when the size is unknown, and while installing', () => {
+    setup({ phase: 'downloading', indeterminate: true });
+
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBeNull();
+  });
+
+  it('says it is installing once the download is done', () => {
+    setup({ phase: 'installing', progress: 1 });
+
+    expect(screen.getByText('Installing 0.2.0…')).toBeTruthy();
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Install' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Restart to finish' })).toBeNull();
   });
 
   it('ends with "Restart to finish"', async () => {
@@ -60,5 +101,13 @@ describe('UpdateNotice', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Update to Platter 0.2.0' }));
 
     expect(onaction).toHaveBeenCalledWith('install');
+  });
+
+  it('opens the release page from the collapsed button when a package manager installs the update', async () => {
+    const onaction = setup({ info: { ...info, canInstall: false }, collapsed: true });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Get Platter 0.2.0' }));
+
+    expect(onaction).toHaveBeenCalledWith('open');
   });
 });

@@ -11,6 +11,10 @@ use std::sync::Arc;
 use state::AppState;
 use tauri::Manager;
 
+/// The window's app id and class (Linux): the base name of the desktop entry the packages install
+/// (`Platter.desktop`, see `src-tauri/platter.desktop`).
+pub const APP_ID: &str = "Platter";
+
 /// Whether this process was started as the advisor's helper: its arguments are the program and exactly
 /// `--advisor-runtime`.
 pub fn is_advisor_runtime(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
@@ -52,12 +56,21 @@ pub fn run() {
     // The reader copes with a low limit anyway, so a failure is not worth reporting.
     let _ = platter_platform::raise_fd_limit();
 
+    // The window's app id on Wayland and its class on X11 come from the program name. The packages name
+    // their desktop entry `Platter.desktop` (after the product name), so the name is set to match it.
+    // Otherwise a dock that matches by file name shows a generic icon.
+    #[cfg(target_os = "linux")]
+    gtk::glib::set_prgname(Some(APP_ID));
+
     tauri::Builder::default()
         // Used from Rust only (the `pick_folder` command); the webview is granted no dialog permission.
         // The opener plugin is not registered either: `open_in_file_manager` and `open_external` call its
         // Rust functions directly.
         .plugin(tauri_plugin_dialog::init())
+        // Used from Rust only (`commands::update`); the webview is granted no updater permission.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::new())
+        .manage(commands::update::PendingUpdate::default())
         .setup(|app| {
             // The confirmations (a cleanup, the model download) are native dialogs shown by the backend.
             let handle = app.handle().clone();
@@ -112,6 +125,9 @@ pub fn run() {
             commands::system::open_in_file_manager,
             commands::system::pick_folder,
             commands::system::open_external,
+            commands::update::check_update,
+            commands::update::install_update,
+            commands::update::restart_app,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Platter")

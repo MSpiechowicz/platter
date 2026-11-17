@@ -26,10 +26,44 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "rpm", "appimage"],
+    "targets": [
+      "deb",
+      "rpm",
+      "appimage"
+    ],
     "category": "Utility",
     "license": "GPL-3.0-or-later",
+    "publisher": "MSpiechowicz",
     "shortDescription": "Local disk-space analyzer",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png", "icons/icon.ico"]
+    "longDescription": "Platter scans a disk and shows what takes its space: a map of folders, the largest files, and suggestions of what is safe to clean, all on your own computer.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "deb": {
+        "depends": [
+          "libvulkan1"
+        ],
+        "desktopTemplate": "platter.desktop"
+      },
+      "rpm": {
+        "depends": [
+          "vulkan-loader"
+        ],
+        "desktopTemplate": "platter.desktop"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVBMDFGQjY1ODdFNjMxQTgKUldTb01lYUhaZnNCV3JMMEpwV0dtQ0cvdDN4USs3OUV4dDcyeXVBK2o1M1UyaHp1YkZsU1p5MzIK",
+      "endpoints": [
+        "https://github.com/MSpiechowicz/platter/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

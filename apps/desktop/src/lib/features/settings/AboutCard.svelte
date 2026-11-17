@@ -2,6 +2,9 @@
   import { api } from '../../api';
   import Card from '../../components/ui/Card.svelte';
   import Field from '../../components/ui/Field.svelte';
+  import { updater } from '../../state/update.svelte';
+
+  /** Shown until an update check has told which version runs. */
 
   /** Software that ships inside the interface. The Rust side is listed in the source repository. */
   const LICENSES = [
@@ -11,7 +14,7 @@
 </script>
 
 <Card title="About" grow>
-  <Field label="Platter" description="Version 0.1.0">
+  <Field label="Platter" description="Version {updater.current ?? __APP_VERSION__}">
     {#snippet control()}
       <span class="muted">GPL-3.0-or-later</span>
     {/snippet}
@@ -19,7 +22,8 @@
 
   <p class="about">
     <b>Platter</b> is free software under the GNU General Public License, version 3 or later. Everything runs on
-    this machine. The only network call is the optional model download.
+    this machine. The only network calls are the optional model download and the update check, which you can turn
+    off in Settings.
   </p>
   <p class="links">
     <!-- Buttons, not links: target="_blank" does nothing inside the Tauri window, so the backend opens the page. -->

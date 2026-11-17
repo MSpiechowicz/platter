@@ -329,3 +329,185 @@ fn at_start_only_the_end_of_a_large_file_is_read() {
 
     assert_eq!(log.pending(), None, "the old incident is beyond twice the cap");
 }
+
+#[test]
+fn a_card_name_read_back_is_cleaned_and_cut() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join(FILE_NAME);
+    let long = "x".repeat(500);
+    let line = serde_json::json!({
+        "type": "incident", "id": 10, "at": 10, "device": "gpu", "what": "crash",
+        "card": format!("  Card\u{1b}[31m\u{0}\n{long}"),
+    });
+    std::fs::write(&path, format!("{line}\n")).unwrap();
+
+    let card = GpuLog::open(path).pending().unwrap().card.unwrap();
+
+    assert_eq!(card.chars().count(), 120);
+    assert!(card.starts_with("Card[31mxxx"), "{card}");
+    assert!(!card.chars().any(char::is_control));
+}
+
+#[test]
+fn a_card_name_with_nothing_left_after_cleaning_is_no_name() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join(FILE_NAME);
+    std::fs::write(
+        &path,
+        "{\"type\":\"incident\",\"id\":10,\"device\":\"gpu\",\"what\":\"crash\",\"card\":\" \\u0007 \"}\n",
+    )
+    .unwrap();
+
+    assert_eq!(GpuLog::open(path).pending().unwrap().card, None);
+}
+
+#[test]
+fn an_id_a_script_cannot_hold_is_ignored_when_read_and_never_panics() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join(FILE_NAME);
+    std::fs::write(
+        &path,
+        concat!(
+            r#"{"type":"incident","id":18446744073709551615,"at":1,"device":"gpu","what":"crash"}"#,
+            "\n",
+            r#"{"type":"incident","id":9007199254740992,"at":1,"device":"gpu","what":"crash"}"#,
+            "\n",
+            r#"{"type":"incident","id":7,"at":18446744073709551615,"device":"gpu","what":"hang"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    let log = GpuLog::open(path);
+
+    let pending = log.pending().unwrap();
+    assert_eq!(pending.id, 7, "the greater ids are skipped");
+    assert_eq!(pending.at, 7, "a time above the limit is the id");
+
+    log.record(&incident(true, IncidentKind::Crash, 5));
+    let next = log.pending().unwrap().id;
+    assert!(next > 7 && next < (1 << 53), "{next}");
+}
+
+#[test]
+fn an_id_far_in_the_future_is_skipped_so_new_ids_stay_unique() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join(FILE_NAME);
+    std::fs::write(
+        &path,
+        concat!(
+            r#"{"type":"incident","id":9007199254740990,"at":1,"device":"gpu","what":"crash"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    let log = GpuLog::open(path);
+    assert_eq!(
+        log.pending(),
+        None,
+        "an id years ahead was not written by Platter"
+    );
+
+    log.record(&incident(true, IncidentKind::Crash, 5));
+    let first = log.pending().unwrap().id;
+    log.record(&incident(true, IncidentKind::Hang, 6));
+    let second = log.pending().unwrap().id;
+    assert!(second > first, "{first} then {second}");
+}
+
+#[test]
+fn the_next_id_cannot_overflow() {
+    let log = GpuLog::new(None);
+    log.state.lock().unwrap().newest_id = u64::MAX;
+
+    log.record(&incident(true, IncidentKind::Crash, 5));
+
+    assert_eq!(log.pending().unwrap().id, (1 << 53) - 1);
+}
+
+#[test]
+fn an_overlong_incident_is_cut_and_still_written() {
+    let root = tempfile::tempdir().unwrap();
+    let (log, path) = log_in(&root);
+    let mut big = incident(true, IncidentKind::Crash, 1_000);
+    big.card = Some("c".repeat(MAX_BYTES * 2));
+    big.stderr_tail = "\u{1}".repeat(MAX_BYTES * 2);
+    big.detail = "d".repeat(MAX_BYTES * 2);
+
+    log.record(&big);
+
+    let written = lines(&path);
+    assert_eq!(written.len(), 1, "the incident is not lost");
+    assert_eq!(written[0]["card"].as_str().unwrap().chars().count(), 120);
+    assert_eq!(written[0]["stderr"].as_str().unwrap().chars().count(), 8192);
+    assert_eq!(written[0]["detail"].as_str().unwrap().chars().count(), 8192);
+    assert!(std::fs::metadata(&path).unwrap().len() as usize <= MAX_BYTES);
+    assert_eq!(GpuLog::open(path).pending().unwrap().id, 1_000);
+}
+
+#[test]
+fn the_card_name_in_memory_and_in_the_file_is_the_cleaned_one() {
+    let root = tempfile::tempdir().unwrap();
+    let (log, path) = log_in(&root);
+    let mut named = incident(true, IncidentKind::Hang, 1_000);
+    named.card = Some("Card\u{1b}[0m X".to_owned());
+
+    log.record(&named);
+
+    assert_eq!(log.pending().unwrap().card.as_deref(), Some("Card[0m X"));
+    assert_eq!(lines(&path)[0]["card"], "Card[0m X");
+}
+
+#[test]
+fn the_status_reads_do_not_wait_for_a_write_in_progress() {
+    let root = tempfile::tempdir().unwrap();
+    let (log, _) = log_in(&root);
+    log.record(&incident(true, IncidentKind::Crash, 1_000));
+    let log = std::sync::Arc::new(log);
+    let (done, finished) = std::sync::mpsc::channel();
+
+    let writing = log.lock_writers();
+    let reader = {
+        let log = std::sync::Arc::clone(&log);
+        std::thread::spawn(move || {
+            let seen = (log.pending(), log.last());
+            done.send(seen).unwrap();
+        })
+    };
+    let seen = finished.recv_timeout(Duration::from_secs(5));
+    drop(writing);
+    reader.join().unwrap();
+
+    let (pending, last) = seen.expect("the reads wait for no writer");
+    assert_eq!(pending.map(|problem| problem.id), Some(1_000));
+    assert_eq!(last.map(|problem| problem.id), Some(1_000));
+}
+
+#[test]
+fn writers_on_many_threads_leave_every_line_whole_and_in_the_order_of_their_ids() {
+    let root = tempfile::tempdir().unwrap();
+    let (log, path) = log_in(&root);
+    let log = std::sync::Arc::new(log);
+
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let log = std::sync::Arc::clone(&log);
+            std::thread::spawn(move || {
+                for _ in 0..10 {
+                    log.record(&incident(false, IncidentKind::Error, 1_000));
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+
+    let ids: Vec<u64> = lines(&path)
+        .iter()
+        .map(|line| line["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 80);
+    assert!(ids.windows(2).all(|pair| pair[1] == pair[0] + 1), "{ids:?}");
+}

@@ -40,6 +40,58 @@ describe('the Tauri history commands', () => {
   });
 });
 
+describe('the Tauri update commands', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(null);
+  });
+
+  it('checks for an update and restarts the app', async () => {
+    const answer = { current: '0.1.0', update: null };
+
+    invoke.mockResolvedValueOnce(answer);
+
+    const api = createTauriApi();
+
+    expect(await api.checkUpdate()).toBe(answer);
+
+    await api.restartApp();
+
+    expect(invoke.mock.calls).toEqual([
+      ['check_update', undefined],
+      ['restart_app', undefined],
+    ]);
+  });
+
+  it('hands the progress channel of an install to the caller, and resolves when it is installed', async () => {
+    const seen: unknown[] = [];
+
+    invoke.mockImplementationOnce(
+      async (_command: string, args: { onProgress: { onmessage: (m: unknown) => void } }) => {
+        args.onProgress.onmessage({ kind: 'downloading', received: 5, total: null });
+        args.onProgress.onmessage({ kind: 'installing' });
+      },
+    );
+
+    await createTauriApi().installUpdate((progress) => seen.push(progress));
+
+    expect(invoke.mock.calls[0]?.[0]).toBe('install_update');
+    expect(seen).toEqual([{ kind: 'downloading', received: 5, total: null }, { kind: 'installing' }]);
+  });
+
+  it('turns the refusal to install into an API error', async () => {
+    invoke.mockRejectedValueOnce({ code: 'invalid', message: 'There is no update to install.' });
+
+    await expect(createTauriApi().installUpdate(() => {})).rejects.toMatchObject({ code: 'invalid' });
+  });
+
+  it('opens the release page by its name', async () => {
+    await createTauriApi().openExternal('releases');
+
+    expect(invoke).toHaveBeenCalledWith('open_external', { link: 'releases' });
+  });
+});
+
 describe('the Tauri advisor commands', () => {
   beforeEach(() => {
     invoke.mockReset();

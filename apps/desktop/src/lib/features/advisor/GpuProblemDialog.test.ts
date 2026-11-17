@@ -18,7 +18,7 @@ const { api, calls } = vi.hoisted(() => ({
 vi.mock('../../api', () => ({ api }));
 
 const CARD = 'AMD Radeon RX 7900 XTX (RADV NAVI31)';
-const SWITCHED = ' Platter switched to the processor and finished the job there.';
+const SWITCHED = ' Platter stopped using the card for now. The model runs on the processor until you choose.';
 
 const problem = (extra: Partial<GpuProblemDto> = {}): GpuProblemDto => ({
   id: 1_760_000_000_000,

@@ -8,7 +8,28 @@ export type ScanId = number;
 export type NodeId = number;
 
 /** One of the fixed project pages the backend can open in the browser. The UI never passes a URL. */
-export type ExternalLink = 'source' | 'issues' | 'license';
+export type ExternalLink = 'source' | 'issues' | 'license' | 'releases';
+
+/** An update the release server offers. */
+export interface UpdateOffer {
+  version: string;
+  /** What is new, one short line each (at most 12 lines of 200 characters). */
+  notes: string[];
+  /** Size of the download, when the release says. */
+  sizeBytes: number | null;
+  /** This copy can install it itself (it runs from an AppImage). Otherwise the release page is offered. */
+  canInstall: boolean;
+}
+
+/** The answer of an update check: the running version, and the offer when a newer one exists. */
+export interface UpdateCheck {
+  current: string;
+  update: UpdateOffer | null;
+}
+
+/** Progress of `installUpdate`: the download (`total` is null when the size is unknown), then the install. */
+export type UpdateProgress =
+  { kind: 'downloading'; received: number; total: number | null } | { kind: 'installing' };
 
 export interface VolumeDto {
   id: string;

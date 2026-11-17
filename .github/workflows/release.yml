@@ -1,0 +1,222 @@
+name: Release
+
+# Builds the Linux packages (AppImage, deb, rpm) for a version tag and puts them, with SHA256SUMS, on a
+# draft GitHub release. The draft is published by hand after the packages were tried.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  linux:
+    name: Linux packages
+    # The oldest supported runner: the AppImage runs on systems with this glibc or newer.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    # Dependencies' install and build scripts run here: this job can read the repository only. The release
+    # is made by the next job, which runs no code from dependencies.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The tag must name the version the packages carry (the workspace version in Cargo.toml).
+      - name: Check the tag against the version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::The tag $TAG does not match the version $version in Cargo.toml."
+            exit 1
+          fi
+
+      # llama-cpp-sys-2 passes every GGML_* variable to CMake (debug and validation switches among them).
+      # A release is built without any, so every build of a version is the same.
+      - name: Refuse GGML variables in the environment
+        run: |
+          if env | grep -q '^GGML_'; then
+            env | grep '^GGML_' | cut -d= -f1
+            echo "::error::GGML_* variables are set. The release must be built without them."
+            exit 1
+          fi
+
+      - name: Install Linux build dependencies
+        run: scripts/ci/install-linux-deps.sh
+
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # No cache on purpose: a release is built from a clean target folder. The AppImage does not carry the
+      # Vulkan loader: the system's one matches the system's drivers, and is new enough to honour
+      # VK_LOADER_LAYERS_DISABLE (the runner's 1.3.204 is not).
+      - name: Build the packages
+        env:
+          LINUXDEPLOY_EXCLUDED_LIBRARIES: "libvulkan.so*"
+        run: pnpm -C apps/desktop tauri build --ci
+
+      - name: Collect the packages
+        run: |
+          mkdir packages
+          cp target/release/bundle/appimage/*.AppImage packages/
+          cp target/release/bundle/deb/*.deb packages/
+          cp target/release/bundle/rpm/*.rpm packages/
+          ls -l packages
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: packages/
+          if-no-files-found: error
+          retention-days: 7
+
+  # The signing key is only ever in this job, which builds nothing and runs no dependency's code: only the
+  # Tauri CLI, at the version the lockfile names, signs the AppImage. The app checks every update against the
+  # public key in tauri.conf.json, so only an AppImage signed here is installed.
+  sign:
+    name: Sign and describe the update
+    needs: linux
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Refuse a build without the update key
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if grep -q PLATTER_UPDATER_PUBKEY_NOT_SET apps/desktop/src-tauri/tauri.conf.json; then
+            echo "::error::The updater's public key is not set in tauri.conf.json."
+            exit 1
+          fi
+          if [ -z "$KEY" ]; then
+            echo "::error::The secret TAURI_SIGNING_PRIVATE_KEY is not set."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: release
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Sign the AppImage
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          cli=$(sed -n "s/^  '@tauri-apps\/cli@\([0-9.]*\)':$/\1/p" pnpm-lock.yaml | head -n 1)
+          [ -n "$cli" ] || { echo "::error::The Tauri CLI version is not in pnpm-lock.yaml."; exit 1; }
+          for appimage in release/*.AppImage; do
+            npx --yes "@tauri-apps/cli@$cli" signer sign "$appimage"
+          done
+          ls -l release
+
+      # The release notes are the message of the annotated tag (git tag -a v0.2.0 -m "..."), one line each.
+      # latest.json is what the app reads: the version, the notes and the signed AppImage. Both platform
+      # keys point at the AppImage, so a deb or rpm install also learns of the update (it is not installed
+      # there, the app shows the release page).
+      - name: Write latest.json, the notes and SHA256SUMS
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+          git for-each-ref "refs/tags/$TAG" --format='%(contents:subject)%0a%(contents:body)' |
+            sed '/^-----BEGIN PGP SIGNATURE-----$/,$d' > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "Platter ${TAG#v}" > notes.md
+          fi
+          cat notes.md
+
+          cp install.sh release/
+          set -- release/*.AppImage
+          [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::Expected exactly one AppImage."; exit 1; }
+          appimage=${1#release/}
+          jq -n \
+            --arg version "${TAG#v}" \
+            --rawfile notes notes.md \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$appimage" \
+            --rawfile signature "release/$appimage.sig" \
+            --argjson size "$(stat -c %s "release/$appimage")" \
+            '{version: $version, notes: $notes, pub_date: $date, platforms: {
+                "linux-x86_64-appimage": {url: $url, signature: $signature, size: $size},
+                "linux-x86_64": {url: $url, signature: $signature, size: $size}
+              }}' > release/latest.json
+          cat release/latest.json
+
+          cd release
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+          mv ../notes.md .
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Draft release
+    needs: sign
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+
+      # A tag with a suffix (v0.2.0-rc.1) is a pre-release.
+      - name: Create a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=
+          case $TAG in
+            *-*) prerelease=--prerelease ;;
+          esac
+          (cd release && sha256sum --check SHA256SUMS)
+          mv release/notes.md notes.md
+          gh release create "$TAG" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            $prerelease \
+            --verify-tag \
+            --title "Platter ${TAG#v}" \
+            --notes-file notes.md

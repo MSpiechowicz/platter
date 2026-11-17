@@ -66,7 +66,7 @@ pub use retire::remove_retired;
 pub use spec::{MODEL, ModelSpec, RETIRED_FILES};
 pub use verify::{VerifiedModel, VerifyError, verify};
 pub use worker::{
-    AdvisorHandle, AdvisorWorker, Device, GPU_FALLBACK, GpuIncident, Host, IdleTimes, IncidentFn, Labelling,
-    ModelState, Options, Progress, STOPPED, StateTicket, Status, StatusFn, UnloadAfter, WorkerConfig,
-    WorkerError, default_threads, threads_for,
+    AdvisorHandle, AdvisorWorker, Device, GPU_FALLBACK, GPU_LOST, GpuIncident, Host, IdleTimes, IncidentFn,
+    Labelling, ModelState, Options, Progress, STOPPED, StateTicket, Status, StatusFn, UnloadAfter,
+    WorkerConfig, WorkerError, default_threads, threads_for,
 };

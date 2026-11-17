@@ -16,7 +16,7 @@
   import type { VolumeDto } from '../../api/types';
   import { afterPaint } from '../../motion/afterPaint';
   import { fmt } from '../../state/fmt.svelte';
-  import type { UpdateInfo, UpdatePhase } from '../../state/update.svelte';
+  import type { UpdateAction, UpdateInfo, UpdatePhase } from '../../state/update.svelte';
   import Bar from '../ui/Bar.svelte';
   import Icon from '../ui/Icon.svelte';
   import Logo from '../ui/Logo.svelte';
@@ -37,7 +37,8 @@
     update?: UpdateInfo | null;
     updatePhase?: UpdatePhase;
     updateProgress?: number;
-    onupdate?: (action: 'install' | 'later' | 'restart') => void;
+    updateIndeterminate?: boolean;
+    onupdate?: (action: UpdateAction) => void;
   }
 
   let {
@@ -51,6 +52,7 @@
     update = null,
     updatePhase = 'available',
     updateProgress = 0,
+    updateIndeterminate = false,
     onupdate = () => {},
   }: Props = $props();
 
@@ -139,6 +141,7 @@
         info={update}
         phase={updatePhase}
         progress={updateProgress}
+        indeterminate={updateIndeterminate}
         {collapsed}
         onaction={onupdate}
       />
