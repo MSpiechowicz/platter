@@ -35,6 +35,11 @@
     padding-top: 0;
   }
 
+  /* The card's own padding is the space under its last row, as above its title. */
+  .field:last-child {
+    padding-bottom: 0;
+  }
+
   .text {
     flex: 1;
     min-width: 0;

@@ -57,47 +57,45 @@
     <AdvisorSettingsCard />
 
     <Card title="Appearance" grow>
-      <div>
-        <Field label="Theme" description="System follows the light or dark setting of your desktop.">
-          {#snippet control()}
-            <Segmented
-              options={THEME_OPTIONS}
-              value={settings.theme}
-              label="Theme"
-              onchange={(choice) => {
-                settings.set('theme', choice);
-                applyThemeChoice(choice);
-              }}
-            />
-          {/snippet}
-        </Field>
-        <Field label="Size units" description="GB counts in thousands, GiB in 1024s.">
-          {#snippet control()}
-            <Segmented
-              options={UNIT_OPTIONS}
-              value={settings.units}
-              label="Size units"
-              onchange={(units) => {
-                settings.set('units', units);
-                saved();
-              }}
-            />
-          {/snippet}
-        </Field>
-        <Field label="Reduce motion" description="Turns off the build-up and count-up animations.">
-          {#snippet control(labelId, descriptionId)}
-            <Toggle
-              checked={settings.reduceMotion}
-              aria-labelledby={labelId}
-              aria-describedby={descriptionId}
-              onchange={(event) => {
-                settings.set('reduceMotion', event.currentTarget.checked);
-                saved();
-              }}
-            />
-          {/snippet}
-        </Field>
-      </div>
+      <Field label="Theme" description="System follows the light or dark setting of your desktop.">
+        {#snippet control()}
+          <Segmented
+            options={THEME_OPTIONS}
+            value={settings.theme}
+            label="Theme"
+            onchange={(choice) => {
+              settings.set('theme', choice);
+              applyThemeChoice(choice);
+            }}
+          />
+        {/snippet}
+      </Field>
+      <Field label="Size units" description="GB counts in thousands, GiB in 1024s.">
+        {#snippet control()}
+          <Segmented
+            options={UNIT_OPTIONS}
+            value={settings.units}
+            label="Size units"
+            onchange={(units) => {
+              settings.set('units', units);
+              saved();
+            }}
+          />
+        {/snippet}
+      </Field>
+      <Field label="Reduce motion" description="Turns off the build-up and count-up animations.">
+        {#snippet control(labelId, descriptionId)}
+          <Toggle
+            checked={settings.reduceMotion}
+            aria-labelledby={labelId}
+            aria-describedby={descriptionId}
+            onchange={(event) => {
+              settings.set('reduceMotion', event.currentTarget.checked);
+              saved();
+            }}
+          />
+        {/snippet}
+      </Field>
     </Card>
   </div>
 

@@ -80,7 +80,6 @@
 
 <style>
   .chips {
-    padding: 0 0 12px;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
