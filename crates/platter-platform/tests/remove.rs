@@ -5,7 +5,7 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
-use platter_core::{EntryKind, EntryProbe, EntryRemover, ExpectedEntry, RemoveMode};
+use platter_core::{BirthTime, EntryKind, EntryProbe, EntryRemover, ExpectedEntry, RemoveMode};
 use platter_platform::linux::probe::LinuxEntryProbe;
 use platter_platform::linux::remove::LinuxEntryRemover;
 
@@ -21,6 +21,7 @@ fn expected(path: &Path, root: &Path) -> ExpectedEntry {
         dev: last.meta.dev,
         ino: last.meta.ino,
         mount_id: last.mount_id,
+        birth: last.birth,
         is_dir: last.meta.kind == EntryKind::Dir,
         root_depth: root.components().count() - 1,
     }
@@ -143,6 +144,31 @@ fn another_folder_with_the_same_name_is_refused() {
     assert!(root.join("target/new").exists());
 }
 
+/// What ext4 does soon after a delete: the folder made again gets the same inode number. Simulated here
+/// (the test's own filesystem may not reuse it) by a plan that differs only in the creation time.
+#[test]
+fn an_entry_made_again_under_the_same_inode_number_is_refused() {
+    let (_dir, root) = temp();
+    write(&root.join("target/new"));
+    let target = root.join("target");
+    let mut plan = expected(&target, &root);
+    let Some(birth) = plan.birth else {
+        eprintln!("this filesystem records no creation time: nothing to compare");
+        return;
+    };
+    plan.birth = Some(BirthTime {
+        secs: birth.secs - 60,
+        ..birth
+    });
+
+    let error = LinuxEntryRemover
+        .remove(&bytes(&target), &plan, RemoveMode::Whole)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("another entry"), "{error}");
+    assert!(root.join("target/new").exists());
+}
+
 #[test]
 fn read_only_folders_are_emptied() {
     let (_dir, root) = temp();
@@ -212,6 +238,7 @@ fn a_mount_on_the_way_below_the_scan_root_is_refused() {
         dev: 0,
         ino: 0,
         mount_id: None,
+        birth: None,
         is_dir: false,
         root_depth: 0,
     };

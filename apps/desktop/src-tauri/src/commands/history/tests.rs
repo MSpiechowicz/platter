@@ -381,6 +381,7 @@ fn trash_files(state: &AppState, names: &[&str]) -> Trashed {
             dev: meta.dev,
             ino: meta.ino,
             mount_id: None,
+            birth: None,
             is_dir: false,
             // The folders above the temp folder (a mount of its own, often) are not the trash's business.
             root_depth: base
@@ -509,6 +510,7 @@ fn an_item_is_restored_once_and_what_came_back_is_not_offered_again() {
                 dev: first.identity.0,
                 ino: first.identity.1,
                 mount_id: None,
+                birth: None,
                 is_dir: false,
                 root_depth: 0,
             },

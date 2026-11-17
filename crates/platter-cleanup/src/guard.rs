@@ -4,7 +4,7 @@ use std::fmt;
 use std::io;
 
 use platter_core::dto::Verdict;
-use platter_core::{EntryKind, EntryProbe, NodeId, NodeKind, Tree};
+use platter_core::{BirthTime, EntryKind, EntryProbe, NodeId, NodeKind, Tree};
 
 use crate::kept::KeptFolders;
 use crate::path::{components, display};
@@ -79,6 +79,8 @@ pub struct VerifiedTarget {
     dev: u64,
     ino: u64,
     mount_id: Option<u64>,
+    /// When the entry was created, as the plan saw it (when the filesystem records it).
+    birth: Option<BirthTime>,
     /// Size and newest modification from the scan.
     allocated: u64,
     apparent: u64,
@@ -109,6 +111,9 @@ impl VerifiedTarget {
     }
     pub fn mount_id(&self) -> Option<u64> {
         self.mount_id
+    }
+    pub fn birth(&self) -> Option<BirthTime> {
+        self.birth
     }
     /// Bytes the scan counted for it. What deleting frees can differ (hard links, shared blocks).
     pub fn allocated(&self) -> u64 {
@@ -249,6 +254,7 @@ impl<P: EntryProbe> Guard<'_, P> {
             dev: now.meta.dev,
             ino: now.meta.ino,
             mount_id: now.mount_id,
+            birth: now.birth,
             allocated: tree.allocated(node),
             apparent: tree.apparent(node),
             mtime: tree.mtime(node),

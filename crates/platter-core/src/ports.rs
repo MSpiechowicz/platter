@@ -121,6 +121,17 @@ pub struct ProbedEntry {
     pub meta: EntryMeta,
     /// Kernel mount id of the mount the entry lives on, when the system reports one.
     pub mount_id: Option<u64>,
+    /// When the entry was created, when the filesystem records it (ext4, btrfs, xfs do).
+    pub birth: Option<BirthTime>,
+}
+
+/// When an entry was created: seconds and nanoseconds since the epoch. Together with device and inode it
+/// tells an entry from another one made later under the same name, even when the filesystem gave it the
+/// same inode number again (ext4 does, soon after a delete).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BirthTime {
+    pub secs: i64,
+    pub nanos: u32,
 }
 
 /// Looks at a path as it is now, for code that is about to act on it (cleanup), not for scanning.
@@ -161,6 +172,8 @@ pub struct ExpectedEntry {
     pub ino: u64,
     /// Compared when both the plan and the system report one.
     pub mount_id: Option<u64>,
+    /// When the entry was created. Compared when both the plan and the system report one.
+    pub birth: Option<BirthTime>,
     pub is_dir: bool,
     /// How many components the scan root has: no component below it may start a mount.
     pub root_depth: usize,

@@ -227,6 +227,7 @@ mod tests {
                         is_mount_root: false,
                     },
                     mount_id: None,
+                    birth: None,
                 }]),
             }
         }

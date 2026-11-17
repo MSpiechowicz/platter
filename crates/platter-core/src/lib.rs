@@ -35,8 +35,9 @@ pub use model::{
     parse_user_rules, render_user_rules,
 };
 pub use ports::{
-    DirListing, DirSource, EntryMeta, EntryProbe, EntryRemover, ExpectedEntry, ProbedEntry, RawEntry,
-    RemoveMode, Removed, RootInfo, SourceOptions, ToolCommand, ToolFailure, ToolRunner, VolumeProvider,
+    BirthTime, DirListing, DirSource, EntryMeta, EntryProbe, EntryRemover, ExpectedEntry, ProbedEntry,
+    RawEntry, RemoveMode, Removed, RootInfo, SourceOptions, ToolCommand, ToolFailure, ToolRunner,
+    VolumeProvider,
 };
 pub use query::{
     EntryMatch, FolderMatch, entry_at, find_entries, find_entries_until, find_files_named, find_folders,

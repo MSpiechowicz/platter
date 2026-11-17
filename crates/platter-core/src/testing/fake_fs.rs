@@ -383,6 +383,7 @@ impl EntryProbe for FakeFs {
             found.push(ProbedEntry {
                 meta: self.nodes[current].meta,
                 mount_id: None,
+                birth: None,
             });
         }
 

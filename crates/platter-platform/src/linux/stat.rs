@@ -4,7 +4,7 @@ use std::ffi::CStr;
 use std::io;
 use std::os::fd::AsFd;
 
-use platter_core::{EntryKind, EntryMeta};
+use platter_core::{BirthTime, EntryKind, EntryMeta};
 use rustix::fs::{AtFlags, FileType, Statx, StatxAttributes, StatxFlags, makedev, statx};
 
 const MASK: StatxFlags = StatxFlags::TYPE
@@ -15,7 +15,8 @@ const MASK: StatxFlags = StatxFlags::TYPE
     .union(StatxFlags::BLOCKS)
     .union(StatxFlags::MTIME)
     .union(StatxFlags::MNT_ID)
-    .union(StatxFlags::UID);
+    .union(StatxFlags::UID)
+    .union(StatxFlags::BTIME);
 
 /// What checking a directory against its listing needs: device (always reported), inode, mount id.
 const IDENTITY_MASK: StatxFlags = StatxFlags::TYPE.union(StatxFlags::INO).union(StatxFlags::MNT_ID);
@@ -37,6 +38,8 @@ pub(super) struct Stat {
     pub meta: EntryMeta,
     /// Kernel mount id of the mount the entry lives on (kernel 5.8+).
     pub mount_id: Option<u64>,
+    /// When the entry was created, when the filesystem records it.
+    pub birth: Option<BirthTime>,
     /// Whether the entry is a mount root, as the kernel says; `None` when the kernel does not know the
     /// attribute (before 5.8). `meta.is_mount_root` is `false` then, until the reader decides with
     /// [`is_boundary`].
@@ -88,7 +91,8 @@ fn convert(raw: &Statx) -> Stat {
 
     // Only trust the flag when the kernel says it knows it (it does since 5.8).
     let reported_mount_root = mount_root(raw.stx_attributes_mask, raw.stx_attributes);
-    let has_mount_id = StatxFlags::from_bits_retain(raw.stx_mask).contains(StatxFlags::MNT_ID);
+    let reported = StatxFlags::from_bits_retain(raw.stx_mask);
+    let has_mount_id = reported.contains(StatxFlags::MNT_ID);
 
     Stat {
         meta: EntryMeta {
@@ -102,6 +106,10 @@ fn convert(raw: &Statx) -> Stat {
             is_mount_root: reported_mount_root == Some(true),
         },
         mount_id: has_mount_id.then_some(raw.stx_mnt_id),
+        birth: reported.contains(StatxFlags::BTIME).then_some(BirthTime {
+            secs: raw.stx_btime.tv_sec,
+            nanos: raw.stx_btime.tv_nsec,
+        }),
         reported_mount_root,
         uid: raw.stx_uid,
         mode: u32::from(raw.stx_mode) & 0o7777,

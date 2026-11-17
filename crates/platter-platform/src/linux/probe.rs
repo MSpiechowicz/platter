@@ -54,6 +54,7 @@ impl EntryProbe for LinuxEntryProbe {
             found.push(ProbedEntry {
                 meta,
                 mount_id: stat.mount_id,
+                birth: stat.birth,
             });
 
             parent_dev = meta.dev;

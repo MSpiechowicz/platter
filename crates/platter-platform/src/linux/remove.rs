@@ -173,6 +173,13 @@ pub(super) fn check(parent: &OwnedFd, name: &CStr, expected: &ExpectedEntry) -> 
     if stat.meta.dev != expected.dev || stat.meta.ino != expected.ino {
         return Err(changed("another entry now has its name"));
     }
+    // The same inode number can be given again to an entry made after the plan (ext4 does it soon after a
+    // delete): the creation time tells them apart.
+    if let (Some(planned), Some(now)) = (expected.birth, stat.birth)
+        && planned != now
+    {
+        return Err(changed("another entry now has its name"));
+    }
     if let (Some(planned), Some(now)) = (expected.mount_id, stat.mount_id)
         && planned != now
     {

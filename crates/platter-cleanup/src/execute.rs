@@ -89,6 +89,7 @@ pub fn restore_one<R: EntryRemover>(
         dev: identity.0,
         ino: identity.1,
         mount_id: None,
+        birth: None,
         is_dir,
         root_depth: 0,
     };
@@ -261,6 +262,7 @@ fn act<P: EntryProbe, R: EntryRemover>(
         dev,
         ino,
         mount_id: target.mount_id(),
+        birth: target.birth(),
         is_dir: target.is_dir(),
         root_depth: plan.root_depth,
     };
@@ -365,6 +367,7 @@ fn part_of(
         dev: now.meta.dev,
         ino: now.meta.ino,
         mount_id: now.mount_id,
+        birth: now.birth,
         is_dir: dir,
         root_depth: 0,
     }))
@@ -402,7 +405,8 @@ fn still_the_same(
         EntryKind::File => !target.is_dir(),
         _ => false,
     };
-    if !kind_ok || (now.meta.dev, now.meta.ino) != target.identity() {
+    let reborn = matches!((now.birth, target.birth()), (Some(now), Some(planned)) if now != planned);
+    if !kind_ok || (now.meta.dev, now.meta.ino) != target.identity() || reborn {
         return Err("changed since the plan: another entry now has its name".to_owned());
     }
     if !target.is_dir() && !same_file(&now.meta, target.mtime(), target.apparent()) {
