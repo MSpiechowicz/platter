@@ -1,19 +1,38 @@
 name: Release
 
 # Builds the Linux packages (AppImage, deb, rpm) and the Windows setup (NSIS, for the current user) for a
-# version tag and puts them, with SHA256SUMS, on a draft GitHub release. The draft is published by hand after
-# the packages were tried.
+# version tag and puts them, with SHA256SUMS, on a GitHub release.
 #
-#   git tag v0.1.0 && git push origin v0.1.0
+# Two ways in:
+# - version.yml calls it after a merge to main raised the version and pushed the tag (`publish: true`: the
+#   release is published at once, so installed copies are offered the update).
+# - A tag pushed by hand (git tag -a v0.2.0 -m "..." && git push origin v0.2.0) makes a draft that is
+#   published by hand after the packages were tried.
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: "The version tag to build (v0.2.0). It must already be pushed."
+        required: true
+        type: string
+      publish:
+        description: "Publish the release when every job passed, instead of leaving a draft."
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: true
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -33,12 +52,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Called from version.yml the run's ref is main: build exactly what the tag names.
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
           persist-credentials: false
 
       # The tag must name the version the packages carry (the workspace version in Cargo.toml).
       - name: Check the tag against the version
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           if [ "$TAG" != "v$version" ]; then
@@ -114,12 +135,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Called from version.yml the run's ref is main: build exactly what the tag names.
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
           persist-credentials: false
 
       # The tag must name the version the setup carries (the workspace version in Cargo.toml).
       - name: Check the tag against the version
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           if [ "$TAG" != "v$version" ]; then
@@ -178,8 +201,11 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # The signing key is only ever in this job, which builds nothing and runs no dependency's code: only the
-  # Tauri CLI, at the version the lockfile names, signs the AppImage and the Windows setup. The app checks
+  # The signing key is only ever in this job, which builds nothing. The one program from a dependency that
+  # runs with the key is the Tauri CLI, which signs the AppImage and the Windows setup: the desktop
+  # package's dependencies are installed from pnpm-lock.yaml (integrity hashes checked, no install scripts
+  # run) before the key is set, and the CLI is then started directly, not through pnpm (whose `exec` may
+  # install again, with scripts, when it finds the dependencies out of date). The app checks
   # every update against the public key in tauri.conf.json, so only a file signed here is installed.
   sign:
     name: Sign and describe the update
@@ -191,6 +217,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Called from version.yml the run's ref is main: build exactly what the tag names.
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
           persist-credentials: false
 
       - name: Refuse a build without the update key
@@ -234,19 +262,24 @@ jobs:
             *) echo "::error::The Windows build made $1, not a setup."; exit 1 ;;
           esac
 
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+
+      # Before the key is in the environment: the packages of the lockfile, checked against its hashes,
+      # without running any package's install scripts.
+      - name: Install the Tauri CLI from the lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter platter-desktop-ui
 
       - name: Sign the AppImage and the setup
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          cli=$(sed -n "s/^  '@tauri-apps\/cli@\([0-9.]*\)':$/\1/p" pnpm-lock.yaml | head -n 1)
-          [ -n "$cli" ] || { echo "::error::The Tauri CLI version is not in pnpm-lock.yaml."; exit 1; }
           for file in linux/*.AppImage windows/*-setup.exe; do
-            npx --yes "@tauri-apps/cli@$cli" signer sign "$file"
+            apps/desktop/node_modules/.bin/tauri signer sign "$file"
           done
           ls -l linux windows
 
@@ -265,7 +298,7 @@ jobs:
       # windows-x86_64-nsis first (the copy the setup installed) and then for windows-x86_64.
       - name: Write latest.json, the notes and SHA256SUMS
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
           git for-each-ref "refs/tags/$TAG" --format='%(contents:subject)%0a%(contents:body)' |
@@ -313,7 +346,7 @@ jobs:
           retention-days: 7
 
   publish:
-    name: Draft release
+    name: Release
     # The sign job needs both builds, and nothing is published unless both succeeded and were signed.
     needs: [linux, windows, sign]
     runs-on: ubuntu-22.04
@@ -326,22 +359,40 @@ jobs:
           name: release
           path: release
 
-      # A tag with a suffix (v0.2.0-rc.1) is a pre-release.
-      - name: Create a draft release
+      # A tag with a suffix (v0.2.0-rc.1) is a pre-release. A tag pushed by hand makes a draft; version.yml
+      # asks for the release to be published.
+      - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          PUBLISH: ${{ inputs.publish == true }}
         run: |
           prerelease=
           case $TAG in
             *-*) prerelease=--prerelease ;;
           esac
+          draft=--draft
+          if [ "$PUBLISH" = true ]; then
+            draft=
+          fi
+          # Builds of two versions can finish out of order: only the highest version is marked latest, which
+          # is where the app finds latest.json.
+          latest=
+          if [ -z "$draft" ]; then
+            latest=--latest
+          fi
+          highest=$( (gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \
+            --limit 100 --json tagName --jq '.[].tagName'; echo "$TAG") | sort -V | tail -n 1)
+          if [ -n "$latest" ] && [ "$highest" != "$TAG" ]; then
+            latest=--latest=false
+          fi
           (cd release && sha256sum --check SHA256SUMS)
           mv release/notes.md notes.md
           gh release create "$TAG" release/* \
             --repo "$GITHUB_REPOSITORY" \
-            --draft \
+            $draft \
             $prerelease \
+            $latest \
             --verify-tag \
             --title "Platter ${TAG#v}" \
             --notes-file notes.md

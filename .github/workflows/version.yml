@@ -1,0 +1,161 @@
+name: Version
+
+# When CI passed on a commit pushed to main (a merged pull request, or a commit pushed straight to main), this
+# raises the version, commits it as "Release vX.Y.Z" on top of that commit, pushes an annotated tag and builds
+# and publishes that release. A red or cancelled CI run makes no release: the next green one releases
+# everything since the last version.
+#
+# Which part of the version is raised comes from the labels of the pull requests merged since the last
+# version, the highest wins:
+#   release:major  1.4.2 -> 2.0.0
+#   release:minor  1.4.2 -> 1.5.0
+#   (none)         1.4.2 -> 1.4.3, also for a commit pushed straight to main
+#   release:skip   this pull request asks for no version; when every change since the last version asks
+#                  for none, there is no release
+#
+# The release commit and the tag are pushed with the run's own token, so they start no other workflow (no
+# CI run, and release.yml's tag trigger does not fire): the release is built by calling release.yml from
+# here. If the release job fails after the tag was pushed, re-run that job: the next green CI run would
+# otherwise raise the version again and leave this tag without a release.
+#
+# Branch protection on main must let github-actions[bot] push (today main is not protected).
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Raise the version and tag it
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    # One version at a time, in order. Only this job waits: a release being built does not hold up the next.
+    concurrency:
+      group: version
+      cancel-in-progress: false
+    # Writes the release commit and the tag to main. Runs only git, gh and the bump script: no dependency's
+    # code is installed or built here.
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      # The commit CI passed on, never whatever main is by now.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Decide what to raise
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          # A newer commit on main has a CI run of its own, which releases this one with it.
+          git fetch --no-tags origin main
+          if [ "$(git rev-parse origin/main)" != "$SHA" ]; then
+            echo "main has moved on from $SHA. The newer commit's green CI run makes the release."
+            echo "bump=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
+          if [ -z "$last" ]; then
+            commits=$SHA
+          else
+            commits=$(git rev-list --first-parent --max-count=200 "$last..HEAD")
+          fi
+          if [ "$(printf '%s\n' "$commits" | wc -l)" -ge 200 ]; then
+            echo "::warning::200 or more changes since $last: only the newest 200 decide the version."
+          fi
+          if [ -z "$commits" ]; then
+            echo "Nothing new since $last."
+            echo "bump=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Each change on main: the pull request merged into main that brought it (none for a commit pushed
+          # straight to main). A failed lookup stops the run: it must not be read as "no labels".
+          rank=0
+          for commit in $commits; do
+            labels=$(gh api "repos/$GITHUB_REPOSITORY/commits/$commit/pulls" \
+              --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0].labels[]?.name')
+            this=1
+            case $'\n'"$labels"$'\n' in
+              *$'\n'release:skip$'\n'*) this=0 ;;
+              *$'\n'release:major$'\n'*) this=3 ;;
+              *$'\n'release:minor$'\n'*) this=2 ;;
+            esac
+            echo "$commit: ${labels//$'\n'/ } -> $this"
+            if [ "$this" -gt "$rank" ]; then
+              rank=$this
+            fi
+          done
+
+          case $rank in
+            3) bump="major" ;;
+            2) bump="minor" ;;
+            1) bump="patch" ;;
+            *) bump="" ;;
+          esac
+          echo "Raise: ${bump:-nothing}"
+          echo "bump=$bump" >> "$GITHUB_OUTPUT"
+
+      - name: Raise the version, commit and tag it
+        id: tag
+        if: steps.bump.outputs.bump != ''
+        env:
+          BUMP: ${{ steps.bump.outputs.bump }}
+        run: |
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
+          version=$(python3 -I scripts/ci/bump-version.py "$BUMP" .)
+          tag="v$version"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::The tag $tag already exists."
+            exit 1
+          fi
+
+          # The notes: the subjects of the commits since the last version, at most 40. awk reads all of its
+          # input, so nothing upstream is cut off mid-write.
+          {
+            echo "Platter $version"
+            echo
+            git log --no-merges --format='- %s' ${last:+"$last..HEAD"} |
+              awk '!/^- Release v/ && shown < 40 { print; shown++ }'
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock apps/desktop/package.json
+          git commit -m "Release $tag"
+          git tag -a "$tag" -F "$RUNNER_TEMP/notes.md"
+          # Both or neither, and only on top of the commit CI passed on: a main that moved meanwhile refuses
+          # the push, nothing is tagged, and the newer commit's run releases both.
+          git push --atomic origin HEAD:main "refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Release
+    needs: version
+    if: needs.version.outputs.tag != ''
+    # The most any job of release.yml may have; each of its jobs asks for less (only its last job writes).
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
+      publish: true
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
