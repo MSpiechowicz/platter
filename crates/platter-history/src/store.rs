@@ -940,6 +940,7 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), garbage);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_link_at_the_name_is_refused() {
         let dir = tempfile::tempdir().unwrap();

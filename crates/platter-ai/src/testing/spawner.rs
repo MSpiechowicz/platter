@@ -1,10 +1,14 @@
 //! A [`Spawner`] whose helpers are threads: the helper's side ([`serve`]) runs on a thread over a real socket
-//! pair, with a [`FakeEngine`] inside, so a [`ProcessEngine`](crate::process::ProcessEngine) can be tested
-//! with no process and no graphics card. A helper can be told to crash or hang at a given step.
+//! pair (Unix) or a pair of pipes (the way the real helper on Windows is reached, and available everywhere
+//! with [`ThreadSpawner::over_pipes`]), with a [`FakeEngine`] inside, so a
+//! [`ProcessEngine`](crate::process::ProcessEngine) can be tested with no process and no graphics card. A helper
+//! can be told to crash or hang at a given step.
 
 use std::fs::File;
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::net::Shutdown;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -15,8 +19,10 @@ use platter_platform::RuntimeMode;
 
 use super::{FakeControl, FakeEngine, locked};
 use crate::engine::{AiError, Engine, Exit, Generation, GpuDevice, LoadInfo, Placement, ProgressHook};
-use crate::process::{RuntimeProcess, Spawned, Spawner, Waited};
-use crate::runtime::serve;
+#[cfg(unix)]
+use crate::process::SocketWire;
+use crate::process::{PipeWire, RuntimeProcess, Spawned, Spawner, Waited, Wire};
+use crate::runtime::{Connection, serve};
 use crate::verify::VerifiedModel;
 
 /// The step of a helper's work a fault happens in.
@@ -61,10 +67,21 @@ struct Shared {
     next_pid: AtomicU32,
 }
 
+/// What a helper thread talks over.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Transport {
+    #[cfg(unix)]
+    Socket,
+    Pipes,
+}
+
 /// Starts helpers as threads.
 pub struct ThreadSpawner {
     control: FakeControl,
     shared: Arc<Shared>,
+    transport: Transport,
+    /// The size the helper's model has when it is not handed over as a file (a `load` that names a path).
+    model_bytes: u64,
 }
 
 /// The remote control of a [`ThreadSpawner`].
@@ -74,14 +91,38 @@ pub struct SpawnerControl {
 }
 
 impl ThreadSpawner {
-    /// A spawner whose helpers each run a [`FakeEngine`] on the log of `control`.
+    /// A spawner whose helpers each run a [`FakeEngine`] on the log of `control`, over a socket pair (pipes on
+    /// Windows, where there is none).
     pub fn new(control: &FakeControl) -> (Self, SpawnerControl) {
+        #[cfg(unix)]
+        let transport = Transport::Socket;
+        #[cfg(not(unix))]
+        let transport = Transport::Pipes;
+
+        Self::with_transport(control, transport)
+    }
+
+    /// [`ThreadSpawner::new`] with pipes on any system: the transport the helper on Windows uses.
+    pub fn over_pipes(control: &FakeControl) -> (Self, SpawnerControl) {
+        Self::with_transport(control, Transport::Pipes)
+    }
+
+    /// The model of a helper whose `load` names the path of the file has `bytes` bytes.
+    #[must_use]
+    pub fn expecting(mut self, bytes: u64) -> Self {
+        self.model_bytes = bytes;
+        self
+    }
+
+    fn with_transport(control: &FakeControl, transport: Transport) -> (Self, SpawnerControl) {
         let shared = Arc::new(Shared::default());
 
         (
             Self {
                 control: control.clone(),
                 shared: Arc::clone(&shared),
+                transport,
+                model_bytes: 0,
             },
             SpawnerControl { shared },
         )
@@ -117,19 +158,56 @@ impl Spawner for ThreadSpawner {
         }
         locked(&self.shared.spawned).push(mode);
 
-        let (app_end, helper_end) = UnixStream::pair()?;
-        let (stderr_read, stderr_write) = UnixStream::pair()?;
-        let bytes = model
-            .as_ref()
-            .map_or(Ok(0), |file| file.metadata().map(|meta| meta.len()))?;
+        let (stderr_read, stderr_write) = io::pipe()?;
+        let bytes = model.as_ref().map_or(Ok(self.model_bytes), |file| {
+            file.metadata().map(|meta| meta.len())
+        })?;
 
         let life = Arc::new(Life::default());
+        let broken = Arc::new(AtomicBool::new(false));
+
+        // The helper's end, the app's, and how a crash ends the connection from the helper's side.
+        #[cfg(unix)]
+        let mut app_socket = None;
+        let (wire, helper, breaker): (Box<dyn Wire>, Box<dyn Run>, Breaker) = match self.transport {
+            #[cfg(unix)]
+            Transport::Socket => {
+                let (app_end, helper_end) = UnixStream::pair()?;
+                let breaker = Breaker::Socket(helper_end.try_clone()?);
+                app_socket = Some(app_end.try_clone()?);
+
+                (
+                    Box::new(SocketWire::new(app_end)),
+                    Box::new(Ends(helper_end)),
+                    breaker,
+                )
+            }
+            Transport::Pipes => {
+                // Requests: the app writes, the helper reads. Replies: the other way.
+                let (requests_read, requests_write) = io::pipe()?;
+                let (replies_read, replies_write) = io::pipe()?;
+                let helper_end = (
+                    requests_read,
+                    BreakableWriter {
+                        inner: replies_write,
+                        broken: Arc::clone(&broken),
+                    },
+                );
+
+                (
+                    Box::new(PipeWire::new(replies_read, requests_write, || {})),
+                    Box::new(Ends(helper_end)),
+                    Breaker::Flag(Arc::clone(&broken)),
+                )
+            }
+        };
+
         let engine = Faulty {
             inner: FakeEngine::attached_to(&self.control),
             mode,
             shared: Arc::clone(&self.shared),
             life: Arc::clone(&life),
-            socket: helper_end.try_clone()?,
+            breaker,
             stderr: stderr_write,
             loaded: false,
         };
@@ -139,7 +217,7 @@ impl Spawner for ThreadSpawner {
         thread::Builder::new()
             .name("platter-fake-helper".to_owned())
             .spawn(move || {
-                let code = serve(engine, helper_end, model, bytes);
+                let code = helper.serve(engine, model, bytes);
                 shared.running.fetch_sub(1, Ordering::SeqCst);
                 ended.end(Exit::Code(code));
             })?;
@@ -148,11 +226,71 @@ impl Spawner for ThreadSpawner {
             process: Box::new(ThreadProcess {
                 pid: 40_000 + self.shared.next_pid.fetch_add(1, Ordering::SeqCst),
                 life,
-                socket: app_end.try_clone()?,
+                #[cfg(unix)]
+                socket: app_socket,
+                broken,
             }),
-            socket: app_end,
+            wire,
             stderr: Box::new(stderr_read),
         })
+    }
+}
+
+/// The helper's end of a connection, ready to serve on it.
+trait Run: Send {
+    fn serve(self: Box<Self>, engine: Faulty, model: Option<File>, bytes: u64) -> i32;
+}
+
+struct Ends<T>(T);
+
+impl<T: Connection> Run for Ends<T> {
+    fn serve(self: Box<Self>, engine: Faulty, model: Option<File>, bytes: u64) -> i32 {
+        serve(engine, self.0, model, bytes)
+    }
+}
+
+/// How a crash ends the connection, from the helper's side.
+enum Breaker {
+    /// Shut the helper's socket down: the app's end reads the end at once.
+    #[cfg(unix)]
+    Socket(UnixStream),
+    /// Make the helper's writes fail: the helper ends at its next reply and the app's end reads the end then.
+    Flag(Arc<AtomicBool>),
+}
+
+impl Breaker {
+    fn break_connection(&self) {
+        match self {
+            #[cfg(unix)]
+            Self::Socket(socket) => {
+                let _ = socket.shutdown(Shutdown::Both);
+            }
+            Self::Flag(broken) => broken.store(true, Ordering::SeqCst),
+        }
+    }
+}
+
+/// The writing end of a helper's pipe that stops working when its connection is broken.
+struct BreakableWriter {
+    inner: io::PipeWriter,
+    broken: Arc<AtomicBool>,
+}
+
+impl Write for BreakableWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.broken.load(Ordering::SeqCst) {
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+        }
+
+        self.inner.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.broken.load(Ordering::SeqCst) {
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+        }
+
+        self.inner.flush()
     }
 }
 
@@ -182,8 +320,11 @@ impl Life {
 struct ThreadProcess {
     pid: u32,
     life: Arc<Life>,
-    /// The app's end: shutting it down is what a kill does to a process's socket.
-    socket: UnixStream,
+    /// The app's end of a socket: shutting it down is what a kill does to a process's socket.
+    #[cfg(unix)]
+    socket: Option<UnixStream>,
+    /// What a kill does to a helper that talks over pipes: its writes fail, so it ends at its next reply.
+    broken: Arc<AtomicBool>,
 }
 
 impl RuntimeProcess for ThreadProcess {
@@ -193,7 +334,11 @@ impl RuntimeProcess for ThreadProcess {
 
     fn kill(&mut self) {
         self.life.killed.store(true, Ordering::SeqCst);
-        let _ = self.socket.shutdown(Shutdown::Both);
+        self.broken.store(true, Ordering::SeqCst);
+        #[cfg(unix)]
+        if let Some(socket) = &self.socket {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
     }
 
     fn wait_for(&mut self, timeout: Duration) -> Waited {
@@ -225,9 +370,9 @@ struct Faulty {
     mode: RuntimeMode,
     shared: Arc<Shared>,
     life: Arc<Life>,
-    /// The helper's end of the connection.
-    socket: UnixStream,
-    stderr: UnixStream,
+    /// How a crash ends the connection.
+    breaker: Breaker,
+    stderr: io::PipeWriter,
     /// The model is loaded in this helper.
     loaded: bool,
 }
@@ -253,7 +398,7 @@ impl Faulty {
                 }
                 // Decided before the connection ends, so the app that sees the end finds how it ended.
                 self.life.end(exit);
-                let _ = self.socket.shutdown(Shutdown::Both);
+                self.breaker.break_connection();
             }
             Fault::Hang => {
                 while !self.life.killed.load(Ordering::SeqCst) {

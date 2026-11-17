@@ -1,3 +1,6 @@
+// Most of these tests use POSIX paths and run on Linux only; what only they use is not an error elsewhere.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use std::fs;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -174,7 +177,13 @@ fn the_status_is_sent_in_the_contracts_shape() {
         json["options"],
         json!({ "enabled": false, "unloadAfter": "fiveMinutes", "logQuestions": true, "useGpu": true })
     );
-    assert_eq!(json["gpuSupported"], cfg!(feature = "gpu-vulkan"));
+    assert_eq!(
+        json["gpuSupported"],
+        cfg!(any(
+            feature = "gpu-vulkan",
+            all(feature = "advisor", target_os = "linux")
+        ))
+    );
     for gone in ["models", "recommended"] {
         assert!(json.get(gone).is_none(), "{gone} is not in the status");
     }
@@ -1906,6 +1915,7 @@ fn finding_folders_matches_names_and_exact_paths_and_a_blank_text_finds_nothing(
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn found_folders_are_sent_in_the_contracts_shape() {
     let w = world(true);

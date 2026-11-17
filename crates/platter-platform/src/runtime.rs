@@ -8,21 +8,28 @@
 //! [`runtime_environment`]) and every other descriptor of the parent is closed on exec.
 //!
 //! This module is the one place that knows how the helper is started and how it takes its descriptors.
-//! The Linux code is in `linux::runtime`; other Unix systems get functions that fail with `Unsupported`,
-//! and systems without Unix sockets do not get the module at all (the advisor is unavailable there).
+//! The Linux code is in `linux::runtime`; other Unix systems get functions that fail with `Unsupported`.
+//!
+//! On Windows (`windows::runtime`) the protocol runs over the helper's standard input and output pipes
+//! instead of a socket, the model is not handed over as a descriptor (the helper opens it by the path in the
+//! `load` request, see `windows::pinned`), and the helper is put in a Job Object that kills it when the app
+//! ends. Systems that are neither Unix nor Windows do not get the module at all (the advisor is unavailable
+//! there).
 
-use std::ffi::{OsStr, OsString};
+#[cfg(unix)]
+use std::ffi::OsString;
 use std::fs::File;
 use std::io;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, ExitStatus};
+use std::process::ExitStatus;
+#[cfg(unix)]
+use std::process::{Child, ChildStderr};
 
-/// The only argument of the helper process: the binary started with exactly this runs the model runtime
-/// and nothing else.
-pub const ADVISOR_RUNTIME_ARG: &str = "--advisor-runtime";
+pub use crate::ADVISOR_RUNTIME_ARG;
 
 /// What a helper is started for. It decides the environment, nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +43,7 @@ pub enum RuntimeMode {
 }
 
 /// A helper process that has been started.
+#[cfg(unix)]
 #[derive(Debug)]
 pub struct RuntimeChild {
     pub child: Child,
@@ -45,12 +53,27 @@ pub struct RuntimeChild {
     pub stderr: ChildStderr,
 }
 
+#[cfg(windows)]
+pub use crate::windows::runtime::{RuntimeChild, SharedChild};
+
+/// The helper's end of the connection to the app: the socket it was handed as standard input (Unix), or its
+/// standard input and output (Windows; the reading end first).
+#[cfg(unix)]
+pub type HelperEnd = UnixStream;
+
+/// The helper's end of the connection to the app: the socket it was handed as standard input (Unix), or its
+/// standard input and output (Windows; the reading end first).
+#[cfg(windows)]
+pub type HelperEnd = (File, File);
+
 /// How a process ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exit {
-    /// It left with this exit code.
+    /// It left with this exit code. On Windows this is the exit code as the system reports it, read as a
+    /// signed number: a crash is an NTSTATUS such as `0xC0000005` (an access violation), which shows as
+    /// negative here (see [`exit_text`]).
     Code(i32),
-    /// A signal ended it (`11` is a segmentation fault).
+    /// A signal ended it (`11` is a segmentation fault). Unix only.
     Signal(i32),
 }
 
@@ -66,9 +89,10 @@ pub fn runtime_program() -> io::Result<PathBuf> {
     }
 }
 
-/// Starts `program` as the advisor's helper. `model` is the checked model file, given as the helper's
-/// standard output; `None` (the probe) gives it the null device instead. Fails with `Unsupported` where
-/// this cannot be done safely.
+/// Starts `program` as the advisor's helper. On Unix `model` is the checked model file, given as the
+/// helper's standard output (`None`, the probe, gives it the null device instead). On Windows the model goes
+/// by path in the `load` request and `model` must be `None`. Fails with `Unsupported` where this cannot be
+/// done safely.
 pub fn spawn_advisor_runtime(
     program: &Path,
     model: Option<File>,
@@ -78,23 +102,32 @@ pub fn spawn_advisor_runtime(
     {
         crate::linux::runtime::spawn(program, model, mode)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        crate::windows::runtime::spawn(program, model, mode)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = (program, model, mode);
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 }
 
-/// In the helper: takes the descriptors the parent handed over (the socket on standard input and the model
-/// file on standard output; the null device there means no model), and makes the process end with its
-/// parent and refuse to be inspected. Fails when standard input is not a socket, or standard output is
-/// neither a regular file nor the null device.
-pub fn advisor_runtime_child() -> io::Result<(UnixStream, Option<File>)> {
+/// In the helper: takes the connection the parent handed over (the socket on standard input on Unix, the
+/// standard input and output pipes on Windows) and, on Unix, the model file on standard output (the null
+/// device there means no model; on Windows there is none, the model comes by path). Makes the process end
+/// with its parent (Unix; on Windows the parent's Job Object does that) and refuse to be inspected. Fails
+/// when the connection is not what the parent hands over (run by hand, for one).
+pub fn advisor_runtime_child() -> io::Result<(HelperEnd, Option<File>)> {
     #[cfg(target_os = "linux")]
     {
         crate::linux::runtime::take_descriptors()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        crate::windows::runtime::take_handles()
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
@@ -102,11 +135,63 @@ pub fn advisor_runtime_child() -> io::Result<(UnixStream, Option<File>)> {
 
 /// How `status` ended: the exit code, or the signal that killed it. `None` when it says neither.
 pub fn describe_exit(status: &ExitStatus) -> Option<Exit> {
-    match (status.code(), status.signal()) {
-        (Some(code), _) => Some(Exit::Code(code)),
-        (None, Some(signal)) => Some(Exit::Signal(signal)),
-        (None, None) => None,
+    #[cfg(unix)]
+    {
+        match (status.code(), status.signal()) {
+            (Some(code), _) => Some(Exit::Code(code)),
+            (None, Some(signal)) => Some(Exit::Signal(signal)),
+            (None, None) => None,
+        }
     }
+    // A process on Windows always ends with an exit code (a crash is an NTSTATUS in it).
+    #[cfg(not(unix))]
+    {
+        status.code().map(Exit::Code)
+    }
+}
+
+/// What an exit means in words, where the system's own code is not self-explanatory: a Windows exit code is
+/// shown in hexadecimal with the name of the failure (`0xC0000005 (access violation)`). `None` for an exit that
+/// needs no words (a Unix exit code or signal, or a Windows exit code of 0 to 255).
+pub fn exit_text(exit: Exit) -> Option<String> {
+    #[cfg(windows)]
+    {
+        match exit {
+            Exit::Code(code) => windows_exit_text(code),
+            Exit::Signal(_) => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = exit;
+        None
+    }
+}
+
+/// The text for a Windows exit code: hexadecimal, with the name where it is a failure this program knows.
+/// `None` for the small codes a program returns itself.
+pub fn windows_exit_text(code: i32) -> Option<String> {
+    let unsigned = code as u32;
+    if unsigned < 256 {
+        return None;
+    }
+
+    let name = match unsigned {
+        0xC000_0005 => Some("access violation"),
+        0xC000_00FD => Some("stack overflow"),
+        0xC000_0374 => Some("heap corruption"),
+        0xC000_0409 => Some("stack buffer overrun or fast fail (the program aborted)"),
+        0xC000_013A => Some("interrupted"),
+        0xC000_0142 => Some("a library could not start"),
+        0xC000_0135 | 0xC000_0139 | 0xC000_007B => Some("a library is missing or does not load"),
+        0xE06D_7363 => Some("an uncaught C++ exception"),
+        _ => None,
+    };
+
+    Some(match name {
+        Some(name) => format!("0x{unsigned:08X} ({name})"),
+        None => format!("0x{unsigned:08X}"),
+    })
 }
 
 /// The environment of a helper, from the variables of the parent: nothing but the ones it needs. `HOME`
@@ -117,6 +202,7 @@ pub fn describe_exit(status: &ExitStatus) -> Option<Exit> {
 /// relative one would lead to whatever folder the helper runs in. A helper for the processor also gets
 /// `GGML_VK_VISIBLE_DEVICES` empty, which shows the runtime no graphics card at all (it takes every one when
 /// the variable is missing).
+#[cfg(unix)]
 pub fn runtime_environment(
     vars: impl Iterator<Item = (OsString, OsString)>,
     mode: RuntimeMode,
@@ -152,8 +238,14 @@ pub fn runtime_environment(
     environment
 }
 
+#[cfg(windows)]
+pub use crate::windows::runtime::runtime_environment;
+
 /// The components of a colon separated path list that are absolute, joined again. `None` when none is left.
-fn absolute_components(list: &OsStr) -> Option<OsString> {
+#[cfg(unix)]
+fn absolute_components(list: &std::ffi::OsStr) -> Option<OsString> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
     let kept: Vec<&[u8]> = list
         .as_bytes()
         .split(|byte| *byte == b':')
@@ -167,148 +259,177 @@ fn absolute_components(list: &OsStr) -> Option<OsString> {
 mod tests {
     use super::*;
 
-    fn vars(pairs: &[(&str, &str)]) -> impl Iterator<Item = (OsString, OsString)> {
-        pairs
-            .iter()
-            .map(|(name, value)| (OsString::from(name), OsString::from(value)))
-            .collect::<Vec<_>>()
-            .into_iter()
-    }
-
-    fn lookup(environment: &[(OsString, OsString)], name: &str) -> Option<OsString> {
-        environment
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.clone())
+    #[test]
+    fn a_windows_exit_code_is_told_in_hexadecimal_with_its_name_when_it_is_a_known_failure() {
+        assert_eq!(
+            windows_exit_text(0xC000_0005_u32 as i32).as_deref(),
+            Some("0xC0000005 (access violation)")
+        );
+        assert_eq!(
+            windows_exit_text(0xC000_0409_u32 as i32).as_deref(),
+            Some("0xC0000409 (stack buffer overrun or fast fail (the program aborted))")
+        );
+        assert_eq!(
+            windows_exit_text(0xDEAD_BEEF_u32 as i32).as_deref(),
+            Some("0xDEADBEEF"),
+            "an unknown status is still shown in hexadecimal"
+        );
     }
 
     #[test]
-    fn the_helper_gets_only_the_variables_it_needs() {
-        let environment = runtime_environment(
-            vars(&[
-                ("HOME", "/home/user"),
-                ("PATH", "/usr/bin"),
-                ("XDG_CACHE_HOME", "/cache"),
-                ("APPIMAGE", "/opt/Platter.AppImage"),
-                ("LD_LIBRARY_PATH", "/app/lib"),
-                ("LD_PRELOAD", "/evil.so"),
-                ("VK_INSTANCE_LAYERS", "x"),
-                ("LANG", "pl_PL.UTF-8"),
-                ("GGML_VK_VISIBLE_DEVICES", "0"),
-            ]),
-            RuntimeMode::Gpu,
-        );
-
-        let mut names: Vec<_> = environment
-            .iter()
-            .map(|(name, _)| name.to_string_lossy())
-            .collect();
-        names.sort();
-        assert_eq!(
-            names,
-            [
-                "HOME",
-                "LANG",
-                "LD_LIBRARY_PATH",
-                "VK_LOADER_LAYERS_DISABLE",
-                "XDG_CACHE_HOME"
-            ]
-        );
-        assert_eq!(
-            lookup(&environment, "LANG"),
-            Some("C".into()),
-            "the locale is fixed"
-        );
-        assert_eq!(lookup(&environment, "HOME"), Some("/home/user".into()));
-    }
-
-    #[test]
-    fn the_implicit_vulkan_layers_are_always_disabled() {
-        for mode in [RuntimeMode::Probe, RuntimeMode::Cpu, RuntimeMode::Gpu] {
-            let environment = runtime_environment(vars(&[("VK_LOADER_LAYERS_DISABLE", "")]), mode);
-
-            assert_eq!(
-                lookup(&environment, "VK_LOADER_LAYERS_DISABLE"),
-                Some("~implicit~".into())
-            );
-            assert_eq!(
-                environment
-                    .iter()
-                    .filter(|(name, _)| name == "VK_LOADER_LAYERS_DISABLE")
-                    .count(),
-                1
-            );
+    fn the_small_exit_codes_a_program_returns_itself_need_no_words() {
+        for code in [0, 1, 2, 255] {
+            assert_eq!(windows_exit_text(code), None, "{code}");
         }
     }
 
-    #[test]
-    fn the_library_path_is_kept_only_in_an_appimage_and_only_its_absolute_components() {
-        let path = |pairs: &[(&str, &str)]| {
-            lookup(
-                &runtime_environment(vars(pairs), RuntimeMode::Gpu),
-                "LD_LIBRARY_PATH",
-            )
-        };
+    #[cfg(unix)]
+    mod environment {
+        use super::super::*;
 
-        assert_eq!(
-            path(&[("LD_LIBRARY_PATH", "/app/lib")]),
-            None,
-            "not in an AppImage"
-        );
-        assert_eq!(
-            path(&[("APPIMAGE", ""), ("LD_LIBRARY_PATH", "/app/lib")]),
-            None,
-            "an empty APPIMAGE is none"
-        );
-        assert_eq!(
-            path(&[("APPIMAGE", "/x"), ("LD_LIBRARY_PATH", "/app/lib")]),
-            Some("/app/lib".into())
-        );
-        assert_eq!(
-            path(&[
-                ("APPIMAGE", "/x"),
-                ("LD_LIBRARY_PATH", ":lib:/app/lib::./here:/usr/lib:")
-            ]),
-            Some("/app/lib:/usr/lib".into()),
-            "empty and relative components are dropped"
-        );
-        assert_eq!(
-            path(&[("APPIMAGE", "/x"), ("LD_LIBRARY_PATH", ":rel:")]),
-            None,
-            "nothing absolute is nothing"
-        );
-        assert_eq!(path(&[("APPIMAGE", "/x")]), None, "not made up");
-    }
+        fn vars(pairs: &[(&str, &str)]) -> impl Iterator<Item = (OsString, OsString)> {
+            pairs
+                .iter()
+                .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+                .collect::<Vec<_>>()
+                .into_iter()
+        }
 
-    #[test]
-    fn variables_that_are_not_set_are_not_made_up() {
-        let environment = runtime_environment(vars(&[("HOME", "/home/user")]), RuntimeMode::Probe);
+        fn lookup(environment: &[(OsString, OsString)], name: &str) -> Option<OsString> {
+            environment
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        }
 
-        assert_eq!(lookup(&environment, "XDG_CACHE_HOME"), None);
-        assert_eq!(lookup(&environment, "LD_LIBRARY_PATH"), None);
-        assert_eq!(lookup(&environment, "APPIMAGE"), None);
-    }
+        #[test]
+        fn the_helper_gets_only_the_variables_it_needs() {
+            let environment = runtime_environment(
+                vars(&[
+                    ("HOME", "/home/user"),
+                    ("PATH", "/usr/bin"),
+                    ("XDG_CACHE_HOME", "/cache"),
+                    ("APPIMAGE", "/opt/Platter.AppImage"),
+                    ("LD_LIBRARY_PATH", "/app/lib"),
+                    ("LD_PRELOAD", "/evil.so"),
+                    ("VK_INSTANCE_LAYERS", "x"),
+                    ("LANG", "pl_PL.UTF-8"),
+                    ("GGML_VK_VISIBLE_DEVICES", "0"),
+                ]),
+                RuntimeMode::Gpu,
+            );
 
-    #[test]
-    fn only_the_helper_for_the_processor_hides_the_graphics_cards() {
-        let hidden = |mode| lookup(&runtime_environment(vars(&[]), mode), "GGML_VK_VISIBLE_DEVICES");
+            let mut names: Vec<_> = environment
+                .iter()
+                .map(|(name, _)| name.to_string_lossy())
+                .collect();
+            names.sort();
+            assert_eq!(
+                names,
+                [
+                    "HOME",
+                    "LANG",
+                    "LD_LIBRARY_PATH",
+                    "VK_LOADER_LAYERS_DISABLE",
+                    "XDG_CACHE_HOME"
+                ]
+            );
+            assert_eq!(
+                lookup(&environment, "LANG"),
+                Some("C".into()),
+                "the locale is fixed"
+            );
+            assert_eq!(lookup(&environment, "HOME"), Some("/home/user".into()));
+        }
 
-        assert_eq!(hidden(RuntimeMode::Cpu), Some(OsString::new()), "set, and empty");
-        assert_eq!(hidden(RuntimeMode::Gpu), None);
-        assert_eq!(hidden(RuntimeMode::Probe), None);
-    }
+        #[test]
+        fn the_implicit_vulkan_layers_are_always_disabled() {
+            for mode in [RuntimeMode::Probe, RuntimeMode::Cpu, RuntimeMode::Gpu] {
+                let environment = runtime_environment(vars(&[("VK_LOADER_LAYERS_DISABLE", "")]), mode);
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn an_exit_is_a_code_or_a_signal() {
-        let run = |script: &str| {
-            std::process::Command::new("/bin/sh")
-                .args(["-c", script])
-                .status()
-                .unwrap()
-        };
+                assert_eq!(
+                    lookup(&environment, "VK_LOADER_LAYERS_DISABLE"),
+                    Some("~implicit~".into())
+                );
+                assert_eq!(
+                    environment
+                        .iter()
+                        .filter(|(name, _)| name == "VK_LOADER_LAYERS_DISABLE")
+                        .count(),
+                    1
+                );
+            }
+        }
 
-        assert_eq!(describe_exit(&run("exit 3")), Some(Exit::Code(3)));
-        assert_eq!(describe_exit(&run("kill -SEGV $$")), Some(Exit::Signal(11)));
+        #[test]
+        fn the_library_path_is_kept_only_in_an_appimage_and_only_its_absolute_components() {
+            let path = |pairs: &[(&str, &str)]| {
+                lookup(
+                    &runtime_environment(vars(pairs), RuntimeMode::Gpu),
+                    "LD_LIBRARY_PATH",
+                )
+            };
+
+            assert_eq!(
+                path(&[("LD_LIBRARY_PATH", "/app/lib")]),
+                None,
+                "not in an AppImage"
+            );
+            assert_eq!(
+                path(&[("APPIMAGE", ""), ("LD_LIBRARY_PATH", "/app/lib")]),
+                None,
+                "an empty APPIMAGE is none"
+            );
+            assert_eq!(
+                path(&[("APPIMAGE", "/x"), ("LD_LIBRARY_PATH", "/app/lib")]),
+                Some("/app/lib".into())
+            );
+            assert_eq!(
+                path(&[
+                    ("APPIMAGE", "/x"),
+                    ("LD_LIBRARY_PATH", ":lib:/app/lib::./here:/usr/lib:")
+                ]),
+                Some("/app/lib:/usr/lib".into()),
+                "empty and relative components are dropped"
+            );
+            assert_eq!(
+                path(&[("APPIMAGE", "/x"), ("LD_LIBRARY_PATH", ":rel:")]),
+                None,
+                "nothing absolute is nothing"
+            );
+            assert_eq!(path(&[("APPIMAGE", "/x")]), None, "not made up");
+        }
+
+        #[test]
+        fn variables_that_are_not_set_are_not_made_up() {
+            let environment = runtime_environment(vars(&[("HOME", "/home/user")]), RuntimeMode::Probe);
+
+            assert_eq!(lookup(&environment, "XDG_CACHE_HOME"), None);
+            assert_eq!(lookup(&environment, "LD_LIBRARY_PATH"), None);
+            assert_eq!(lookup(&environment, "APPIMAGE"), None);
+        }
+
+        #[test]
+        fn only_the_helper_for_the_processor_hides_the_graphics_cards() {
+            let hidden = |mode| lookup(&runtime_environment(vars(&[]), mode), "GGML_VK_VISIBLE_DEVICES");
+
+            assert_eq!(hidden(RuntimeMode::Cpu), Some(OsString::new()), "set, and empty");
+            assert_eq!(hidden(RuntimeMode::Gpu), None);
+            assert_eq!(hidden(RuntimeMode::Probe), None);
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn an_exit_is_a_code_or_a_signal() {
+            let run = |script: &str| {
+                std::process::Command::new("/bin/sh")
+                    .args(["-c", script])
+                    .status()
+                    .unwrap()
+            };
+
+            assert_eq!(describe_exit(&run("exit 3")), Some(Exit::Code(3)));
+            assert_eq!(describe_exit(&run("kill -SEGV $$")), Some(Exit::Signal(11)));
+        }
     }
 }

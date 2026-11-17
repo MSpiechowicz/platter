@@ -14,9 +14,9 @@ use crate::fetch::{Fetch, FetchResponse};
 use crate::spec::ModelSpec;
 use crate::verify::{VerifiedModel, hex};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod spawner;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use spawner::{Fault, Phase, SpawnerControl, ThreadSpawner};
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

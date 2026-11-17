@@ -105,6 +105,7 @@ describe('the Cleanup view', () => {
       options: { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true },
       ramTotal: 1,
       gpuSupported: false,
+      os: 'linux',
     };
 
     await waitFor(async () => expect(await tag()).toContain('LOCAL MODEL'));

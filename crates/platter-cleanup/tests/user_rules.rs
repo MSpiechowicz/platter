@@ -7,10 +7,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use platter_cleanup::{
-    CandidateLimits, CleanupAction, CleanupOptions, CleanupPlan, KEPT_LEARNING_BUDGET, KeptFolders,
-    Protected, Refusal, action_for, label_candidates, plan_cleanup, plan_cleanup_with, plan_labelled,
-    plan_labelled_with, plan_marked, with_real_keeps,
+    CandidateLimits, CleanupAction, CleanupOptions, CleanupPlan, KeptFolders, Protected, Refusal, action_for,
+    label_candidates, plan_cleanup, plan_cleanup_with, plan_labelled, plan_labelled_with, plan_marked,
+    with_real_keeps,
 };
+// Used only by the Unix-only link tests.
+#[cfg(unix)]
+use platter_cleanup::KEPT_LEARNING_BUDGET;
 use platter_core::dto::SuggestionSource;
 use platter_core::dto::Verdict;
 use platter_core::testing::{FakeFs, NOW};
@@ -26,6 +29,7 @@ fn env() -> Environment {
         user_dirs: Vec::new(),
         now: NOW,
         os: Os::Linux,
+        system_root: None,
     }
 }
 
@@ -105,7 +109,7 @@ fn a_user_safe_folder_is_planned_for_the_trash_and_never_deleted() {
     assert_eq!(group.targets()[0].display_path(), "/home/u/stuff/big");
     assert_eq!(plan.allocated, 1100);
     assert!(matches!(
-        action_for("user-safe", &CleanupOptions::default()),
+        action_for("user-safe", &CleanupOptions::default(), Os::Linux),
         Some(CleanupAction::Trash)
     ));
 }
@@ -803,6 +807,8 @@ fn a_folder_beside_a_user_kept_mount_is_not_kept() {
 // Learning where the kept folders really are costs one look at the disk each, and a hung mount makes each
 // look wait out the probe's own limit: the whole of it has one limit, shared by every plan of a request.
 
+// Used only by the Unix-only link tests below.
+#[cfg(unix)]
 /// A probe where everything under `/dead` takes `delay` to answer and then fails, like a hung mount.
 struct HungMount<'a> {
     fs: &'a FakeFs,
@@ -810,6 +816,8 @@ struct HungMount<'a> {
     stalled: AtomicUsize,
 }
 
+// Used only by the Unix-only link tests below.
+#[cfg(unix)]
 impl HungMount<'_> {
     fn stall(&self, path: &[u8]) {
         if path.starts_with(b"/dead") {
@@ -819,6 +827,8 @@ impl HungMount<'_> {
     }
 }
 
+// Used only by the Unix-only link tests below.
+#[cfg(unix)]
 impl EntryProbe for HungMount<'_> {
     fn probe(&self, path: &[u8]) -> io::Result<Vec<ProbedEntry>> {
         self.stall(path);
@@ -836,6 +846,8 @@ impl EntryProbe for HungMount<'_> {
     }
 }
 
+// Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
+#[cfg(unix)]
 #[test]
 fn keep_folders_on_a_hung_mount_cannot_hold_planning_and_the_rest_still_protect_by_path() {
     let fs = aliased_fs();
@@ -1143,6 +1155,8 @@ fn kept_through_link_fs() -> FakeFs {
     fs
 }
 
+// Used only by the Unix-only link tests below.
+#[cfg(unix)]
 /// The Python caches of `kept_through_link_fs` as the scan of `root` sees them.
 fn caches(root: &str) -> Vec<&'static str> {
     match root {
@@ -1161,6 +1175,8 @@ fn all_refused_as_kept(plan: &CleanupPlan, expected: usize, what: &str) {
     );
 }
 
+// Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
+#[cfg(unix)]
 #[test]
 fn a_keep_link_to_the_scan_root_or_a_folder_holding_it_keeps_the_scan_in_every_plan_and_lists_nothing() {
     let fs = kept_through_link_fs();
@@ -1271,6 +1287,8 @@ fn a_keep_link_to_the_home_folder_or_above_protects_only_the_link_itself() {
     }
 }
 
+// Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
+#[cfg(unix)]
 #[test]
 fn a_hung_keep_first_does_not_cost_a_later_keep_its_real_location() {
     let fs = linked_fs();
@@ -1306,6 +1324,8 @@ fn a_hung_keep_first_does_not_cost_a_later_keep_its_real_location() {
     assert!(plan.groups().is_empty(), "{plan:#?}");
 }
 
+// Used only by the Unix-only link tests below.
+#[cfg(unix)]
 /// `count` keeps on a mount that answers after 100 ms with a failure, then `last`.
 fn hung_keeps_then(count: usize, last: &str) -> Vec<(UserVerdict, String)> {
     let mut user: Vec<(UserVerdict, String)> = (0..count)
@@ -1316,6 +1336,8 @@ fn hung_keeps_then(count: usize, last: &str) -> Vec<(UserVerdict, String)> {
     user
 }
 
+// Used only by the Unix-only link tests below.
+#[cfg(unix)]
 fn learned_within(
     user: &[(UserVerdict, String)],
     probe: &LinkedProbe,
@@ -1333,6 +1355,8 @@ fn learned_within(
     (rules, kept, started.elapsed())
 }
 
+// Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
+#[cfg(unix)]
 #[test]
 fn a_link_keep_behind_many_hung_keeps_is_still_read_by_text_and_protects_where_it_leads() {
     let fs = kept_through_link_fs();
@@ -1363,6 +1387,8 @@ fn a_link_keep_behind_many_hung_keeps_is_still_read_by_text_and_protects_where_i
     }
 }
 
+// Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
+#[cfg(unix)]
 #[test]
 fn a_keep_that_the_limit_ran_out_before_could_be_a_link_so_nothing_is_planned() {
     let fs = kept_through_link_fs();
@@ -1412,6 +1438,8 @@ fn a_keep_that_the_limit_ran_out_before_could_be_a_link_so_nothing_is_planned() 
     }
 }
 
+// Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
+#[cfg(unix)]
 #[test]
 fn a_link_keep_whose_way_cannot_be_followed_in_time_refuses_every_plan() {
     let fs = kept_through_link_fs();
@@ -1443,6 +1471,8 @@ fn a_link_keep_whose_way_cannot_be_followed_in_time_refuses_every_plan() {
     );
 }
 
+// Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
+#[cfg(unix)]
 #[test]
 fn a_hung_keep_that_is_not_a_link_does_not_stop_planning() {
     let fs = kept_through_link_fs();
@@ -1469,6 +1499,8 @@ fn a_hung_keep_that_is_not_a_link_does_not_stop_planning() {
     assert_eq!(planned(&plan), ["/data/proj/__pycache__"], "{plan:#?}");
 }
 
+// Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
+#[cfg(unix)]
 #[test]
 fn links_are_followed_by_text_through_relative_and_chained_links_and_links_on_the_way() {
     let fs = kept_through_link_fs();
@@ -1494,6 +1526,8 @@ fn links_are_followed_by_text_through_relative_and_chained_links_and_links_on_th
     }
 }
 
+// Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
+#[cfg(unix)]
 #[test]
 fn a_link_that_leads_nowhere_in_a_few_hops_is_not_resolved_and_refuses_every_plan() {
     let fs = kept_through_link_fs();
@@ -1522,6 +1556,8 @@ fn a_link_that_leads_nowhere_in_a_few_hops_is_not_resolved_and_refuses_every_pla
     );
 }
 
+// Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
+#[cfg(unix)]
 #[test]
 fn without_hung_keeps_the_same_link_keep_refuses_as_kept() {
     let fs = kept_through_link_fs();

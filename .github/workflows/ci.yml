@@ -16,6 +16,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # Line tables keep file:line in panics and backtraces; full debug info only makes the build and the link
+  # slower (much slower on Windows, where it is written as PDB files).
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   rust:
@@ -35,6 +39,9 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Also after a failed run: the next run then starts from the built dependencies, not from nothing.
+          cache-on-failure: true
 
       # `platter-desktop` embeds `apps/desktop/dist` at compile time (tauri `frontendDist`), so the
       # directory must exist. Lint and tests do not depend on its content, so a stub keeps this job
@@ -52,6 +59,93 @@ jobs:
 
       - name: Test
         run: cargo test --locked --workspace
+
+  # The Windows port (P1), required like `rust`: a red Windows run makes no release (version.yml waits for CI).
+  # Clippy and the tests run as two jobs side by side: almost all of the time is compiling (llama.cpp with
+  # MSVC among it), so splitting the tests further would only compile the same things more often.
+  windows:
+    name: Windows (${{ matrix.check }})
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [clippy, test]
+    env:
+      # llama.cpp's bindings (bindgen) need libclang. The runner has LLVM, cmake and MSVC installed.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Fails at once, with a plain message, where the build would otherwise fail deep inside llama.cpp.
+      - name: Check the build tools
+        run: |
+          cmake --version
+          [ -f "$(cygpath -u "$LIBCLANG_PATH")/libclang.dll" ] || { echo "::error::libclang.dll is not in $LIBCLANG_PATH."; exit 1; }
+
+      # rustup 1.28+ no longer installs the toolchain named in rust-toolchain.toml on first use.
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Also after a failed run: the next run then starts from the built dependencies, not from nothing.
+          cache-on-failure: true
+          # Clippy's and the tests' builds differ: each keeps a cache of its own.
+          key: ${{ matrix.check }}
+
+      # Same stub as in `rust`: `platter-desktop` embeds `apps/desktop/dist` at compile time.
+      - name: Create a stub frontend dist
+        run: |
+          mkdir -p apps/desktop/dist
+          echo '<!doctype html><title>Platter CI stub</title>' > apps/desktop/dist/index.html
+
+      - name: Clippy
+        if: matrix.check == 'clippy'
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Test
+        if: matrix.check == 'test'
+        # A test that waits on Windows (a hidden prompt of the shell) fails the step instead of the whole job's hour.
+        # The Recycle Bin tests change the bin's settings in the registry: only on this thrown-away runner.
+        env:
+          PLATTER_TEST_CHANGE_RECYCLE_BIN: '1'
+        timeout-minutes: 25
+        run: cargo test --locked --workspace --no-fail-fast
+
+      # install.ps1 against a release folder on disk, without running the setup: a matching setup passes, a
+      # changed one is refused. Once in PowerShell 7 and once in the Windows PowerShell 5.1 most PCs have.
+      - name: Install script (PowerShell 7 and 5.1)
+        if: matrix.check == 'test'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $env:RUNNER_TEMP 'fake-release'
+          New-Item -ItemType Directory -Force -Path $release | Out-Null
+          Set-Content -LiteralPath (Join-Path $release 'Platter_9.9.9_x64-setup.exe') -Value 'not a real setup'
+          $hash = (Get-FileHash -LiteralPath (Join-Path $release 'Platter_9.9.9_x64-setup.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath (Join-Path $release 'SHA256SUMS') -Value "$hash  Platter_9.9.9_x64-setup.exe"
+          $env:PLATTER_RELEASE_URL = $release
+          $env:PLATTER_INSTALL_DRY_RUN = '1'
+
+          foreach ($shell in 'pwsh', 'powershell') {
+            & $shell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+            if ($LASTEXITCODE -ne 0) { throw "$($shell): a matching setup was refused." }
+          }
+
+          Add-Content -LiteralPath (Join-Path $release 'Platter_9.9.9_x64-setup.exe') -Value 'changed'
+          foreach ($shell in 'pwsh', 'powershell') {
+            & $shell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+            if ($LASTEXITCODE -eq 0) { throw "$($shell): a changed setup was accepted." }
+          }
+          Write-Host 'install.ps1: checked in both shells.'
+          # The last run above failed on purpose; its exit code must not become the step's.
+          exit 0
 
   web:
     name: Web (lint, check, test, build)

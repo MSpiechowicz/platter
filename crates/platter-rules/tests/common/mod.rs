@@ -27,6 +27,7 @@ pub fn env_with_home(home: Option<&str>) -> Environment {
         user_dirs: Vec::new(),
         now: NOW,
         os: Os::Linux,
+        system_root: None,
     }
 }
 

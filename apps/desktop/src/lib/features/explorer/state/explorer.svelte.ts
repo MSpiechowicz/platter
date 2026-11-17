@@ -3,6 +3,7 @@ import { SvelteSet } from 'svelte/reactivity';
 import { api as defaultApi } from '../../../api';
 import { COLLAPSED_NODE_ID, describeError, isApiError, type Api } from '../../../api/client';
 import type { ChildrenPage, LodNode, NodeDto, NodeId, PathDto, ScanId, SortKey } from '../../../api/types';
+import { platform } from '../../../state/platform.svelte';
 import { resource, type Resource } from '../../../state/resource.svelte';
 import { createFolderColorResolver, type FolderColorResolver } from '../../../folderColor';
 import { assignMapColors, colorOf, dominantTile, type ColorMap } from '../colors';
@@ -638,7 +639,7 @@ export class ExplorerStore {
       node: biggest.node,
       name: linksOf(biggest)
         .map((link) => link.name)
-        .join('/'),
+        .join(platform.separator),
       percent: Math.floor((biggest.node.allocated / total) * 100),
     };
   }

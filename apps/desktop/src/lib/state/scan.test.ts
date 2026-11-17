@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ApiRequestError, type Api } from '../api/client';
-import { createMockApi, MOCK_VOLUMES } from '../api/mock';
+import { createMockApi, MOCK_VOLUMES, MOCK_WINDOWS_VOLUMES } from '../api/mock';
 import type { ScanEvent } from '../api/types';
 import { findVolume, ScanStore } from './scan.svelte';
 
@@ -49,6 +49,16 @@ describe('volumes', () => {
     });
     expect(findVolume(MOCK_VOLUMES, '/mnt/backup-old')).toMatchObject({ volume: { id: 'nvme0n1p2' } });
     expect(findVolume([], '/home')).toBeUndefined();
+  });
+
+  it('matches Windows roots to drives, ignoring letter case and the kind of slash', () => {
+    const volumes = MOCK_WINDOWS_VOLUMES;
+
+    expect(findVolume(volumes, 'C:\\')).toMatchObject({ exact: true, volume: { id: 'C:' } });
+    expect(findVolume(volumes, 'd:/')).toMatchObject({ exact: true, volume: { id: 'D:' } });
+    expect(findVolume(volumes, 'C:\\Users\\demo')).toMatchObject({ exact: false, volume: { id: 'C:' } });
+    expect(findVolume(volumes, 'd:\\data\\x')).toMatchObject({ exact: false, volume: { id: 'D:' } });
+    expect(findVolume(volumes, 'E:\\')).toBeUndefined();
   });
 });
 

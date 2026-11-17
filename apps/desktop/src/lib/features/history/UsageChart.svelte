@@ -2,6 +2,7 @@
   import type { HistoryCleanupDto, HistorySampleDto } from '../../api/types';
   import Card from '../../components/ui/Card.svelte';
   import { fmt } from '../../state/fmt.svelte';
+  import { platform } from '../../state/platform.svelte';
   import { settings } from '../../state/settings.svelte';
   import { CHART, layoutChart, tickLabels } from './chart';
   import { DAYS_FOR_GROWTH, formatDay, methodText, thinNote, whatText } from './format';
@@ -33,7 +34,7 @@
 
   const markerTitle = (cleanup: HistoryCleanupDto): string => {
     const freed = cleanup.methods.every((method) => method.kind === 'trash')
-      ? `${fmt.size(cleanup.freed)} to the trash`
+      ? `${fmt.size(cleanup.freed)} to ${platform.theTrash}`
       : `−${fmt.size(cleanup.freed)}`;
 
     return `${formatDay(cleanup.day, today)} · ${whatText(cleanup.what)} · ${freed} · ${methodText(cleanup.methods)}`;

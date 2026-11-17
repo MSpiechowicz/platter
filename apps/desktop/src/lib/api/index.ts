@@ -67,6 +67,10 @@ function lazyApi(load: () => Promise<Api>): Api {
 function advisorHooks(): MockAdvisorOptions | undefined {
   const options: MockAdvisorOptions = {};
 
+  if (hooks.os) {
+    options.os = hooks.os;
+  }
+
   if (hooks.gpu) {
     options.gpu = hooks.gpu;
   }
@@ -95,6 +99,7 @@ function selectApi(): Api {
   return createMockApi({
     durationMs: hooks.static ? 0 : 2000,
     volumes: hooks.mounts ? MOCK_VOLUMES_WITH_SUBVOLUMES : undefined,
+    os: hooks.os ?? undefined,
     holdAt: hooks.view === 'scanning' ? 0.62 : undefined,
     dominant: hooks.dominant,
     warnings: hooks.warn ? ['mountTableUnavailable'] : undefined,

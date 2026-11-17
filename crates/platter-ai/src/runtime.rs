@@ -1,12 +1,15 @@
-//! The helper process's side: serves an [`Engine`] over the socket the app handed it (see
-//! [`crate::protocol`] for what is said, and [`crate::process`] for the app's side).
+//! The helper process's side: serves an [`Engine`] over the connection the app handed it (a socket on Unix, the
+//! standard input and output pipes on Windows; see [`crate::protocol`] for what is said, and [`crate::process`]
+//! for the app's side).
 //!
 //! One thread reads requests into a queue; the thread that called [`serve`] owns the engine and works
 //! through the queue, one request at a time. The reading thread also acts on a `Cancel` at once, by raising
-//! the flag the running `Judge` looks at, and raises the same flag when the app's end of the socket closes,
+//! the flag the running `Judge` looks at, and raises the same flag when the app's end of the connection closes,
 //! so a helper whose app has gone stops what it is doing and exits.
 
 use std::fs::File;
+use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -20,6 +23,28 @@ use crate::protocol::{
 };
 use crate::verify::{VerifiedModel, VerifyError};
 
+/// The helper's end of the connection: a way to read the app's requests and a way to write its replies.
+pub trait Connection: Send + 'static {
+    /// The reading end and the writing end. Both are used at the same time, from two threads.
+    fn split(self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)>;
+}
+
+#[cfg(unix)]
+impl Connection for UnixStream {
+    fn split(self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
+        let reader = self.try_clone()?;
+
+        Ok((Box::new(reader), Box::new(self)))
+    }
+}
+
+/// Two ends that are separate already: the standard input and output pipes of the helper on Windows.
+impl<R: Read + Send + 'static, W: Write + Send + 'static> Connection for (R, W) {
+    fn split(self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
+        Ok((Box::new(self.0), Box::new(self.1)))
+    }
+}
+
 /// The exit code of a helper that was told to stop, or whose app went away.
 pub const EXIT_CLEAN: i32 = 0;
 /// The exit code of a helper whose connection broke.
@@ -28,14 +53,15 @@ pub const EXIT_BROKEN: i32 = 1;
 /// socket.
 const PROGRESS_EVERY: Duration = Duration::from_millis(20);
 
-/// Serves `engine` on `socket` until the app says `Shutdown` or its end closes; returns the exit code of
-/// the process. `model` is the checked file the app handed over (`None` for a helper that only lists the
-/// cards) and `bytes` the size it must have.
-pub fn serve<E: Engine>(mut engine: E, socket: UnixStream, model: Option<File>, bytes: u64) -> i32 {
-    let Ok(reader_end) = socket.try_clone() else {
+/// Serves `engine` on `end` until the app says `Shutdown` or its end closes; returns the exit code of the
+/// process. `model` is the checked file the app handed over (Unix; `None` for a helper that only lists the
+/// cards, and on Windows, where a `load` names the path of the model instead) and `bytes` the size the model
+/// must have.
+pub fn serve<E: Engine>(mut engine: E, end: impl Connection, model: Option<File>, bytes: u64) -> i32 {
+    let Ok((reader_end, writer_end)) = end.split() else {
         return EXIT_BROKEN;
     };
-    let writer = Arc::new(Mutex::new(socket));
+    let writer: Writer = Arc::new(Mutex::new(writer_end));
     let running = Arc::new(Running::default());
 
     let hello = Reply::Hello {
@@ -51,7 +77,16 @@ pub fn serve<E: Engine>(mut engine: E, socket: UnixStream, model: Option<File>, 
     thread::spawn(move || read_requests(reader_end, &requests, &reading));
 
     engine.on_progress(progress_hook(&writer, &running));
-    let model = model.map(|file| VerifiedModel::inherited(file, bytes));
+    #[cfg(unix)]
+    let inherited = model.map(|file| VerifiedModel::inherited(file, bytes));
+    #[cfg(not(unix))]
+    let inherited: Option<Result<VerifiedModel, VerifyError>> = {
+        let _ = model;
+        None
+    };
+    // The model the helper opened itself by the path of a `load` (Windows). Held until the next load or the end,
+    // with the share mode that keeps the file as it was checked.
+    let mut opened: Option<Result<VerifiedModel, VerifyError>> = None;
 
     // Whether the engine has a model to free when this ends (a helper that only listed the cards has none).
     let mut loaded = false;
@@ -65,8 +100,13 @@ pub fn serve<E: Engine>(mut engine: E, socket: UnixStream, model: Option<File>, 
                 threads,
                 placement,
                 card,
+                model: path,
             } => {
-                let reply = load(&mut engine, model.as_ref(), threads, placement, card.as_deref());
+                if let Some(path) = path.as_deref() {
+                    opened = Some(open_by_path(path, bytes));
+                }
+                let model = opened.as_ref().or(inherited.as_ref());
+                let reply = load(&mut engine, model, threads, placement, card.as_deref());
                 loaded = matches!(reply, Reply::Loaded { .. });
                 reply
             }
@@ -97,6 +137,20 @@ pub fn serve<E: Engine>(mut engine: E, socket: UnixStream, model: Option<File>, 
     EXIT_CLEAN
 }
 
+/// The model the `load` names by path, opened by the helper. Only Windows hands a model over that way: the Unix
+/// helper has the file it was given as its standard output and refuses a path.
+fn open_by_path(path: &str, bytes: u64) -> Result<VerifiedModel, VerifyError> {
+    #[cfg(windows)]
+    {
+        VerifiedModel::opened_by_path(std::path::Path::new(path), bytes)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (path, bytes);
+        Err(VerifyError::Unsupported)
+    }
+}
+
 /// The `Judge` that runs (0: none) and the flag that stops it.
 #[derive(Default)]
 struct Running {
@@ -104,8 +158,10 @@ struct Running {
     cancel: AtomicBool,
 }
 
-fn read_requests(socket: UnixStream, requests: &Sender<Request>, running: &Running) {
-    let mut lines = LineReader::new(socket);
+type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
+
+fn read_requests(from: Box<dyn Read + Send>, requests: &Sender<Request>, running: &Running) {
+    let mut lines = LineReader::new(from);
 
     loop {
         match lines.read::<Request>() {
@@ -134,14 +190,14 @@ fn read_requests(socket: UnixStream, requests: &Sender<Request>, running: &Runni
     }
 }
 
-fn send(writer: &Mutex<UnixStream>, reply: &Reply) -> std::io::Result<()> {
-    let mut socket = writer.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+fn send(writer: &Mutex<Box<dyn Write + Send>>, reply: &Reply) -> io::Result<()> {
+    let mut writer = writer.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    write_message(&mut *socket, reply)
+    write_message(&mut *writer, reply)
 }
 
 /// What the engine calls to say it is working: a `Progress` line, at most one every [`PROGRESS_EVERY`].
-fn progress_hook(writer: &Arc<Mutex<UnixStream>>, running: &Arc<Running>) -> crate::engine::ProgressHook {
+fn progress_hook(writer: &Writer, running: &Arc<Running>) -> crate::engine::ProgressHook {
     let (writer, running) = (Arc::clone(writer), Arc::clone(running));
     let last = Mutex::new(None::<Instant>);
 

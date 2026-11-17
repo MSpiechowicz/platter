@@ -289,7 +289,7 @@ fn an_excluded_path_that_is_a_link_to_a_folder_leaves_the_folder_out() {
     let state = AppState::for_test();
     let dir = sample_dir();
     let link = dir.path().join("shortcut");
-    std::os::unix::fs::symlink(dir.path().join("photos"), &link).unwrap();
+    platter_platform::testing::symlink_dir(&dir.path().join("photos"), &link).unwrap();
 
     let (_, events) = run_to_the_end(
         &state,
@@ -380,7 +380,7 @@ fn a_folder_to_leave_out_that_is_gone_is_reported_and_a_link_to_one_is_followed(
     let dir = sample_dir();
     let photos = dir.path().join("photos");
     let link = dir.path().join("pictures");
-    std::os::unix::fs::symlink(&photos, &link).unwrap();
+    platter_platform::testing::symlink_dir(&photos, &link).unwrap();
     let platform = Arc::new(platter_platform::Platform::current());
     let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
 
@@ -396,10 +396,32 @@ fn a_folder_to_leave_out_that_is_gone_is_reported_and_a_link_to_one_is_followed(
     assert_eq!(found.len(), 1);
     assert!(unresolved, "a folder that is gone is reported");
 
-    let (_, unresolved) = excluded_identities(&platform, dir.path(), &["/no/such/usb/disk".to_owned()]);
+    let elsewhere = text(&dir.path().parent().unwrap().join("no-such-usb-disk"));
+    let (_, unresolved) = excluded_identities(&platform, dir.path(), &[elsewhere]);
     assert!(
         !unresolved,
         "a folder outside the scan would not have been scanned anyway"
+    );
+}
+
+#[test]
+fn a_folder_is_inside_the_scan_by_its_names_and_on_windows_without_regard_to_case() {
+    let root = Path::new("/Data/Photos");
+
+    assert!(is_inside(Path::new("/Data/Photos"), root, false));
+    assert!(is_inside(Path::new("/Data/Photos/2024"), root, false));
+    assert!(
+        !is_inside(Path::new("/Data/PhotosOld"), root, false),
+        "whole names only"
+    );
+    assert!(
+        !is_inside(Path::new("/data/photos/2024"), root, false),
+        "Linux tells case apart"
+    );
+    assert!(is_inside(Path::new("/data/photos/2024"), root, true));
+    assert!(
+        !is_inside(Path::new("/data/photosold"), root, true),
+        "whole names only"
     );
 }
 

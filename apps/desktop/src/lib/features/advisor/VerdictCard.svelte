@@ -1,5 +1,6 @@
 <script lang="ts">
   import { delayed } from '../../state/delayed.svelte';
+  import { platform } from '../../state/platform.svelte';
   import type { AdvisorLabelsDto, StepDto } from '../../api/types';
   import Button from '../../components/ui/Button.svelte';
   import Card from '../../components/ui/Card.svelte';
@@ -33,7 +34,9 @@
       ? [
           {
             title: 'Built-in rules',
-            text: 'Known places: caches, build folders, trash.',
+            text: platform.isWindows
+              ? 'Known places: caches and build folders.'
+              : 'Known places: caches, build folders, trash.',
             unit: 'folders',
             data: labels.rules,
           },

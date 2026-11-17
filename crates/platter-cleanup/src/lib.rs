@@ -30,10 +30,12 @@ mod protect;
 pub use action::{CleanupAction, CleanupOptions, KeepVersions, Tool, action_for};
 pub use candidates::{CandidateLimits, label_candidates};
 pub use execute::{
-    CleanupEvent, CleanupReport, Disk, TargetOutcome, TargetResult, execute, restore_one, undo,
+    CleanupEvent, CleanupReport, Disk, MAX_TRASHED_CHILDREN, TargetOutcome, TargetResult, execute,
+    restore_one, undo,
 };
 pub use guard::{Refusal, VerifiedTarget};
-pub use kept::{KEPT_LEARNING_BUDGET, KeptFolders, with_real_keeps};
+pub use kept::{KEPT_LEARNING_BUDGET, KeptFolders, with_real_keeps, with_real_keeps_for};
+pub use path::PathStyle;
 pub use plan::{
     ADVISOR, CleanupPlan, LeftOut, MARKED, NEEDS_ADMIN_OFF, PlanGroup, Refused, plan_cleanup,
     plan_cleanup_with, plan_labelled, plan_labelled_with, plan_marked,

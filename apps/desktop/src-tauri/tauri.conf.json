@@ -29,7 +29,8 @@
     "targets": [
       "deb",
       "rpm",
-      "appimage"
+      "appimage",
+      "nsis"
     ],
     "category": "Utility",
     "license": "GPL-3.0-or-later",
@@ -43,6 +44,11 @@
       "icons/icon.png",
       "icons/icon.ico"
     ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
     "linux": {
       "deb": {
         "depends": [
@@ -63,7 +69,10 @@
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVBMDFGQjY1ODdFNjMxQTgKUldTb01lYUhaZnNCV3JMMEpwV0dtQ0cvdDN4USs3OUV4dDcyeXVBK2o1M1UyaHp1YkZsU1p5MzIK",
       "endpoints": [
         "https://github.com/MSpiechowicz/platter/releases/latest/download/latest.json"
-      ]
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

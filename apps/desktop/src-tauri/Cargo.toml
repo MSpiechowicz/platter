@@ -13,12 +13,13 @@ workspace = true
 
 [features]
 # The advisor model (llama.cpp, built from source: needs cmake and clang). Without it the advisor
-# reports itself as `unavailable` and nothing else changes. The default (the Linux release) also runs it
-# on a graphics card (`gpu-vulkan`: the binary links libvulkan.so.1, so packages depend on the Vulkan
-# loader; owner decision 2026-11-17). Windows and macOS builds choose their own features (P1, P2).
-default = ["advisor", "gpu-vulkan"]
+# reports itself as `unavailable` and nothing else changes.
+default = ["advisor"]
 advisor = ["platter-ai/llama"]
-# The advisor on the graphics card too (Vulkan; needs the Vulkan headers and `glslc` to build).
+# The advisor on the graphics card too (Vulkan; needs the Vulkan headers and `glslc` to build). Linux only:
+# the Linux build gets it from the target dependency below (the binary links libvulkan.so.1, so packages
+# depend on the Vulkan loader; owner decision 2026-11-17), and a Windows build with this feature does not
+# compile (the advisor runs on the processor there; P1).
 gpu-vulkan = ["advisor", "platter-ai/gpu-vulkan"]
 
 [lib]
@@ -50,6 +51,9 @@ tauri-plugin-updater.workspace = true
 # library): it can name its own window title, attach to the app window and default to Cancel.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+# The advisor's graphics card support is part of every Linux build (`default` has no `gpu-vulkan` so that
+# a Windows build with the default features compiles). `llama` comes with it.
+platter-ai = { workspace = true, features = ["gpu-vulkan"] }
 
 [dev-dependencies]
 platter-core = { workspace = true, features = ["testing"] }

@@ -162,6 +162,24 @@ fn look(probe: &impl EntryProbe, folders: &mut Folders, item: &StoredItem) -> Lo
     }
 }
 
+/// Where the folder that holds `path` ends: the index of the last separator, `None` when that folder is the
+/// root (`/`, or a drive root `C:\`) or the path has no separator. A path of the form `X:\...` is a Windows
+/// one (separator `\`, drive root first), anything else a Posix one (`/`): what a path starts with settles
+/// it, for the two cannot be mistaken for one another.
+fn folder_end(path: &[u8]) -> Option<usize> {
+    let windows = matches!(path, [letter, b':', b'\\', ..] if letter.is_ascii_alphabetic());
+    if windows {
+        let slash = path.iter().rposition(|byte| *byte == b'\\')?;
+
+        // `C:\name`: the folder is the drive root.
+        return (slash > 2).then_some(slash);
+    }
+
+    let slash = path.iter().rposition(|byte| *byte == b'/')?;
+
+    (slash != 0).then_some(slash)
+}
+
 /// The trash folders looked at so far, so entries in the same folder cost one look at it between them
 /// (the number of looks stays bounded by the cap on entries, plus one per distinct folder).
 #[derive(Default)]
@@ -170,13 +188,11 @@ struct Folders(HashMap<Vec<u8>, bool>);
 impl Folders {
     /// Whether the folder that holds `path` is there, as a folder.
     fn is_there(&mut self, probe: &impl EntryProbe, path: &[u8]) -> bool {
-        let Some(slash) = path.iter().rposition(|byte| *byte == b'/') else {
+        // The root is always there: a path directly under `/` (or under a drive root) has no folder worth
+        // the name.
+        let Some(slash) = folder_end(path) else {
             return false;
         };
-        // A path directly under `/` has no folder worth the name: the root is always there.
-        if slash == 0 {
-            return false;
-        }
 
         let folder = &path[..slash];
         if let Some(known) = self.0.get(folder) {
@@ -202,6 +218,18 @@ mod tests {
     use platter_core::{EntryKind, EntryMeta, ProbedEntry};
 
     use super::*;
+
+    #[test]
+    fn the_folder_holding_a_path_is_told_for_both_syntaxes() {
+        assert_eq!(folder_end(b"/trash/x"), Some(6));
+        assert_eq!(folder_end(b"/x"), None);
+        assert_eq!(folder_end(b"C:\\$Recycle.Bin\\S-1\\$R1.txt"), Some(19));
+        assert_eq!(folder_end(b"C:\\x"), None);
+        assert_eq!(folder_end(b"relative"), None);
+        // A backslash in a Posix name is a name, and a slash in a Windows path is not a separator.
+        assert_eq!(folder_end(b"/a\\b"), None);
+        assert_eq!(folder_end(b"C:\\a/b"), None);
+    }
 
     /// A disk that is a table: the path and the identity of what is there.
     struct Disk(HashMap<Vec<u8>, io::Result<(u64, u64)>>);

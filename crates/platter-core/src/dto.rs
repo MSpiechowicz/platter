@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize, Serializer};
 pub use crate::model::{Category, NodeId, NodeKind, Progress, ScanWarning, SkipReason, Totals, Volume};
 
 use crate::error::{QueryError, ScanError};
-use crate::model::Tree;
+use crate::model::{Os, Tree};
 
 /// The largest integer a JavaScript number holds exactly (2^53 - 1, `Number.MAX_SAFE_INTEGER`). Sizes and
 /// counts above it would reach the UI as a rounded, wrong number, so the wire carries this value
@@ -321,6 +321,26 @@ pub struct SuggestionsDto {
     /// Safe first, then review, then keep; largest first within each.
     pub suggestions: Vec<SuggestionDto>,
     pub totals: VerdictTotals,
+}
+
+/// The operating system the app runs on, for the web view's wording and path handling. A closed set: an
+/// OS this build does not know ([`Os::Other`]) is reported as `linux`, the Unix-like default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OsDto {
+    Linux,
+    Windows,
+    Macos,
+}
+
+impl From<Os> for OsDto {
+    fn from(os: Os) -> Self {
+        match os {
+            Os::Windows => Self::Windows,
+            Os::MacOs => Self::Macos,
+            Os::Linux | Os::Other => Self::Linux,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

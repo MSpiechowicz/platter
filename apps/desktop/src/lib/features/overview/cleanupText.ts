@@ -1,6 +1,7 @@
 import type { CleanupPlanDto, PlanGroupDto } from '../../api/types';
 import type { Action, CleanupResult, CleanupStore } from '../../state/cleanup.svelte';
 import { fmt } from '../../state/fmt.svelte';
+import { platform } from '../../state/platform.svelte';
 import { itemCount } from './advisor';
 import { shownPath, visibleText } from './display';
 
@@ -58,14 +59,14 @@ export function actionText(group: PlanGroupDto): string {
     case 'emptyFolder':
       return 'Contents deleted for good. The folder stays.';
     case 'emptyTrash':
-      return 'The trash is emptied for good.';
+      return `The ${platform.trash} is emptied for good.`;
     case 'trash':
-      return 'Moved to the trash. This can be undone.';
+      return `Moved to ${platform.theTrash}. This can be undone.`;
     case 'runTool': {
       const command = group.command === undefined ? 'a system tool' : visibleText(group.command);
 
       return group.needsElevation
-        ? `Runs ${command}, which asks for the administrator password.`
+        ? `Runs ${command}, which asks for ${platform.isWindows ? 'administrator rights' : 'the administrator password'}.`
         : `Runs ${command}.`;
     }
   }
@@ -118,7 +119,7 @@ function resultText(result: CleanupResult): string {
   }
 
   if (result.trashed > 0) {
-    parts.push(`Moved to the trash: ${itemCount(result.trashed)}.`);
+    parts.push(`Moved to ${platform.theTrash}: ${itemCount(result.trashed)}.`);
 
     if (result.undoable) {
       parts.push('This can be undone.');

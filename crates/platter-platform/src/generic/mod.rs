@@ -23,6 +23,11 @@
 
 pub(crate) mod meta;
 
+// The Windows exclusion rules are plain data and name matching: their tests run on every OS.
+#[cfg(all(test, not(windows)))]
+#[path = "../windows/exclusions.rs"]
+mod windows_exclusions;
+
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};

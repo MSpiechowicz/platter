@@ -1,8 +1,8 @@
 # Platter
 
-See what's eating your disk, and clean it up safely. Linux, fully local, AI-assisted.
+See what's eating your disk, and clean it up safely. Linux and Windows, fully local, AI-assisted.
 
-> **Status:** early development. Nothing is released yet; the sections below describe what is being built.
+> **Status:** early development. Every change on `main` that passes CI is released automatically.
 
 ## What it does
 
@@ -13,9 +13,43 @@ See what's eating your disk, and clean it up safely. Linux, fully local, AI-assi
 
 Nothing leaves your computer. The only network calls are the optional model download and the update check.
 
+## Install
+
+Each command downloads the latest release from GitHub, checks it against the release's `SHA256SUMS` and installs it. All of them are for 64-bit x86.
+
+**Linux, any distribution (AppImage, for your user only, updates itself):**
+
+```sh
+curl -fsSL https://github.com/MSpiechowicz/platter/releases/latest/download/install.sh | sh
+```
+
+It installs to `~/.local/bin/platter` with a menu entry, and asks for no administrator rights. `sh install.sh --uninstall` removes it again. The graphics card support needs the Vulkan loader (`libvulkan1` or `vulkan-loader`).
+
+**Debian and Ubuntu (deb):**
+
+```sh
+curl -fLO https://github.com/MSpiechowicz/platter/releases/latest/download/platter_amd64.deb && sudo apt install ./platter_amd64.deb
+```
+
+**Fedora and openSUSE (rpm):**
+
+```sh
+sudo dnf install https://github.com/MSpiechowicz/platter/releases/latest/download/platter.x86_64.rpm
+```
+
+A deb or rpm install is not updated by `apt` or `dnf` (there is no package repository yet). Platter tells you when a new version is out, and the same command installs it.
+
+**Windows 10 and 11 (PowerShell, for your user only, updates itself):**
+
+```powershell
+irm https://github.com/MSpiechowicz/platter/releases/latest/download/install.ps1 | iex
+```
+
+It installs to `%LOCALAPPDATA%\Platter` and asks for no administrator rights. The setup is not code-signed yet, so Windows may warn the first time it runs. To remove it: `$env:PLATTER_UNINSTALL = '1'; irm https://github.com/MSpiechowicz/platter/releases/latest/download/install.ps1 | iex`.
+
 ## Platforms
 
-Linux first. The OS-specific code sits behind a small platform layer, so Windows and macOS support can be added without touching the scanner, analysis, cleanup logic or UI.
+Linux and Windows. The OS-specific code sits behind a small platform layer (`platter-platform`), so macOS support can be added without touching the scanner, analysis, cleanup logic or UI.
 
 ## Tech
 

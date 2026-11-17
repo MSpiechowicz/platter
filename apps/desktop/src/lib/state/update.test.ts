@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiRequestError, type Api } from '../api/client';
 import type { UpdateCheck, UpdateOffer, UpdateProgress } from '../api/types';
-import type { UpdateSchedule } from './settings.svelte';
+import { platform } from './platform.svelte';
+import { settings, type UpdateSchedule } from './settings.svelte';
 import {
   DUE_CHECK_INTERVAL_MS,
   FIRST_CHECK_DELAY_MS,
@@ -440,6 +441,43 @@ describe('UpdaterStore: installing automatically', () => {
 
     expect(api.installUpdate).not.toHaveBeenCalled();
     expect(store.phase).toBe('available');
+  });
+
+  it('follows the Settings switch on Linux and on Windows, where installing only downloads', async () => {
+    const own = (): { store: UpdaterStore; install: ReturnType<typeof vi.fn> } => {
+      const install = vi.fn(async () => {});
+      const api = {
+        checkUpdate: vi.fn(async (): Promise<UpdateCheck> => ({ current: '0.1.0', update: OFFER })),
+        installUpdate: install,
+        restartApp: vi.fn(async () => {}),
+        openExternal: vi.fn(async () => {}),
+      };
+
+      return {
+        store: new UpdaterStore({ api: api as unknown as Api, storage: new MemoryStorage() }),
+        install,
+      };
+    };
+
+    settings.set('autoInstallUpdates', true);
+
+    const linux = own();
+
+    await linux.store.check();
+    await vi.waitFor(() => expect(linux.install).toHaveBeenCalledTimes(1));
+
+    platform.os = 'windows';
+
+    try {
+      const windows = own();
+
+      await windows.store.check();
+
+      // On Windows `installUpdate` only downloads and checks the setup. It runs on the restart click.
+      await vi.waitFor(() => expect(windows.install).toHaveBeenCalledTimes(1));
+    } finally {
+      platform.os = 'linux';
+    }
   });
 
   it('does not install what a package manager installs', async () => {

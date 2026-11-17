@@ -1,5 +1,6 @@
 import type { Api } from '../../api/client';
 import { createFolderColorResolver } from '../../folderColor';
+import { platform } from '../../state/platform.svelte';
 import type { NodeDto, NodeId, ScanId, SummaryDto } from '../../api/types';
 import {
   buildSlabs,
@@ -71,7 +72,11 @@ async function loadLevels(
       break;
     }
 
-    levels.push({ path: `${last.path}/${dominant.name}`, parent: dominant.id, children: page.items });
+    levels.push({
+      path: `${last.path}${platform.separator}${dominant.name}`,
+      parent: dominant.id,
+      children: page.items,
+    });
     parentSize = dominant.allocated;
   }
 

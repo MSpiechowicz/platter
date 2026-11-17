@@ -37,6 +37,8 @@ const NODE_TOOL_DIRS: &[&str] = &[
     ".windsurf",
 ];
 const SYSTEM_PREFIXES: &[&str] = &["/usr", "/opt"];
+/// The same on Windows: below `%SystemRoot%` and these folders at the root of the system drive.
+const WINDOWS_SYSTEM_FOLDERS: &[&str] = &["Program Files", "Program Files (x86)", "ProgramData"];
 
 const fn node_modules() -> Named {
     Named::new(&["node_modules"])
@@ -44,6 +46,7 @@ const fn node_modules() -> Named {
         .next_to_any(NODE_LOCKFILES)
         .not_inside(NODE_TOOL_DIRS)
         .not_below(SYSTEM_PREFIXES)
+        .not_below_drive(WINDOWS_SYSTEM_FOLDERS)
 }
 
 /// The user's `keep` rules as one rule: always the first of a set that has user rules, so it wins when
@@ -99,26 +102,42 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::new("go-modules", "Go module cache", Safe, Matcher::Home("go/pkg/mod"),
         "Module sources Go downloaded. Go fetches the ones a build needs again, which requires a network connection."),
     Rule::new("trash", "Trash", Safe, Matcher::Home(".local/share/Trash"),
-        "Files moved to the trash. Emptying it deletes them for good. A file that is also hard-linked elsewhere keeps its space."),
+        "Files moved to the trash. Emptying it deletes them for good. A file that is also hard-linked elsewhere keeps its space.").only_on(Os::Linux),
     Rule::new("coredumps", "Core dumps", Safe, Matcher::Fixed("/var/lib/systemd/coredump"),
         "Memory dumps saved when programs crashed. They are mainly useful for debugging those crashes.").only_on(Os::Linux),
     Rule::new("steam-shader-cache", "Steam shader cache", Safe,
         Matcher::Home(".local/share/Steam/steamapps/shadercache"),
-        "Compiled shaders Steam keeps for games. Steam rebuilds them the next time a game needs them, which can cause brief stutter."),
+        "Compiled shaders Steam keeps for games. Steam rebuilds them the next time a game needs them, which can cause brief stutter.").only_on(Os::Linux),
+
+    // Windows. Cleaning only moves to the Recycle Bin, so what a program still holds open is left alone.
+    Rule::new("win-temp", "Temporary files", Safe, Matcher::Home("AppData/Local/Temp"),
+        "Files that programs and installers leave in your Temp folder. Programs make them again when they need them. A file that is in use stays where it is.").only_on(Os::Windows),
+    Rule::new("win-npm-cache", "npm package cache", Safe, Matcher::Home("AppData/Local/npm-cache"),
+        "Packages npm downloaded before. npm downloads them again when a project needs them.").only_on(Os::Windows),
+    Rule::new("win-pip-cache", "pip cache", Safe, Matcher::Home("AppData/Local/pip/Cache"),
+        "Packages and wheels pip downloaded or built. pip fetches or builds them again when it needs them.").only_on(Os::Windows),
+    Rule::new("win-nuget-http-cache", "NuGet HTTP cache", Safe, Matcher::Home("AppData/Local/NuGet/http-cache"),
+        "Responses NuGet kept from its servers. NuGet downloads them again when it needs them.").only_on(Os::Windows),
+    Rule::new("win-nuget-v3-cache", "NuGet v3 cache", Safe, Matcher::Home("AppData/Local/NuGet/v3-cache"),
+        "Responses NuGet kept from its servers, in the folder older versions use. NuGet downloads them again when it needs them.").only_on(Os::Windows),
+    Rule::new("win-crash-dumps", "Crash dumps", Safe, Matcher::Home("AppData/Local/CrashDumps"),
+        "Memory dumps Windows saved when programs crashed. They are mainly useful for debugging those crashes.").only_on(Os::Windows),
 
     // Review: probably removable, but only the owner can tell.
+    Rule::new("win-component-store", "Windows component store", Review, Matcher::System("WinSxS"),
+        "Older versions of Windows components that Windows keeps for updates and repairs. Windows can clean it itself, which asks for administrator rights and can take a while. Platter never removes files from it directly.").only_on(Os::Windows),
     Rule::new("pacman-cache", "Pacman package cache", Review, Matcher::Fixed("/var/cache/pacman/pkg"),
         "Package files pacman keeps after installing them, including older versions you could downgrade to. Pacman downloads a package again if it needs one that is gone, but an old version may no longer be available.").only_on(Os::Linux),
     Rule::new("journal", "System journal", Review, Matcher::Fixed("/var/log/journal"),
         "System logs kept by systemd-journald, including the current boot. Removing entries loses that history. You can trim them with journalctl instead.").only_on(Os::Linux),
     Rule::new("app-cache", "Application caches", Review, Matcher::Home(".cache"),
-        "Rebuilt by the apps that use it. Large downloads kept here, such as models, would have to be downloaded again, and some apps keep things here that cannot be rebuilt."),
+        "Rebuilt by the apps that use it. Large downloads kept here, such as models, would have to be downloaded again, and some apps keep things here that cannot be rebuilt.").only_on(Os::Linux),
     Rule::new("maven-repository", "Maven repository", Review, Matcher::Home(".m2/repository"),
         "Artifacts Maven downloaded, and those your own builds installed with mvn install. Downloaded ones are fetched again when a build needs them. Installed ones exist only here."),
     Rule::new("docker-data", "Docker data", Review, Matcher::Fixed("/var/lib/docker"),
         "Images, containers and volumes. Volumes can hold data that exists nowhere else, so look before removing anything.").only_on(Os::Linux),
     Rule::new("docker-desktop-vm", "Docker Desktop virtual machine", Review, Matcher::Home(".docker/desktop/vms"),
-        "The disk image Docker Desktop keeps its images, containers and volumes in. Removing it deletes all of them."),
+        "The disk image Docker Desktop keeps its images, containers and volumes in. Removing it deletes all of them.").only_on(Os::Linux),
     Rule::new("btrfs-snapshots", "btrfs snapshots", Review, Matcher::Fixed("/.snapshots"),
         "Snapshots in the default snapper location. Deleting them removes those rollback points. How much space that frees depends on how much the snapshots share with the live system.").only_on(Os::Linux),
     Rule::new("old-downloads", "Old downloads", Review,
@@ -136,7 +155,7 @@ pub(crate) const RULES: &[Rule] = &[
 
     // Keep: shown so the user can see what is deliberately left alone. Nothing inside is suggested.
     Rule::new("steam-library", "Steam library", Keep, Matcher::Home(".local/share/Steam/steamapps/common"),
-        "Installed games. Left alone on purpose: they would have to be downloaded again."),
+        "Installed games. Left alone on purpose: they would have to be downloaded again.").only_on(Os::Linux),
     Rule::new("documents", "Documents", Keep, Matcher::UserDir(UserDir::Documents),
         "Your documents folder. Left alone on purpose. Nothing inside is suggested for cleanup."),
     Rule::new("pictures", "Pictures", Keep, Matcher::UserDir(UserDir::Pictures),

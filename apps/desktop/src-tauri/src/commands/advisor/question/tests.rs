@@ -1,6 +1,9 @@
 //! `ask_scan`: what the backend collects for each kind of question (on a seeded in-memory tree, with a
 //! fixed home and clock, no model), and the whole flow with a fake model.
 
+// Most of these tests use POSIX paths and run on Linux only; what only they use is not an error elsewhere.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use std::path::PathBuf;
 
 use platter_ai::WellKnown;
@@ -17,6 +20,7 @@ mod eval;
 mod files;
 mod flow;
 mod logging;
+#[cfg(all(feature = "advisor", unix))]
 mod real;
 
 const GIB: u64 = 1 << 30;
@@ -28,6 +32,7 @@ fn home_env() -> Environment {
         user_dirs: Vec::new(),
         now: NOW,
         os: Os::Linux,
+        system_root: None,
     }
 }
 

@@ -1,3 +1,4 @@
+import { isRootPath, isWindowsPath } from '../paths';
 import type { Category, SkipReason } from './types';
 
 /** A group of generated files. Sizes are drawn from a log-normal distribution and scaled to the bytes of the directory. */
@@ -481,6 +482,81 @@ function dominantLayout(): DirSpec[] {
   ];
 }
 
+/** The profile folder of the Windows demo disk. */
+function windowsHomeKids(): DirSpec[] {
+  return [
+    dir('Projekty', 150, [
+      project('platter', 60, { src: 4, target: 44, modules: 12, active: true }),
+      project('rust-playground', 34, { src: 3, target: 31 }),
+      project('web-shop', 30, { src: 5, modules: 25 }),
+      project('blog', 26, { src: 2, modules: 24 }),
+    ]),
+    dir('Videos', 120, [
+      leaf('recordings', 84, { count: 38, category: 'video', sigma: 0.9, ageDays: 240 }),
+      leaf('films', 36, { count: 14, category: 'video', sigma: 0.5, ageDays: 700 }),
+    ]),
+    leaf('Downloads', 74, {
+      count: 120,
+      category: ['archive', 'document', 'diskImage', 'video', 'package'],
+      sigma: 1.6,
+      ageDays: 420,
+    }),
+    dir('AppData', 96, [
+      dir('Local', 84, [
+        leaf('Temp', 19, { count: 140, category: 'other', sigma: 1.4, ageDays: 20 }),
+        leaf('npm-cache', 11, { count: 90, category: 'package', sigma: 1.1, ageDays: 120 }),
+        leaf('pip', 8, { count: 60, category: 'archive', sigma: 1.1, ageDays: 70 }),
+        leaf('Google', 24, { count: 120, category: 'other', sigma: 1.2, ageDays: 14 }),
+        leaf('Docker', 22, { count: 30, category: 'diskImage', sigma: 1.5, ageDays: 40 }),
+      ]),
+      dir('Roaming', 12, [
+        leaf('Code', 12, { count: 80, category: ['code', 'other'], sigma: 1.2, ageDays: 60 }),
+      ]),
+    ]),
+    leaf('Pictures', 40, {
+      count: 240,
+      category: 'image',
+      sigma: 0.7,
+      ageDays: 900,
+      bucket: { size: 60, name: (i) => `20${String(19 + i).padStart(2, '0')}` },
+    }),
+    leaf('Documents', 20, {
+      count: 120,
+      category: ['document', 'archive'],
+      sigma: 1.3,
+      ageDays: 500,
+      bucket: { size: 40, name: numbered('folder-') },
+    }),
+    leaf('Music', 12, { count: 120, category: 'audio', sigma: 0.6, ageDays: 1200 }),
+  ];
+}
+
+/**
+ * A Windows system drive (`?root=C:`, with `?os=windows`): the profile holds 72% of it, `Windows` has the big
+ * `WinSxS`, then the program folders and the hidden system ones. Weights are GB.
+ */
+function windowsKids(): DirSpec[] {
+  return [
+    dir('Users', 512, [dir('demo', 512, windowsHomeKids())]),
+    dir('Windows', 96, [
+      leaf('WinSxS', 38, { count: 160, category: 'app', sigma: 1.5, ageDays: 200 }),
+      leaf('System32', 31, { count: 160, category: 'app', sigma: 1.5, ageDays: 150 }),
+      leaf('SoftwareDistribution', 11, { count: 60, category: 'package', sigma: 1.3, ageDays: 40 }),
+      leaf('Installer', 9, { count: 60, category: 'package', sigma: 1.3, ageDays: 300 }),
+      leaf('Temp', 7, { count: 40, category: 'other', sigma: 1.3, ageDays: 10 }),
+    ]),
+    dir('Program Files', 62, [
+      leaf('Steam', 40, { count: 80, category: 'app', sigma: 1.6, ageDays: 120 }),
+      leaf('Microsoft Office', 22, { count: 80, category: 'app', sigma: 1.3, ageDays: 200 }),
+    ]),
+    leaf('Program Files (x86)', 21, { count: 60, category: 'app', sigma: 1.4, ageDays: 250 }),
+    leaf('ProgramData', 18, { count: 60, category: ['app', 'other'], sigma: 1.3, ageDays: 100 }),
+    { name: '$Recycle.Bin', weight: 0, mount: true, skipped: 'system' },
+    { name: 'System Volume Information', weight: 0, mount: true, skipped: 'system' },
+    unreadable('Recovery'),
+  ];
+}
+
 /** Picks what the demo disk looks like for a given scan root. `dominant` is the lopsided layout of `?dominant`. */
 export function layoutFor(root: string, dominant = false): DirSpec[] {
   if (dominant) {
@@ -493,6 +569,14 @@ export function layoutFor(root: string, dominant = false): DirSpec[] {
 
   if (root === REAL_ROOT) {
     return realKids();
+  }
+
+  if (isWindowsPath(root)) {
+    if (isRootPath(root)) {
+      return windowsKids();
+    }
+
+    return /^[A-Za-z]:\\Users\\/i.test(root) ? windowsHomeKids() : archiveKids();
   }
 
   if (root === '/') {

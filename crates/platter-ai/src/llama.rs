@@ -2,7 +2,9 @@
 //! graphics card.
 //!
 //! The backend is started once per process (a second start fails) and kept for good, with its logging
-//! silenced. The model is loaded from the verified descriptor's `/proc/self/fd/N` path. Each answer
+//! silenced. The model is loaded from the verified descriptor's `/proc/self/fd/N` path (Linux), or on Windows
+//! from the path of the file that is held open with a share mode that lets nobody change it (see
+//! `crate::verify`): either way, `VerifiedModel::path` names the checked bytes. Each answer
 //! gets a fresh context (the context borrows the model, so it cannot be kept next to it without
 //! `unsafe`); that costs a few milliseconds and means nothing of an earlier prompt can leak into the
 //! next answer.

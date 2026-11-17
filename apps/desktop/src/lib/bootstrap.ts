@@ -2,6 +2,7 @@ import { setMockAdvisorState } from './api/mock-advisor';
 import type { ScanId } from './api/types';
 import { hooks } from './hooks';
 import { advisor } from './state/advisor.svelte';
+import { platform } from './state/platform.svelte';
 import { scan } from './state/scan.svelte';
 import { settings } from './state/settings.svelte';
 import { applyThemeChoice } from './state/theme.svelte';
@@ -42,7 +43,7 @@ export async function bootstrap(): Promise<void> {
     hooks.view === 'history' ||
     (hooks.view === 'advisor' && advisorScan())
   ) {
-    const root = hooks.root ?? scan.volumes[0]?.mountPoint ?? '/';
+    const root = hooks.root ?? defaultRoot();
 
     // History waits for a scan like the other pages, and a finished scan leaves it where it is.
     if (hooks.view === 'history') {
@@ -79,13 +80,18 @@ export async function bootstrap(): Promise<void> {
 
   if (hooks.view === 'start' && hooks.ready) {
     await scan.start({
-      root: hooks.root ?? scan.volumes[0]?.mountPoint ?? '/',
+      root: hooks.root ?? defaultRoot(),
       oneFileSystem: settings.oneFileSystem,
       excluded: [...settings.excludedPaths],
     });
     await untilScanEnds();
     ui.go('scan');
   }
+}
+
+/** What a scan starts on when no root is given: the first volume, or the root of the system's own style. */
+function defaultRoot(): string {
+  return scan.volumes[0]?.mountPoint ?? (platform.isWindows ? 'C:\\' : '/');
 }
 
 /**
@@ -149,6 +155,11 @@ async function startAdvisor(): Promise<void> {
 
   // No download prompt at start: the user downloads the model from the Advisor view or Settings when they want it.
   await advisor.watch();
+
+  // The status tells which system this is, so the words (Recycle Bin or trash) are right before the first page.
+  if (advisor.status) {
+    platform.os = advisor.status.os;
+  }
 }
 
 /** The `labels` hook: the mock model labels the finished scan, and the page opens once it has. */

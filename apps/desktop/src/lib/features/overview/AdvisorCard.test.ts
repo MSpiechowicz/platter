@@ -173,6 +173,7 @@ describe('AdvisorCard', () => {
       options: { enabled: true, unloadAfter: 'fiveMinutes' as const, logQuestions: true, useGpu: true },
       ramTotal: 1,
       gpuSupported: false,
+      os: 'linux' as const,
     });
 
     advisor.status = hint('loaded');

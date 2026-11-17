@@ -1,8 +1,11 @@
 //! The downloader and the model check, against a scripted server and a tiny stand-in for the model.
 
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -105,10 +108,12 @@ fn a_fresh_download_arrives_checked_and_private() {
     assert_eq!(seen.first(), Some(&(0, 300)));
     assert_eq!(seen.last(), Some(&(300, 300)));
     assert!(seen.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+    #[cfg(unix)]
     assert_eq!(
         fs::metadata(&setup.dir).unwrap().permissions().mode() & 0o777,
         0o700
     );
+    #[cfg(unix)]
     assert_eq!(
         fs::metadata(setup.model()).unwrap().permissions().mode() & 0o777,
         0o600
@@ -360,6 +365,7 @@ fn a_cut_connection_keeps_the_partial_file_and_the_next_try_continues_it() {
 
     assert!(matches!(error, DownloadError::Network(_)), "{error}");
     assert_eq!(fs::read(setup.partial()).unwrap(), setup.content[..120]);
+    #[cfg(unix)]
     assert_eq!(
         fs::metadata(setup.partial()).unwrap().permissions().mode() & 0o777,
         0o600
@@ -463,6 +469,7 @@ fn the_models_folder_is_locked_by_one_holder_at_a_time() {
 
     assert!(first.is_some());
     assert!(second.is_none(), "a second holder is turned away");
+    #[cfg(unix)]
     assert_eq!(
         fs::metadata(setup.dir.join(".lock"))
             .unwrap()
@@ -567,6 +574,7 @@ fn starting_and_cancelling_on_a_stalled_network_leaves_at_most_one_helper() {
     assert_eq!(helpers.live(), 0);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_link_at_the_model_path_is_refused_and_not_followed() {
     let setup = Setup::new();
@@ -583,6 +591,7 @@ fn a_link_at_the_model_path_is_refused_and_not_followed() {
     assert_eq!(fs::read(&victim).unwrap(), b"mine");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_link_at_the_partial_path_is_refused_and_the_file_it_points_to_is_untouched() {
     let setup = Setup::new();
@@ -642,6 +651,7 @@ fn install(setup: &Setup, bytes: &[u8]) -> PathBuf {
     setup.model()
 }
 
+#[cfg(unix)]
 #[test]
 fn the_right_file_is_verified_and_can_be_read_through_its_pinned_path() {
     let setup = Setup::new();
@@ -656,6 +666,31 @@ fn the_right_file_is_verified_and_can_be_read_through_its_pinned_path() {
         setup.content,
         "what is loaded is what was checked, whatever the name points to now"
     );
+}
+
+/// Windows has no name that follows a handle: the file is held with a share mode that lets nobody write,
+/// rename or delete it, so the path names the checked bytes for as long as the check's result lives.
+#[cfg(windows)]
+#[test]
+fn the_right_file_is_verified_and_nobody_can_change_it_while_the_result_is_held() {
+    let setup = Setup::new();
+    let path = install(&setup, &setup.content);
+
+    let verified = verify(&setup.spec, &path).unwrap();
+    let removed = fs::remove_file(&path);
+    let written = fs::write(&path, vec![0u8; 300]);
+    let renamed = fs::rename(&path, setup.dir.join("moved.gguf"));
+
+    assert!(removed.is_err() && written.is_err() && renamed.is_err());
+    assert_eq!(
+        fs::read(verified.path()).unwrap(),
+        setup.content,
+        "what is loaded is what was checked"
+    );
+    assert_eq!(verified.path(), path);
+
+    drop(verified);
+    fs::write(&path, vec![0u8; 300]).expect("the file is free again");
 }
 
 #[test]
@@ -682,6 +717,7 @@ fn a_file_of_the_wrong_size_or_checksum_is_refused() {
     assert!(error.is_corrupt());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_link_a_folder_and_a_missing_file_are_not_the_model() {
     let setup = Setup::new();

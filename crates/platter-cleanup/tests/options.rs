@@ -17,6 +17,7 @@ fn env() -> Environment {
         user_dirs: Vec::new(),
         now: NOW,
         os: Os::Linux,
+        system_root: None,
     }
 }
 
@@ -64,7 +65,7 @@ fn the_pacman_cache_keeps_the_chosen_number_of_versions() {
         (KeepVersions::Two, "-rk2"),
         (KeepVersions::Three, "-rk3"),
     ] {
-        let action = action_for("pacman-cache", &options(keep, true));
+        let action = action_for("pacman-cache", &options(keep, true), Os::Linux);
 
         assert_eq!(tool_args(action), [flag]);
     }
@@ -84,7 +85,11 @@ fn the_options_change_no_other_tool() {
         "rust-target",
         "trash",
     ] {
-        assert_eq!(action_for(rule, &one), action_for(rule, &three), "{rule}");
+        assert_eq!(
+            action_for(rule, &one, Os::Linux),
+            action_for(rule, &three, Os::Linux),
+            "{rule}"
+        );
     }
 }
 

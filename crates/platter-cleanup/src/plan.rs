@@ -1,13 +1,13 @@
 //! A cleanup plan: what would be cleaned, how, and what was refused.
 
 use platter_core::dto::Verdict;
-use platter_core::{EntryProbe, Environment, ModelLabel, ModelVerdict, NodeId, Tree};
+use platter_core::{EntryProbe, Environment, ModelLabel, ModelVerdict, NodeId, Os, Tree};
 use platter_rules::{RuleSet, matches, scan_is_kept};
 
 use crate::action::{CleanupAction, CleanupOptions, action_for};
 use crate::guard::{Guard, Refusal, VerifiedTarget};
 use crate::kept::KeptFolders;
-use crate::path::{components, display, is_within, owned};
+use crate::path::{PathStyle, display};
 
 /// The verified targets of one selected rule and how they are cleaned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +62,7 @@ pub struct LeftOut {
 }
 
 /// The result of planning. Making it changes nothing on disk.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CleanupPlan {
     pub(crate) groups: Vec<PlanGroup>,
     pub refused: Vec<Refused>,
@@ -77,8 +77,27 @@ pub struct CleanupPlan {
     /// cross a mount.
     pub(crate) scan_root: std::path::PathBuf,
     pub(crate) root_depth: usize,
+    /// The OS the plan was made for: it decides the syntax of the paths in it, and what carrying it out
+    /// may ask of the disk (nothing is deleted for good on Windows).
+    pub(crate) os: Os,
     /// What the user chose when the plan was made.
     pub(crate) options: CleanupOptions,
+}
+
+impl Default for CleanupPlan {
+    fn default() -> Self {
+        Self {
+            groups: Vec::new(),
+            refused: Vec::new(),
+            left_out: Vec::new(),
+            not_found: Vec::new(),
+            allocated: 0,
+            scan_root: std::path::PathBuf::new(),
+            root_depth: 0,
+            os: Os::Other,
+            options: CleanupOptions::default(),
+        }
+    }
 }
 
 impl CleanupPlan {
@@ -90,6 +109,11 @@ impl CleanupPlan {
     /// The groups of verified targets, one per selected rule that has any.
     pub fn groups(&self) -> &[PlanGroup] {
         &self.groups
+    }
+
+    /// The OS the plan was made for.
+    pub fn os(&self) -> Os {
+        self.os
     }
 
     /// The folder the scan started from.
@@ -109,6 +133,7 @@ impl CleanupPlan {
         if self.scan_root.as_os_str().is_empty() {
             self.scan_root = other.scan_root;
             self.root_depth = other.root_depth;
+            self.os = other.os;
             self.options = other.options;
         }
 
@@ -152,7 +177,7 @@ pub fn plan_cleanup(
     probe: &impl EntryProbe,
     options: &CleanupOptions,
 ) -> CleanupPlan {
-    let kept = KeptFolders::learn(rules, probe);
+    let kept = KeptFolders::learn_for(PathStyle::for_os(env.os), rules, probe);
 
     plan_cleanup_with(tree, env, rules, selected, probe, &kept, options)
 }
@@ -167,10 +192,13 @@ pub fn plan_cleanup_with(
     kept: &KeptFolders,
     options: &CleanupOptions,
 ) -> CleanupPlan {
+    let style = PathStyle::for_os(env.os);
     let mut plan = CleanupPlan {
         scan_root: tree.root_path().to_path_buf(),
-        root_depth: components(tree.root_path().as_os_str().as_encoded_bytes())
+        root_depth: style
+            .components(tree.root_path().as_os_str().as_encoded_bytes())
             .map_or(0, |parts| parts.len()),
+        os: env.os,
         options: *options,
         ..CleanupPlan::default()
     };
@@ -184,7 +212,7 @@ pub fn plan_cleanup_with(
 
     let chosen: Vec<_> = found.iter().filter(|rule| selected.contains(&rule.id)).collect();
     let protected = kept.protected_places(env, probe);
-    let root = owned(tree.root_path().as_os_str().as_encoded_bytes());
+    let root = style.owned(tree.root_path().as_os_str().as_encoded_bytes());
 
     let (Some(protected), Some(root)) = (protected, root.clone()) else {
         let reason = if root.is_none() {
@@ -207,7 +235,8 @@ pub fn plan_cleanup_with(
     // Where a keep link leads is left out when that would hold every plan (`/`, the home folder or
     // above); otherwise a scan that starts in it is a scan of a kept folder.
     let kept = kept.anchored(env.home.as_deref());
-    let reason = if kept.unresolved() {
+    // Folders learned in another syntax than this machine's say nothing about it: nothing is planned.
+    let reason = if kept.unresolved() || kept.style() != style {
         Some(Refusal::KeptUnresolved)
     } else if kept.holds_scan(tree.root_path()) {
         Some(Refusal::Kept)
@@ -228,6 +257,7 @@ pub fn plan_cleanup_with(
     }
 
     let guard = Guard {
+        style,
         tree,
         root,
         protected: &protected,
@@ -236,7 +266,7 @@ pub fn plan_cleanup_with(
     };
 
     for rule in chosen {
-        let Some(action) = action_for(rule.id, options) else {
+        let Some(action) = action_for(rule.id, options, env.os) else {
             let reason = if rule.verdict == Verdict::Keep {
                 Refusal::Kept
             } else {
@@ -339,7 +369,7 @@ pub fn plan_marked(
     probe: &impl EntryProbe,
     options: &CleanupOptions,
 ) -> CleanupPlan {
-    let kept = KeptFolders::learn(rules, probe);
+    let kept = KeptFolders::learn_for(PathStyle::for_os(env.os), rules, probe);
 
     CleanupPlan {
         options: *options,
@@ -366,7 +396,7 @@ pub fn plan_labelled(
     probe: &impl EntryProbe,
     options: &CleanupOptions,
 ) -> CleanupPlan {
-    let kept = KeptFolders::learn(rules, probe);
+    let kept = KeptFolders::learn_for(PathStyle::for_os(env.os), rules, probe);
 
     plan_labelled_with(tree, env, rules, labels, probe, &kept, options)
 }
@@ -404,10 +434,13 @@ fn plan_by_hand(
     kept_folders: &KeptFolders,
     group: &'static str,
 ) -> CleanupPlan {
+    let style = PathStyle::for_os(env.os);
     let mut plan = CleanupPlan {
         scan_root: tree.root_path().to_path_buf(),
-        root_depth: components(tree.root_path().as_os_str().as_encoded_bytes())
+        root_depth: style
+            .components(tree.root_path().as_os_str().as_encoded_bytes())
             .map_or(0, |parts| parts.len()),
+        os: env.os,
         ..CleanupPlan::default()
     };
     let refuse = |plan: &mut CleanupPlan, node: NodeId, reason: Refusal| {
@@ -427,7 +460,7 @@ fn plan_by_hand(
     nodes.dedup();
 
     let protected = kept_folders.protected_places(env, probe);
-    let root = owned(tree.root_path().as_os_str().as_encoded_bytes());
+    let root = style.owned(tree.root_path().as_os_str().as_encoded_bytes());
     let (Some(protected), Some(root)) = (protected, root.clone()) else {
         let reason = if root.is_none() {
             Refusal::BadPath
@@ -443,7 +476,7 @@ fn plan_by_hand(
     // Where a keep link leads is left out when that would hold every plan (`/`, the home folder or
     // above); otherwise a scan that starts in it is a scan of a kept folder.
     let kept_folders = kept_folders.anchored(env.home.as_deref());
-    let reason = if kept_folders.unresolved() {
+    let reason = if kept_folders.unresolved() || kept_folders.style() != style {
         Some(Refusal::KeptUnresolved)
     } else if scan_is_kept(tree, env, rules) || kept_folders.holds_scan(tree.root_path()) {
         Some(Refusal::Kept)
@@ -466,6 +499,7 @@ fn plan_by_hand(
         .collect();
 
     let guard = Guard {
+        style,
         tree,
         root,
         protected: &protected,
@@ -509,11 +543,13 @@ fn plan_by_hand(
 /// The rules never match inside a match, so this finds nothing; it is checked anyway, because acting on
 /// a folder and on something inside it would act twice. The inner one is refused.
 fn drop_nested(plan: &mut CleanupPlan) {
+    let style = PathStyle::for_os(plan.os);
+    // Sorted as compared (Windows folds case), so that a folder comes right before what is inside it.
     let mut all: Vec<(Vec<Vec<u8>>, usize, usize)> = Vec::new();
     for (g, group) in plan.groups.iter().enumerate() {
         for (t, target) in group.targets.iter().enumerate() {
-            if let Some(parts) = components(target.path()) {
-                all.push((parts.into_iter().map(<[u8]>::to_vec).collect(), g, t));
+            if let Some(parts) = style.owned(target.path()) {
+                all.push((style.folded(&parts), g, t));
             }
         }
     }
@@ -523,7 +559,7 @@ fn drop_nested(plan: &mut CleanupPlan) {
     let mut outer: Option<&Vec<Vec<u8>>> = None;
     for (parts, g, t) in &all {
         match outer {
-            Some(o) if is_within(parts, o) => nested.push((*g, *t)),
+            Some(o) if style.is_within(parts, o) => nested.push((*g, *t)),
             _ => outer = Some(parts),
         }
     }

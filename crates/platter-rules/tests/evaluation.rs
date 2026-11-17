@@ -443,6 +443,7 @@ fn a_rule_for_another_operating_system_is_skipped() {
         &tree,
         &Environment {
             os: Os::Windows,
+            system_root: None,
             ..env()
         },
         &rules,

@@ -7,8 +7,8 @@ use std::time::Duration;
 use platter_core::{EntryProbe, Environment, UserRule, UserVerdict};
 use platter_rules::RuleSet;
 
-use crate::look::{KeepLook, Looked, join_parts, look_up_keeps};
-use crate::path::{is_within, owned};
+use crate::look::{KeepLook, Looked, look_up_keeps};
+use crate::path::PathStyle;
 use crate::protect::Protected;
 
 /// How long learning the identities of the kept folders may take in all, for one plan request.
@@ -44,6 +44,8 @@ struct Keep {
 /// not look them up again.
 #[derive(Debug, Clone, Default)]
 pub struct KeptFolders {
+    /// The syntax the folders are written in (see [`PathStyle`]); plans of another style refuse everything.
+    style: PathStyle,
     folders: Vec<Keep>,
     /// The protected places of the environment the plans of this request are made for, looked up.
     protected: OnceLock<(Environment, Option<Protected>)>,
@@ -59,9 +61,15 @@ impl PartialEq for KeptFolders {
 impl Eq for KeptFolders {}
 
 impl KeptFolders {
-    /// Learns the kept folders of `rules` through `probe`, within [`KEPT_LEARNING_BUDGET`].
+    /// Learns the kept folders of `rules` through `probe`, within [`KEPT_LEARNING_BUDGET`], for paths in
+    /// the syntax of the OS this program was built for.
     pub fn learn(rules: &RuleSet, probe: &impl EntryProbe) -> Self {
         Self::learn_within(rules, probe, KEPT_LEARNING_BUDGET)
+    }
+
+    /// [`KeptFolders::learn`] for paths of `style` (the style of the environment the plans are made for).
+    pub fn learn_for(style: PathStyle, rules: &RuleSet, probe: &impl EntryProbe) -> Self {
+        Self::learn_within_for(style, rules, probe, KEPT_LEARNING_BUDGET)
     }
 
     /// [`KeptFolders::learn`] with an explicit time limit.
@@ -86,6 +94,17 @@ impl KeptFolders {
     /// with no components (`/`) holds everything and is not a folder anyone keeps: it is left out, as is
     /// a link that leads to `/`.
     pub fn learn_within(rules: &RuleSet, probe: &impl EntryProbe, budget: Duration) -> Self {
+        Self::learn_within_for(PathStyle::host(), rules, probe, budget)
+    }
+
+    /// [`KeptFolders::learn_within`] for paths of `style`. A folder that is not an absolute path of that
+    /// style is left out, as any folder that is not plainly absolute is.
+    pub fn learn_within_for(
+        style: PathStyle,
+        rules: &RuleSet,
+        probe: &impl EntryProbe,
+        budget: Duration,
+    ) -> Self {
         let mut keeps: Vec<(Vec<Vec<u8>>, Vec<u8>)> = Vec::new();
         for rule in rules
             .user()
@@ -93,7 +112,7 @@ impl KeptFolders {
             .filter(|rule| rule.verdict == UserVerdict::Keep)
         {
             let bytes = rule.folder.as_os_str().as_encoded_bytes();
-            let Some(path) = owned(bytes).filter(|path| !path.is_empty()) else {
+            let Some(path) = style.owned(bytes).filter(|path| !path.is_empty()) else {
                 continue;
             };
             if keeps.iter().all(|(known, _)| *known != path) {
@@ -102,9 +121,12 @@ impl KeptFolders {
         }
 
         let paths: Vec<Vec<u8>> = keeps.iter().map(|(_, bytes)| bytes.clone()).collect();
-        let looked = look_up_keeps(probe, &paths, budget);
+        let looked = look_up_keeps(probe, style, &paths, budget);
 
-        let mut kept = Self::default();
+        let mut kept = Self {
+            style,
+            ..Self::default()
+        };
         for ((path, _), KeepLook { looked, settled }) in keeps.into_iter().zip(looked) {
             let Looked { real, identity } = looked;
             kept.folders.push(Keep {
@@ -126,9 +148,13 @@ impl KeptFolders {
     /// Where a link leads is kept when it is, holds or lies below the scan root: a scan that starts
     /// there is a scan of a kept folder (see [`KeptFolders::holds_scan`]).
     pub fn anchored(&self, home: Option<&Path>) -> Self {
-        let home = home.and_then(|home| owned(home.as_os_str().as_encoded_bytes()));
-        let too_wide =
-            |real: &[Vec<u8>]| real.is_empty() || home.as_deref().is_some_and(|home| is_within(home, real));
+        let style = self.style;
+        let home = home.and_then(|home| style.owned(home.as_os_str().as_encoded_bytes()));
+        // The top and anything above the home folder hold every plan. (A drive root of another drive does
+        // not: keeping a whole data drive is a choice a user can make.)
+        let too_wide = |real: &[Vec<u8>]| {
+            real.is_empty() || home.as_deref().is_some_and(|home| style.is_within(home, real))
+        };
 
         let mut anchored = self.clone();
         anchored.protected = OnceLock::new();
@@ -155,14 +181,14 @@ impl KeptFolders {
     /// folder of a keep is the scan root or holds it. Like a scan inside a literal keep, nothing in such
     /// a scan may be cleaned or suggested.
     pub fn holds_scan(&self, root: &Path) -> bool {
-        let Some(root) = owned(root.as_os_str().as_encoded_bytes()) else {
+        let Some(root) = self.style.owned(root.as_os_str().as_encoded_bytes()) else {
             return false;
         };
 
         self.folders
             .iter()
             .filter_map(|keep| keep.real.as_deref())
-            .any(|real| is_within(&root, real))
+            .any(|real| self.style.is_within(&root, real))
     }
 
     /// Where a kept folder really is, for every one that is reached through a link (those whose real path
@@ -171,7 +197,7 @@ impl KeptFolders {
         self.folders
             .iter()
             .filter_map(|keep| keep.real.as_deref())
-            .filter_map(|real| String::from_utf8(join_parts(real)).ok())
+            .filter_map(|real| String::from_utf8(self.style.join(real)).ok())
             .map(PathBuf::from)
             .collect()
     }
@@ -197,14 +223,19 @@ impl KeptFolders {
             .any(|keep| keep.identity.as_ref() == Some(identity))
     }
 
+    /// The syntax of the paths these folders are written in.
+    pub(crate) fn style(&self) -> PathStyle {
+        self.style
+    }
+
     /// Whether the folder at `parts` is, holds or lies inside a kept folder, by path alone.
-    pub(crate) fn touches(&self, parts: &[&[u8]]) -> bool {
+    pub(crate) fn touches<A: AsRef<[u8]>>(&self, parts: &[A]) -> bool {
         self.folders.iter().any(|keep| {
             let real = keep.real.as_deref();
 
             std::iter::once(keep.path.as_slice())
                 .chain(real)
-                .any(|kept| is_within(parts, kept) || is_within(kept, parts))
+                .any(|kept| self.style.is_within(parts, kept) || self.style.is_within(kept, parts))
         })
     }
 }
@@ -218,7 +249,17 @@ impl KeptFolders {
 /// a link leads is looked up once, within [`KEPT_LEARNING_BUDGET`]; a folder that could not be looked up
 /// in time stays kept by its own path alone.
 pub fn with_real_keeps(rules: RuleSet, home: Option<&Path>, probe: &impl EntryProbe) -> RuleSet {
-    let kept = KeptFolders::learn(&rules, probe).anchored(home);
+    with_real_keeps_for(PathStyle::host(), rules, home, probe)
+}
+
+/// [`with_real_keeps`] for paths of `style`.
+pub fn with_real_keeps_for(
+    style: PathStyle,
+    rules: RuleSet,
+    home: Option<&Path>,
+    probe: &impl EntryProbe,
+) -> RuleSet {
+    let kept = KeptFolders::learn_for(style, &rules, probe).anchored(home);
 
     let mut user = rules.user().to_vec();
     let mut next_id = user.iter().map(|rule| rule.id).max().unwrap_or(0);
@@ -239,4 +280,140 @@ pub fn with_real_keeps(rules: RuleSet, home: Option<&Path>, probe: &impl EntryPr
     }
 
     rules.with_user(user)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::io;
+
+    use platter_core::{EntryKind, EntryMeta, ProbedEntry};
+
+    use super::*;
+
+    const WINDOWS: PathStyle = PathStyle::Windows;
+
+    /// A disk with a table of paths (what each component is) and of canonical paths.
+    #[derive(Default)]
+    struct Disk {
+        ways: HashMap<Vec<u8>, Vec<(u64, u64)>>,
+        real: HashMap<Vec<u8>, Vec<u8>>,
+    }
+
+    impl EntryProbe for Disk {
+        fn probe(&self, path: &[u8]) -> io::Result<Vec<ProbedEntry>> {
+            let way = self.ways.get(path).ok_or(io::ErrorKind::NotFound)?;
+
+            Ok(way
+                .iter()
+                .map(|(dev, ino)| ProbedEntry {
+                    meta: EntryMeta {
+                        kind: EntryKind::Dir,
+                        allocated: 0,
+                        apparent: 0,
+                        mtime: 0,
+                        dev: *dev,
+                        ino: *ino,
+                        nlink: 1,
+                        is_mount_root: false,
+                    },
+                    mount_id: None,
+                    birth: None,
+                })
+                .collect())
+        }
+
+        fn resolve(&self, path: &[u8]) -> io::Result<Vec<u8>> {
+            self.real
+                .get(path)
+                .cloned()
+                .ok_or_else(|| io::ErrorKind::Unsupported.into())
+        }
+    }
+
+    fn keeping(folders: &[&str]) -> RuleSet {
+        RuleSet::builtin().with_user(
+            folders
+                .iter()
+                .enumerate()
+                .map(|(id, folder)| UserRule {
+                    id: id as u32 + 1,
+                    verdict: UserVerdict::Keep,
+                    folder: PathBuf::from(folder),
+                })
+                .collect(),
+        )
+    }
+
+    fn parts(path: &str) -> Vec<Vec<u8>> {
+        WINDOWS.owned(path.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn a_kept_folder_is_matched_without_regard_to_case_on_windows() {
+        let kept = KeptFolders::learn_for(WINDOWS, &keeping(&["c:\\users\\me\\Keep"]), &Disk::default());
+
+        assert!(kept.touches(&parts("C:\\Users\\Me\\keep\\x")));
+        assert!(kept.touches(&parts("C:\\Users\\Me\\KEEP")));
+        assert!(
+            kept.touches(&parts("C:\\Users\\Me")),
+            "what holds it is touched too"
+        );
+        assert!(!kept.touches(&parts("C:\\Users\\Me\\keeper")));
+        assert!(!kept.touches(&parts("D:\\Users\\Me\\keep")));
+        assert!(!kept.unresolved());
+    }
+
+    #[test]
+    fn a_kept_folder_behind_a_junction_is_kept_where_it_really_is_and_by_identity() {
+        let disk = Disk {
+            ways: HashMap::from([(b"D:\\real\\sub".to_vec(), vec![(2, 1), (2, 10), (2, 11)])]),
+            real: HashMap::from([(b"C:\\link\\sub".to_vec(), b"D:\\real\\sub".to_vec())]),
+        };
+
+        let kept = KeptFolders::learn_for(WINDOWS, &keeping(&["C:\\link\\sub"]), &disk)
+            .anchored(Some(Path::new("C:\\Users\\Me")));
+
+        assert!(kept.touches(&parts("D:\\real\\sub\\file")), "where it really is");
+        assert!(
+            kept.touches(&parts("C:\\link\\sub\\file")),
+            "and where it was written"
+        );
+        assert!(kept.has_identity(&(2, 11)));
+        assert_eq!(kept.resolved_folders(), [PathBuf::from("D:\\real\\sub")]);
+        assert!(kept.holds_scan(Path::new("d:\\REAL\\sub\\deeper")));
+    }
+
+    #[test]
+    fn the_canonical_spelling_of_a_folder_is_not_another_place() {
+        let disk = Disk {
+            ways: HashMap::new(),
+            real: HashMap::from([(b"c:\\users\\me\\keep".to_vec(), b"C:\\Users\\Me\\Keep".to_vec())]),
+        };
+
+        let kept = KeptFolders::learn_for(WINDOWS, &keeping(&["c:\\users\\me\\keep"]), &disk);
+
+        assert_eq!(kept.resolved_folders(), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn a_folder_that_is_not_a_path_of_the_style_is_left_out() {
+        let kept = KeptFolders::learn_for(
+            WINDOWS,
+            &keeping(&["/home/me/keep", "relative", "C:\\ok"]),
+            &Disk::default(),
+        );
+
+        assert!(!kept.touches(&parts("C:\\other")));
+        assert!(kept.touches(&parts("C:\\ok\\x")));
+        assert_eq!(kept.style(), WINDOWS);
+    }
+
+    #[test]
+    fn keeping_a_whole_data_drive_is_allowed() {
+        let kept = KeptFolders::learn_for(WINDOWS, &keeping(&["D:\\"]), &Disk::default());
+
+        assert!(kept.touches(&parts("D:\\anything\\at\\all")));
+        assert!(!kept.touches(&parts("C:\\anything")));
+    }
 }

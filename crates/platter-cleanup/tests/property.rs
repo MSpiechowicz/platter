@@ -134,6 +134,7 @@ fn no_plan_holds_anything_outside_the_scan_root_or_in_a_protected_place() {
         user_dirs: Vec::new(),
         now: NOW,
         os: Os::Linux,
+        system_root: None,
     };
     let rules = RuleSet::builtin();
     let ids: Vec<&str> = rules.rules().iter().map(|rule| rule.id).collect();

@@ -1,16 +1,17 @@
 //! The single pass: walks the tree top-down once and hands every rule the nodes it matched.
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use platter_core::dto::{SuggestionDto, SuggestionSource, SuggestionsDto, Verdict, VerdictTotals};
-use platter_core::{Environment, ModelLabel, ModelVerdict, NodeId, NodeKind, Tree};
+use platter_core::{Environment, ModelLabel, ModelVerdict, NodeId, NodeKind, Os, Tree};
 
 use crate::display::{join, shorten_home};
 use crate::explain::Explainer;
 use crate::found::Found;
 use crate::plan::{Plan, Role, kept_root, named_of};
 use crate::reason::{Facts, render};
-use crate::resolve::has_sibling_file;
+use crate::resolve::{has_sibling_file, same_os_str};
 use crate::rule::{Files, Matcher, Named, Rule, RuleSet};
 
 /// The result of [`evaluate`]: what could be cleaned, labelled by verdict.
@@ -357,7 +358,7 @@ impl Walker<'_> {
         {
             return None;
         }
-        if !rule.not_inside.is_empty() || !rule.not_below.is_empty() {
+        if !rule.not_inside.is_empty() || !rule.not_below.is_empty() || !rule.not_below_drive.is_empty() {
             // Only for a folder that passed every cheaper test, so few paths are ever built.
             let path = self.tree.path_of(node);
             let parent = path.parent().unwrap_or(&path);
@@ -370,6 +371,12 @@ impl Walker<'_> {
                 return None;
             }
             if rule.not_below.iter().any(|below| path.starts_with(below)) {
+                return None;
+            }
+            if !rule.not_below_drive.is_empty()
+                && self.env.os == Os::Windows
+                && below_windows_system(&path, self.env, rule.not_below_drive)
+            {
                 return None;
             }
         }
@@ -534,15 +541,46 @@ fn advisor_suggestion(tree: &Tree, env: &Environment, advisor: &Found) -> Sugges
     }
 }
 
-/// The path or pattern shown for a rule: its own path for fixed and home rules, the real path for a
-/// single match, otherwise a glob below the deepest folder that holds all matches.
+/// Whether `path` is below `%SystemRoot%` or below one of `folders` at the root of the system drive,
+/// compared the way Windows compares names (see `same_windows_name`).
+fn below_windows_system(path: &Path, env: &Environment, folders: &[&str]) -> bool {
+    let Some(system_root) = env.system_root.as_deref() else {
+        return false;
+    };
+
+    let below = |base: &Path| {
+        let mut path = path.components();
+        base.components().all(|part| {
+            path.next()
+                .is_some_and(|other| same_os_str(other.as_os_str(), part.as_os_str()))
+        })
+    };
+    let drive = system_root.ancestors().last().unwrap_or(system_root);
+
+    below(system_root) || folders.iter().any(|folder| below(&drive.join(folder)))
+}
+
+/// The path or pattern shown for a rule, written with the OS's own separator.
 fn display_path(tree: &Tree, env: &Environment, rule: &Rule, found: &Found) -> String {
+    let shown = shown_path(tree, env, rule, found);
+
+    if env.os == Os::Windows {
+        shown.replace('/', "\\")
+    } else {
+        shown
+    }
+}
+
+/// The path or pattern shown for a rule: its own path for fixed and home rules, the real path for a
+/// single match, otherwise a glob below the deepest folder that holds all matches. Home rules say `~/`.
+fn shown_path(tree: &Tree, env: &Environment, rule: &Rule, found: &Found) -> String {
     let home = env.home.as_deref();
 
     match &rule.matcher {
         Matcher::Fixed(path) => (*path).to_owned(),
         Matcher::Home("") => "~".to_owned(),
         Matcher::Home(relative) => format!("~/{relative}"),
+        Matcher::System(relative) => format!("%SystemRoot%/{relative}"),
         Matcher::UserDir(dir) => env.user_dir(*dir).map_or_else(
             || format!("~/{}", dir.default_name()),
             |path| shorten_home(&path, home),

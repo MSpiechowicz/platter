@@ -230,20 +230,137 @@ impl Removed {
     }
 }
 
+/// What [`EntryRemover::trash`] reports (as the payload of its `io::Error`, see [`not_recycled`]) when the
+/// entry is gone from its place but cannot be found in the trash afterwards: the system deleted it for
+/// good (an item too large for the Recycle Bin, say), or moved it where it could not be told from other
+/// items. It is not recorded as trashed, because it cannot be put back by Platter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotRecycled(pub String);
+
+impl std::fmt::Display for NotRecycled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NotRecycled {}
+
+impl NotRecycled {
+    /// The `io::Error` a remover returns for it.
+    pub fn into_error(self) -> io::Error {
+        io::Error::other(self)
+    }
+}
+
+/// Why the error of a trash call says "gone, but not in the trash", when it does (see [`NotRecycled`]).
+pub fn not_recycled(error: &io::Error) -> Option<&str> {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<NotRecycled>())
+        .map(|inner| inner.0.as_str())
+}
+
+/// What [`EntryRemover::trash`] reports (as the payload of its `io::Error`, see [`unconfirmed`]) when it
+/// is not known what became of the entry: the system did not answer in time (it may be waiting on a prompt
+/// nobody sees), so the entry may still be where it was, or on its way to the trash. It is neither a
+/// removal nor a failure, is never counted as freed space, and is never offered for restoring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unconfirmed(pub String);
+
+impl std::fmt::Display for Unconfirmed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unconfirmed {}
+
+impl Unconfirmed {
+    /// The `io::Error` a remover returns for it.
+    pub fn into_error(self) -> io::Error {
+        io::Error::other(self)
+    }
+}
+
+/// Why the error of a trash call says "not known what happened", when it does (see [`Unconfirmed`]).
+pub fn unconfirmed(error: &io::Error) -> Option<&str> {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<Unconfirmed>())
+        .map(|inner| inner.0.as_str())
+}
+
+/// What happened to one direct child of a folder in [`EntryRemover::trash_children`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildTrashed {
+    /// Moved to the trash, to this exact path.
+    To(Vec<u8>),
+    /// Gone from its place but not found in the trash (see [`NotRecycled`]): the reason.
+    NotRecycled(String),
+    /// It is not known what became of it (see [`Unconfirmed`]): the reason.
+    Unconfirmed(String),
+    /// Left where it was, with the reason (a link, in use, changed since it was looked at).
+    Left(String),
+}
+
+/// One direct child of a folder that [`EntryRemover::trash_children`] looked at, and what became of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrashedChild {
+    /// Its name (no separator).
+    pub name: Vec<u8>,
+    /// Identity as it was when looked at, for putting it back.
+    pub dev: u64,
+    pub ino: u64,
+    pub is_dir: bool,
+    /// Bytes it takes (the length of a file; 0 for a folder, whose size is not looked at).
+    pub allocated: u64,
+    pub outcome: ChildTrashed,
+}
+
+/// What [`EntryRemover::trash_children`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrashedChildren {
+    /// The children acted on or left, with what became of each.
+    pub children: Vec<TrashedChild>,
+    /// How many more children there were beyond the limit; they were not looked at.
+    pub more: u64,
+}
+
 /// Acts on the disk for cleanup. Every method checks the target against [`ExpectedEntry`] right before
 /// it acts and fails without touching anything when it differs: a link, another file in its place, a
 /// mount on the way. Nothing is resolved by path string below `/`; no symlink is ever followed.
 pub trait EntryRemover: Send + Sync {
-    /// Deletes for good. Never crosses into another mount inside a folder.
+    /// Deletes for good. Never crosses into another mount inside a folder. `Unsupported` on Windows,
+    /// where cleanup only ever moves to the Recycle Bin.
     fn remove(&self, path: &[u8], expected: &ExpectedEntry, mode: RemoveMode) -> io::Result<Removed>;
 
-    /// Moves the entry to the user's trash (freedesktop layout under `trash_dir`, which must be on the
-    /// same filesystem), so it can be restored. Returns where it went.
+    /// Moves the entry to the user's trash, so it can be restored. Returns where it went. Linux:
+    /// freedesktop layout under `trash_dir`, which must be on the same filesystem. Windows: the Recycle
+    /// Bin, `trash_dir` is ignored, and the answer is the path of the item inside `$Recycle.Bin`; an
+    /// entry that was taken away but cannot be found there is an error carrying [`NotRecycled`].
     fn trash(&self, path: &[u8], expected: &ExpectedEntry, trash_dir: &Path) -> io::Result<Vec<u8>>;
+
+    /// Moves every direct child of the folder at `path` to the trash and leaves the folder (what
+    /// "empty a folder" means where nothing is deleted for good): the folder is
+    /// checked against `expected` first and held while its children are looked at. A child that is a
+    /// link, or that cannot be moved, is left and reported and does not count against `limit`; at most `limit`
+    /// children are moved (and a bounded multiple of it looked at), the rest stay for the next run (counted
+    /// in [`TrashedChildren::more`]). `Unsupported` where [`remove`](Self::remove) with
+    /// [`RemoveMode::Contents`] is how a folder is emptied (Linux).
+    fn trash_children(
+        &self,
+        _path: &[u8],
+        _expected: &ExpectedEntry,
+        _trash_dir: &Path,
+        _limit: usize,
+    ) -> io::Result<TrashedChildren> {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
+    }
 
     /// Puts an entry that [`trash`](Self::trash) moved to `trashed` back at `original`, when it is still
     /// the entry that was trashed (`expected`) and nothing has taken its old name since; then removes its
-    /// `.trashinfo` record. Never overwrites.
+    /// `.trashinfo` record (Linux). Linux never overwrites (`RENAME_NOREPLACE`). Windows looks at the old
+    /// name before it moves and refuses a taken one, but the shell's move is not atomic with that look.
     fn restore(&self, _trashed: &[u8], _expected: &ExpectedEntry, _original: &[u8]) -> io::Result<()> {
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }

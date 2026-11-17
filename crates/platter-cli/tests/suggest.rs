@@ -1,8 +1,14 @@
 //! `platter-cli suggest` against a temp-dir home. HOME points at the fixture, so the home rules apply to it.
 
-use std::fs::{self, File, FileTimes};
+// The rules of the two systems differ (the trash and `~/.cache` are Linux's, `AppData\Local\Temp` is
+// Windows'), so what depends on them is marked for its own system; the rest runs on both.
+
+use std::fs;
+#[cfg(unix)]
+use std::fs::{File, FileTimes};
 use std::path::Path;
 use std::process::{Command, Output};
+#[cfg(unix)]
 use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
@@ -13,6 +19,7 @@ fn suggest(home: &Path, args: &[&str]) -> Output {
         .arg(home)
         .args(args)
         .env("HOME", home)
+        .env("USERPROFILE", home)
         .env_remove("XDG_CONFIG_HOME")
         .output()
         .expect("binary runs")
@@ -47,6 +54,7 @@ fn stdout_text(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).unwrap()
 }
 
+#[cfg(unix)]
 #[test]
 fn json_is_the_suggestions_wire_format() {
     let dir = fixture();
@@ -75,6 +83,7 @@ fn json_is_the_suggestions_wire_format() {
     assert!(totals["keep"].as_u64().unwrap() >= 10_000);
 }
 
+#[cfg(unix)]
 #[test]
 fn the_table_lists_each_suggestion_and_a_total_per_verdict_without_the_real_home() {
     let dir = fixture();
@@ -117,6 +126,7 @@ fn a_folder_with_nothing_to_suggest_says_so() {
     assert!(text.contains("Nothing found"), "{text}");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_path_from_a_hostile_folder_name_cannot_inject_terminal_sequences() {
     let dir = tempfile::tempdir().unwrap();
@@ -156,6 +166,7 @@ fn a_missing_path_fails_with_a_message() {
 }
 
 /// Sets the access and modification time of a file or directory.
+#[cfg(unix)]
 fn set_times(path: &Path, accessed: SystemTime, modified: SystemTime) {
     File::open(path)
         .unwrap()
@@ -163,6 +174,7 @@ fn set_times(path: &Path, accessed: SystemTime, modified: SystemTime) {
         .unwrap();
 }
 
+#[cfg(unix)]
 fn ids_of(report: &Value) -> Vec<String> {
     report["suggestions"]
         .as_array()
@@ -172,6 +184,7 @@ fn ids_of(report: &Value) -> Vec<String> {
         .collect()
 }
 
+#[cfg(unix)]
 #[test]
 fn the_age_of_a_rust_target_is_its_newest_modification_and_a_mere_read_does_not_make_it_recent() {
     let dir = tempfile::tempdir().unwrap();
@@ -225,6 +238,7 @@ fn the_age_of_a_rust_target_is_its_newest_modification_and_a_mere_read_does_not_
     assert_eq!(recent["verdict"], "review");
 }
 
+#[cfg(unix)]
 #[test]
 fn files_with_more_than_one_hard_link_are_counted_in_shared_files() {
     let dir = tempfile::tempdir().unwrap();
@@ -247,6 +261,7 @@ fn files_with_more_than_one_hard_link_are_counted_in_shared_files() {
     assert_eq!(trash["items"], 1);
 }
 
+#[cfg(unix)]
 #[test]
 fn an_excluded_folder_produces_no_suggestion() {
     let dir = fixture();
@@ -262,4 +277,36 @@ fn an_excluded_folder_produces_no_suggestion() {
         .map(|s| s["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, ["trash", "app-cache", "documents"]);
+}
+
+#[cfg(windows)]
+#[test]
+fn the_temp_folder_of_the_profile_is_a_safe_suggestion_on_windows() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "AppData/Local/Temp/installer.tmp", 20_000);
+    write(dir.path(), "notes.txt", 500);
+
+    let output = suggest(dir.path(), &["--json"]);
+    let report: Value = serde_json::from_str(&stdout_text(&output)).expect("stdout is JSON");
+
+    let temp = report["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|suggestion| suggestion["id"] == "win-temp")
+        .expect("the Temp folder is suggested");
+    assert_eq!(temp["verdict"], "safe");
+    assert_eq!(temp["path"], "~\\AppData\\Local\\Temp");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_rules_of_windows_are_not_offered_on_linux() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "AppData/Local/Temp/installer.tmp", 20_000);
+    write(dir.path(), "AppData/Local/CrashDumps/x.dmp", 20_000);
+
+    let text = stdout_text(&suggest(dir.path(), &["--json"]));
+
+    assert!(!text.contains("win-"), "{text}");
 }

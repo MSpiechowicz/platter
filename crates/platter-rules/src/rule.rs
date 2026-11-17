@@ -47,6 +47,9 @@ pub struct Named {
     pub not_inside: &'static [&'static str],
     /// The directory is not below one of these absolute paths (`/usr`, `/opt`).
     pub not_below: &'static [&'static str],
+    /// Windows only: the directory is not below `%SystemRoot%`, nor below one of these folders at the root
+    /// of the system drive (`Program Files`), compared without regard to ASCII case.
+    pub not_below_drive: &'static [&'static str],
     pub age: Option<Age>,
 }
 
@@ -58,6 +61,7 @@ impl Named {
             sibling_any: &[],
             not_inside: &[],
             not_below: &[],
+            not_below_drive: &[],
             age: None,
         }
     }
@@ -77,6 +81,12 @@ impl Named {
     /// Never below one of these absolute paths.
     pub const fn not_below(mut self, paths: &'static [&'static str]) -> Self {
         self.not_below = paths;
+        self
+    }
+
+    /// Never below `%SystemRoot%` or one of these folders at the root of the system drive (Windows).
+    pub const fn not_below_drive(mut self, folders: &'static [&'static str]) -> Self {
+        self.not_below_drive = folders;
         self
     }
 
@@ -142,8 +152,12 @@ impl Files {
 pub enum Matcher {
     /// The directory at this absolute path.
     Fixed(&'static str),
-    /// The directory at this path below the home directory (`.cache`, `.local/share/Trash`).
+    /// The directory at this path below the home directory (`.cache`, `.local/share/Trash`). Written with
+    /// `/`, which `Path::join` takes as a separator on every OS (`AppData/Local/Temp`).
     Home(&'static str),
+    /// The directory at this path below the Windows system folder (`%SystemRoot%`, `C:\Windows`), written
+    /// with `/`. Not found where the environment has no system folder (every OS but Windows).
+    System(&'static str),
     /// One of the user's personal folders, wherever the desktop put it and whatever it is called.
     UserDir(UserDir),
     /// A directory by name, anywhere.
@@ -160,7 +174,11 @@ impl Matcher {
         let age = match self {
             Matcher::Named(named) => named.age,
             Matcher::Files(files) => files.age,
-            Matcher::Fixed(_) | Matcher::Home(_) | Matcher::UserDir(_) | Matcher::User(_) => None,
+            Matcher::Fixed(_)
+            | Matcher::Home(_)
+            | Matcher::System(_)
+            | Matcher::UserDir(_)
+            | Matcher::User(_) => None,
         };
 
         match age {

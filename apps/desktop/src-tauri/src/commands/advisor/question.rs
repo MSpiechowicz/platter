@@ -299,6 +299,7 @@ pub async fn ask_scan(
 
 /// [`answer_scan_picking`] for a question that is not a choice of one asked back.
 #[cfg(test)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub async fn answer_scan(
     state: &AppState,
     scan: ScanId,

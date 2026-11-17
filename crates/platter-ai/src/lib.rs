@@ -5,14 +5,21 @@
 //! need neither the network nor a model. The real model runtime is behind the feature `llama`; without
 //! it the crate still downloads and verifies, and an app reports the advisor as unavailable.
 //!
-//! The model runs in a helper process (Unix): [`process::ProcessEngine`] is the [`Engine`] the app uses,
+//! The model runs in a helper process (Unix and Windows): [`process::ProcessEngine`] is the [`Engine`] the app uses,
 //! [`runtime::serve`] is the helper's side, and [`protocol`] is what they say to each other. A graphics driver
 //! that crashes or hangs then ends the helper, not the app, and the worker finishes the job on the processor
 //! and tells [`WorkerConfig::on_gpu_incident`].
 //!
-//! The crate has no OS-specific code. Folders, descriptors, starting the helper and memory figures come from
+//! The crate makes no operating system calls of its own. Folders, descriptors, starting the helper and memory figures come from
 //! `platter-platform`. Nothing here writes to the disk except the model's own file in the models folder
 //! (and the removal of the retired model's two files from it).
+
+// The Vulkan backend of the advisor is for Linux only (the Linux build gets it from the desktop crate's
+// target dependency). On Windows the model runs on the processor (P1).
+#[cfg(all(windows, feature = "gpu-vulkan"))]
+compile_error!(
+    "the feature `gpu-vulkan` is not supported on Windows: the advisor runs on the processor there"
+);
 
 pub mod answer;
 pub mod device;
@@ -27,14 +34,14 @@ pub mod label;
 pub mod llama;
 pub mod lock;
 pub mod parse;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod process;
 pub mod prompt;
 pub mod protocol;
 pub mod question;
 pub mod reading;
 pub mod retire;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod runtime;
 pub mod spec;
 #[cfg(feature = "testing")]
@@ -58,7 +65,11 @@ pub use label::{Budget, LabelRun, StageLimit, Stopped, label};
 pub use lock::ModelLock;
 pub use parse::{Judgement, ParseError, parse};
 #[cfg(unix)]
-pub use process::{Limits, ProcessEngine, RealSpawner, RuntimeProcess, Spawned, Spawner, Waited};
+pub use process::SocketWire;
+#[cfg(any(unix, windows))]
+pub use process::{
+    Limits, PipeWire, ProcessEngine, RealSpawner, RuntimeProcess, Spawned, Spawner, Waited, Wire,
+};
 pub use prompt::prompt;
 pub use question::{Intent, Kind, MAX_QUESTION_CHARS, QuestionError, ScanQuestion, clean_question, ground};
 pub use reading::{MediaKind, Signals, WellKnown, fold, signals, words_of_question};

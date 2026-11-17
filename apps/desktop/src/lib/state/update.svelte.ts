@@ -15,13 +15,13 @@ export interface UpdateInfo {
   notes: string[];
   /** "2 hours ago" */
   checked: string;
-  /** This copy installs the update itself. Otherwise a package manager does, and the release page is offered. */
+  /** This copy installs the update itself. Otherwise something else does (a package manager), and the release page is offered. */
   canInstall: boolean;
 }
 
 export type UpdatePhase = 'available' | 'downloading' | 'installing' | 'ready';
 
-/** What the notice's buttons ask for: `open` is the release page, for an update a package manager installs. */
+/** What the notice's buttons ask for: `open` is the release page, for an update this copy cannot install itself. */
 export type UpdateAction = 'install' | 'open' | 'later' | 'restart';
 
 /** What the last check found, for the Settings card. */
@@ -62,7 +62,7 @@ export interface UpdaterDeps {
   ui?: Pick<UiStore, 'toast'>;
   storage?: StorageLike | null;
   schedule?: () => UpdateSchedule;
-  /** Whether an update a check found is installed without a click (Settings, AppImage only). */
+  /** Whether an update a check found is installed without a click (the Settings switch). On Windows installing only downloads and checks the setup, which runs on the restart click. */
   autoInstall?: () => boolean;
   /** The time in unix milliseconds. */
   now?: () => number;
@@ -88,7 +88,7 @@ export class UpdaterStore {
   checkedAt = $state<number | null>(null);
   /**
    * Whether this copy installs updates itself, as the last check that found one reported. Null until one was
-   * found. False means a package manager installs them.
+   * found. False means this copy cannot (a package manager installs them) and the release page is offered.
    */
   canInstall = $state<boolean | null>(null);
 
@@ -243,7 +243,7 @@ export class UpdaterStore {
     }
   }
 
-  /** Opens the release page, for an update that a package manager installs. */
+  /** Opens the release page, for an update this copy cannot install itself. */
   async openReleases(): Promise<void> {
     try {
       await this.#api.openExternal('releases');

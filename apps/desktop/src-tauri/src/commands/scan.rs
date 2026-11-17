@@ -6,8 +6,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use platter_core::dto::{MAX_EXCLUDED, MAX_EXCLUDED_PATH_BYTES, ScanEvent, ScanId, ScanOptions};
-use platter_core::{CancelToken, DirSource, ScanConfig, scan};
+use platter_core::{CancelToken, DirSource, Os, ScanConfig, scan};
 use platter_platform::Platform;
+use platter_platform::environment::current_os;
 use platter_platform::root::ResolvedRoot;
 use tauri::State;
 use tauri::ipc::Channel;
@@ -235,17 +236,31 @@ pub fn excluded_identities(
         }
     }
     // Only a folder inside this scan matters: one elsewhere (an unplugged disk) would not have been scanned anyway.
+    let fold_case = current_os() == Os::Windows;
     let unresolved = excluded
         .iter()
         .zip(&resolved)
-        .any(|(path, &done)| !done && Path::new(path).starts_with(root));
+        .any(|(path, &done)| !done && is_inside(Path::new(path), root, fold_case));
 
     identities.sort_unstable();
     identities.dedup();
     (identities, unresolved)
 }
 
-/// The identity of one folder to leave out, or `None` when it cannot be used.
+/// Whether `path` is `root` or lies inside it. With `fold_case` (Windows) names are compared without
+/// regard to ASCII case, as the file system does: a folder typed as `c:\users\me\x` is inside `C:\Users\me`.
+fn is_inside(path: &Path, root: &Path, fold_case: bool) -> bool {
+    if !fold_case {
+        return path.starts_with(root);
+    }
+
+    let folded = |path: &Path| PathBuf::from(path.to_string_lossy().to_ascii_lowercase());
+
+    folded(path).starts_with(folded(root))
+}
+
+/// The identity of one folder to leave out, or `None` when it cannot be used. On Windows it is the volume
+/// serial number and the file index, from `resolve_root`.
 fn identity_of(platform: &Platform, path: &str) -> Option<(u64, u64)> {
     #[cfg(target_os = "linux")]
     {

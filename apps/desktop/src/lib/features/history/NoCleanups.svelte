@@ -1,6 +1,7 @@
 <script lang="ts">
   import Button from '../../components/ui/Button.svelte';
   import { fmt } from '../../state/fmt.svelte';
+  import { platform } from '../../state/platform.svelte';
   import IntoTheTrash from './IntoTheTrash.svelte';
   import { kindsText } from './format';
 
@@ -34,7 +35,7 @@
       {:else if known}
         This scan found nothing that is safe to free right now.
       {/if}
-      Every cleanup you run shows here, and what went to the trash can be restored.
+      Every cleanup you run shows here, and what went to {platform.theTrash} can be restored.
     </p>
   </div>
   {#if offerReview}

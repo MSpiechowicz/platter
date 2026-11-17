@@ -2,7 +2,7 @@ use platter_cleanup::{
     CleanupAction, CleanupOptions, CleanupPlan, CleanupReport, Disk, TargetOutcome, execute, plan_cleanup,
 };
 use platter_core::dto::Verdict;
-use platter_core::{CancelToken, UserRule};
+use platter_core::{CancelToken, Os, UserRule};
 use platter_platform::Platform;
 use platter_platform::environment::home_trash;
 
@@ -71,7 +71,7 @@ pub fn run(args: &CleanArgs) -> CliResult<()> {
         tools: Some(&platform.tool_runner),
     };
     let report = execute(&plan, &disk, &CancelToken::new(), &mut |_| {});
-    print_line(&render_report(&report))?;
+    print_line(&render_report(&report, env.os))?;
 
     if report.results.iter().any(|result| !is_clean(&result.outcome)) {
         return Err("some items could not be cleaned (listed above)".into());
@@ -111,7 +111,10 @@ fn is_clean(outcome: &TargetOutcome) -> bool {
     match outcome {
         TargetOutcome::Removed(removed) => !removed.has_errors() && removed.skipped_mounts == 0,
         TargetOutcome::Trashed(_) | TargetOutcome::ByTool(_) => true,
-        TargetOutcome::Skipped(_) | TargetOutcome::Failed(_) => false,
+        TargetOutcome::NotRecycled(_)
+        | TargetOutcome::Unconfirmed(_)
+        | TargetOutcome::Skipped(_)
+        | TargetOutcome::Failed(_) => false,
     }
 }
 
@@ -193,7 +196,7 @@ fn render(plan: &CleanupPlan, not_found: &[String], verbose: bool, dry_run: bool
     lines.join("\n")
 }
 
-fn render_report(report: &CleanupReport) -> String {
+fn render_report(report: &CleanupReport, os: Os) -> String {
     let mut lines = vec![String::new()];
     let mut problems = Vec::new();
 
@@ -222,7 +225,10 @@ fn render_report(report: &CleanupReport) -> String {
                 }
             }
             TargetOutcome::Trashed(_) | TargetOutcome::ByTool(_) => {}
-            TargetOutcome::Skipped(why) | TargetOutcome::Failed(why) => {
+            TargetOutcome::NotRecycled(why)
+            | TargetOutcome::Unconfirmed(why)
+            | TargetOutcome::Skipped(why)
+            | TargetOutcome::Failed(why) => {
                 problems.push(format!("  {path}: {}", format::display(why)));
             }
         }
@@ -243,9 +249,11 @@ fn render_report(report: &CleanupReport) -> String {
         .filter(|r| is_clean(&r.outcome))
         .all(|r| matches!(r.outcome, TargetOutcome::Trashed(_)));
     match report.freed {
-        Some(_) if cleaned > 0 && only_trashed => {
-            lines.push("Moved to the trash: the space is freed when the trash is emptied.".to_owned())
-        }
+        Some(_) if cleaned > 0 && only_trashed => lines.push(if os == Os::Windows {
+            "Moved to the Recycle Bin: the space is freed when it is emptied.".to_owned()
+        } else {
+            "Moved to the trash: the space is freed when the trash is emptied.".to_owned()
+        }),
         Some(0) if cleaned > 0 => lines.push(
             "Free space has not changed yet: the filesystem may release it a little later, or snapshots and \
              other copies still hold those blocks."
@@ -283,6 +291,7 @@ fn action_name(action: &CleanupAction) -> String {
         CleanupAction::Delete => "delete".to_owned(),
         CleanupAction::EmptyFolder => "empty folder".to_owned(),
         CleanupAction::Trash => "move to trash".to_owned(),
+        CleanupAction::TrashChildren => "move what is inside to the trash".to_owned(),
         CleanupAction::EmptyTrash => "empty the trash".to_owned(),
         CleanupAction::RunTool(tool) => {
             let elevated = if tool.needs_elevation() {

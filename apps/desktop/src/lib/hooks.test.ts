@@ -9,6 +9,7 @@ const ALL_OFF = {
   ready: false,
   mounts: false,
   root: null,
+  os: null,
   overlays: false,
   ex: null,
   pick: null,
@@ -41,6 +42,14 @@ describe('parseHooks', () => {
       mini: true,
       root: '/home/demo',
     });
+  });
+
+  it('reads the Windows hooks: a drive letter alone is the root of that drive', () => {
+    expect(parseHooks('?os=windows&root=C:', false)).toMatchObject({ os: 'windows', root: 'C:\\' });
+    expect(parseHooks('?root=D:%5CData', false).root).toBe('D:\\Data');
+    expect(parseHooks('?root=C:', false).os).toBeNull();
+    expect(parseHooks('?os=beos', false).os).toBeNull();
+    expect(parseHooks('?os=windows', true)).toEqual(ALL_OFF);
   });
 
   it('reads the start screen hooks', () => {

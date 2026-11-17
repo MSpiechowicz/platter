@@ -1,5 +1,6 @@
 import { api as defaultApi } from '../api';
 import { describeError, isApiError, type Api } from '../api/client';
+import { isSamePath, isUnderPath } from '../paths';
 import type { NodeId, ScanEvent, ScanId, ScanOptions, ScanWarning, Totals, VolumeDto } from '../api/types';
 
 export interface ScanProgress {
@@ -40,14 +41,14 @@ export function findVolume(
   volumes: VolumeDto[],
   root: string,
 ): { volume: VolumeDto; exact: boolean } | undefined {
-  const exact = volumes.find((volume) => volume.mountPoint === root);
+  const exact = volumes.find((volume) => isSamePath(volume.mountPoint, root));
 
   if (exact) {
     return { volume: exact, exact: true };
   }
 
   const containing = volumes
-    .filter((volume) => volume.mountPoint === '/' || root.startsWith(`${volume.mountPoint}/`))
+    .filter((volume) => isUnderPath(root, volume.mountPoint))
     .sort((a, b) => b.mountPoint.length - a.mountPoint.length)[0];
 
   return containing ? { volume: containing, exact: false } : undefined;

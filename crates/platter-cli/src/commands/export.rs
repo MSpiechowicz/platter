@@ -41,9 +41,11 @@ pub fn run(args: &ExportArgs) -> CliResult<()> {
     Ok(())
 }
 
-/// The volume whose mount point is the longest prefix of `path`, when it can be determined.
+/// The volume whose mount point is the longest prefix of `path`, when it can be determined. The path is
+/// resolved as a scan resolves its root, so on Windows it is `C:\...` as a volume's mount point is, not a
+/// verbatim `\\?\C:\...`.
 fn volume_of(path: &Path) -> Option<VolumeDto> {
-    let canonical = fs::canonicalize(path).ok()?;
+    let canonical = platter_platform::root::resolve_root(path).ok()?.path;
 
     Platform::current()
         .volumes

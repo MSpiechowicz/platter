@@ -7,7 +7,7 @@ use platter_core::dto::Verdict;
 use platter_core::{BirthTime, EntryKind, EntryProbe, NodeId, NodeKind, Tree};
 
 use crate::kept::KeptFolders;
-use crate::path::{components, display};
+use crate::path::{PathStyle, display};
 use crate::protect::Protected;
 
 /// Why a matched node is not in the plan.
@@ -94,6 +94,24 @@ pub struct VerifiedTarget {
 }
 
 impl VerifiedTarget {
+    /// A target that never saw a guard, for the tests of what acts on targets.
+    #[cfg(test)]
+    pub(crate) fn for_test(path: &[u8], is_dir: bool, identity: (u64, u64)) -> Self {
+        Self {
+            node: NodeId(0),
+            path: path.to_vec(),
+            is_dir,
+            dev: identity.0,
+            ino: identity.1,
+            mount_id: None,
+            birth: None,
+            allocated: 1000,
+            apparent: 1000,
+            mtime: 0,
+            markers: Vec::new(),
+        }
+    }
+
     pub fn node(&self) -> NodeId {
         self.node
     }
@@ -136,6 +154,8 @@ impl VerifiedTarget {
 
 /// What the guard needs to know about the scan and the machine.
 pub(crate) struct Guard<'a, P: EntryProbe> {
+    /// The syntax of the machine's paths, from its environment.
+    pub style: PathStyle,
     pub tree: &'a Tree,
     pub root: Vec<Vec<u8>>,
     pub protected: &'a Protected,
@@ -182,11 +202,12 @@ impl<P: EntryProbe> Guard<'_, P> {
         }
 
         let path = tree.path_bytes(node);
-        let parts = components(&path).ok_or(Refusal::BadPath)?;
-        if parts.len() <= self.root.len() || !crate::path::is_within(&parts, &self.root) {
+        let style = self.style;
+        let parts = style.components(&path).ok_or(Refusal::BadPath)?;
+        if parts.len() <= self.root.len() || !style.is_within(&parts, &self.root) {
             return Err(Refusal::OutsideScan);
         }
-        if let Some(place) = self.protected.hit(&parts) {
+        if let Some(place) = self.protected.hit_for(&parts, by_tool) {
             return Err(Refusal::Protected(place));
         }
 
@@ -207,7 +228,8 @@ impl<P: EntryProbe> Guard<'_, P> {
             .iter()
             .map(|entry| (entry.meta.dev, entry.meta.ino))
             .collect();
-        if let Some(place) = self.protected.hit_by_identity(&way) {
+        let tool_folder = by_tool && self.protected.is_tool_folder(&parts);
+        if let Some(place) = self.protected.hit_by_identity(&way, tool_folder) {
             return Err(Refusal::Protected(place));
         }
 
@@ -239,22 +261,17 @@ impl<P: EntryProbe> Guard<'_, P> {
             return Err(Refusal::Changed("it was modified after the scan".to_owned()));
         }
 
-        let parent = &path[..path.iter().rposition(|&byte| byte == b'/').unwrap_or(0)];
+        let parent = style.parent(&path);
         let markers: Vec<Vec<Vec<u8>>> = markers
             .iter()
             .map(|choices| {
                 choices
                     .iter()
-                    .map(|name| {
-                        let mut marker = parent.to_vec();
-                        marker.push(b'/');
-                        marker.extend_from_slice(name.as_bytes());
-                        marker
-                    })
+                    .map(|name| style.child(parent, name.as_bytes()))
                     .collect()
             })
             .collect();
-        markers_present(self.probe, &markers).map_err(Refusal::Changed)?;
+        markers_present(self.probe, style, &markers).map_err(Refusal::Changed)?;
 
         Ok(VerifiedTarget {
             node,
@@ -279,7 +296,11 @@ pub(crate) fn same_file(meta: &platter_core::EntryMeta, mtime: i64, apparent: u6
 }
 
 /// Every group of `markers` still holds a regular file; otherwise what is missing.
-pub(crate) fn markers_present(probe: &impl EntryProbe, markers: &[Vec<Vec<u8>>]) -> Result<(), String> {
+pub(crate) fn markers_present(
+    probe: &impl EntryProbe,
+    style: PathStyle,
+    markers: &[Vec<Vec<u8>>],
+) -> Result<(), String> {
     for choices in markers {
         let present = choices.iter().any(|marker| {
             probe
@@ -291,10 +312,7 @@ pub(crate) fn markers_present(probe: &impl EntryProbe, markers: &[Vec<Vec<u8>>])
         if !present {
             let names: Vec<String> = choices
                 .iter()
-                .map(|marker| {
-                    let name = marker.rsplit(|&byte| byte == b'/').next().unwrap_or(marker);
-                    String::from_utf8_lossy(name).into_owned()
-                })
+                .map(|marker| String::from_utf8_lossy(style.file_name(marker)).into_owned())
                 .collect();
             return Err(format!(
                 "the project file next to it is gone ({})",

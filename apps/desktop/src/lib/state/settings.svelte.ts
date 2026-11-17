@@ -5,6 +5,7 @@ import {
   type UnloadAfter,
 } from '../api/types';
 import type { SizeUnits } from '../format';
+import { isAbsolutePath } from '../paths';
 import { isThemeChoice, type ThemeChoice } from './theme.svelte';
 
 export type ExplorerView = 'flat' | '3d';
@@ -30,13 +31,13 @@ export interface SettingsData {
   advisorUseGpu: boolean;
   /** How often to check for a new version. An older save has no such value and gets the default, daily. */
   updateCheck: UpdateSchedule;
-  /** An AppImage downloads and installs an update a check found by itself. It never restarts by itself. On by default (owner, 2026-11-17). */
+  /** A copy that can install itself (Linux AppImage) downloads and installs an update a check found by itself. It never restarts by itself. On by default (owner, 2026-11-17). */
   autoInstallUpdates: boolean;
   /** How many old versions of each pacman package stay in its cache when it is cleaned. */
   keepPackageVersions: KeepPackageVersions;
   /** Clean what needs the administrator password (system caches and logs). Off leaves those out of every plan. */
   askForAdmin: boolean;
-  /** Absolute paths of folders every scan leaves out, in the order they were added. */
+  /** Absolute paths of folders every scan leaves out, in the order they were added, each in the style of the OS (`/` or `C:\\`). */
   excludedPaths: string[];
   /** Dark, light, or what the desktop uses. Dark by default, as before the setting existed. */
   theme: ThemeChoice;
@@ -79,14 +80,14 @@ function defaultStorage(): StorageLike | null {
 
 const encoder = new TextEncoder();
 
-/** The folders to leave out as the backend takes them: absolute paths, no repeats, at most 64 of at most 4096 bytes. */
+/** The folders to leave out as the backend takes them: absolute paths (`/home/x` or `C:\\Users\\x`), no repeats, at most 64 of at most 4096 bytes. */
 export function cleanExcluded(paths: readonly unknown[]): string[] {
   const kept: string[] = [];
 
   for (const path of paths) {
     if (
       typeof path === 'string' &&
-      path.startsWith('/') &&
+      isAbsolutePath(path) &&
       encoder.encode(path).length <= MAX_EXCLUDED_PATH_BYTES &&
       !kept.includes(path) &&
       kept.length < MAX_EXCLUDED

@@ -76,6 +76,7 @@ describe('advisor mock: status', () => {
       options: { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true },
       ramTotal: 32 * GIB,
       gpuSupported: true,
+      os: 'linux',
     });
   });
 
