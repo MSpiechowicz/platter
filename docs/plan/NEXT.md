@@ -72,7 +72,7 @@ These come from the owner's feedback during design and the first build. Breaking
     --screenshot=out.png "http://localhost:4173/?view=overview&static"
   ```
 
-  URL hooks (ignored inside the app window): `view=start|scanning|overview|explorer|settings`, `static`, `mini`, `root=/real|/skew|/home/demo`, `dominant`, `mounts`, `ready`, `ex=flat|3d`, `focus=<id>`, `pick=<n>`, `gpu=fallback|none` (the advisor's graphics card failed, or a build without one), `gpuProblem=crash|hang|error` (a graphics card incident waiting for an answer at start: the dialog), `gpuLast=1` (an answered last problem: the row in Settings), `view=history`, `history=thin|empty|broken|flat` (History with few days, no data, a broken store, or a disk that does not grow).
+  URL hooks (ignored inside the app window): `view=start|scanning|overview|explorer|settings`, `static`, `mini`, `root=/real|/skew|/home/demo|C:`, `os=windows` (a Windows machine: volumes `C:\` and `D:\`, backslash paths, Recycle Bin wording; use it with `root=C:`), `dominant`, `mounts`, `ready`, `ex=flat|3d`, `focus=<id>`, `pick=<n>`, `gpu=fallback|none` (the advisor's graphics card failed, or a build without one), `gpuProblem=crash|hang|error` (a graphics card incident waiting for an answer at start: the dialog), `gpuLast=1` (an answered last problem: the row in Settings), `view=history`, `history=thin|empty|broken|flat` (History with few days, no data, a broken store, or a disk that does not grow).
 
 **Safety**
 
@@ -98,7 +98,7 @@ These come from the owner's feedback during design and the first build. Breaking
 6. **Current:** History: H1–H2. Built 2026-11-17, reviewed (correctness and security, two passes). Open: the owner's check in the app window and the decisions listed under H2.
 7. ~~Distribution and updates: D1–D4.~~ Done 2026-11-17. `v0.1.0` is a draft release on GitHub, waiting for the owner to try it and publish it (the app's update check sees a release only once it is published).
 8. Settings completion: S1.
-9. Windows and macOS: P1–P2.
+9. **Current:** Windows P1 built 2026-11-17, reviewed (correctness and security, three passes, no High open). Not yet run on Windows: waits for the first `windows-latest` CI run. Then macOS P2.
 
 The owner may reorder. Cleanup before Advisor is fixed, because the model only labels what the rules do not cover.
 
@@ -412,6 +412,12 @@ Target: ![Settings](screens/target-settings.png)
 #### P1. Windows
 
 - Add `x86_64-pc-windows-msvc` to CI. The generic reader already works; write a fast reader (`FindFirstFileExW`, later the MFT) in `platter-platform/src/windows/`, default exclusions, volume listing, elevation through UAC, the recycle bin.
+- **Status (2026-11-17):** built, reviewed, never run on Windows. Contract in `docs/architecture.md` "Windows (P1)". Owner decisions: everything in P1 at once, unsafe stays forbidden (safe crates only: `winapi-util`, `dunce`, `trash`, `runas`, `win32job`, `known-folders`, `jiff`), Windows tested only in CI. Defaults the owner may overturn: cleanup moves to the Recycle Bin only (`delete` becomes `trash`, `emptyFolder` becomes trashing each child, at most 2000), NSIS setup per user, no Authenticode, the advisor on the processor only (Vulkan is Linux-only), automatic updates on Windows download and check the setup, which runs on the restart click.
+  - Built: `platter-platform/src/windows/` (reader with real identity: volume serial, file index, links, creation time; one open per entry; reparse folders and links never descended; default exclusions at a drive root; probe, remover and Recycle Bin by identity; DISM through UAC; the advisor helper over pipes in a Job Object; the model pinned by a share-mode handle), `%APPDATA%\platter` and `%LOCALAPPDATA%\platter`, the system time zone, Windows paths and protected places in `platter-cleanup` (Unicode case folding, short names caught by identity, device names and `.{GUID}` refused), Windows rules (Temp, npm, pip, NuGet, crash dumps, WinSxS through DISM), History records an item the bin did not take as deleted, the updater for the NSIS install, `release.yml` builds, tests and signs the setup (`windows-x86_64` and `windows-x86_64-nsis` in `latest.json`), the frontend's paths with `\` and "Recycle Bin" wording (mock hooks `os=windows`, `root=C:`), a `windows-latest` CI job (`continue-on-error` until its first green run).
+  - Linux: meant to behave as before, and its tests pass (1634 Rust tests, 1969 web tests), but the cleanup executor (`execute.rs`, `protect.rs`, `path.rs`) and the advisor transport (`process.rs`) were reworked and have no CI run yet; every Linux build now has the graphics card support, also with `--no-default-features`.
+  - **Not checked (all of Windows):** every `cfg(windows)` test, the llama.cpp MSVC build, the NSIS bundle, the update from one version to the next, the app window in WebView2. Run CI first, fix what it reports, then make the Windows job required.
+  - **Open, owner decisions:** whether to check before each run that the bin of the target's volume takes a small file (today a bin set to "Remove files immediately" relies on the shell refusing, proven only by CI tests; an item gone but not in the bin is reported, never shown as undoable); 4 KiB clusters are assumed for size on disk; OneDrive folders (reparse points) are not scanned; Authenticode signing.
+  - **Open, known limits:** anything a native library prints to the helper's standard output breaks the protocol (taken as a crash); an update restart waits at most 30 s for a cleanup item; about 80 desktop cleanup and History tests run on Unix only (POSIX paths and the freedesktop trash); `~` display of rule paths mixes `/` and `\` on Windows; the first full run of this work saw one test failure that did not come back in four reruns.
 
 #### P2. macOS
 

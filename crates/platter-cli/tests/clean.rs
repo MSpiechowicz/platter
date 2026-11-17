@@ -1,18 +1,38 @@
 //! `platter-cli clean --dry-run` against a temp-dir home: it plans and never changes the disk.
 
+// What runs on both systems here is the planning and the refusals. Cleaning for real, the freedesktop trash,
+// symbolic links and bind mounts are Linux only (`cfg(unix)`); the Recycle Bin is tested in
+// `platter-platform`, on Windows.
+
 use std::fs::{self, File, FileTimes};
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, SystemTime};
 
+/// `platter-cli` with the fixture as the home folder (`HOME`, and `USERPROFILE` where that is what counts).
+fn cli(home: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_platter-cli"));
+    command
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME");
+
+    command
+}
+
+/// The path as the program sees it (canonical, never `\\?\`), which is how it prints it.
+fn canonical(path: &Path) -> PathBuf {
+    platter_platform::root::resolve_root(path).map_or_else(|_| path.to_path_buf(), |root| root.path)
+}
+
 fn clean(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_platter-cli"))
+    cli(home)
         .arg("clean")
         .arg(home)
         .args(args)
-        .env("HOME", home)
-        .env_remove("XDG_CONFIG_HOME")
         .output()
         .expect("binary runs")
 }
@@ -59,6 +79,7 @@ fn fixture() -> tempfile::TempDir {
     write_old(home, "Documents/q/Cargo.toml", 10);
     write_old(home, "Documents/q/target/obj", 40_000);
     write_old(home, ".cache/app/blob", 5_000);
+    #[cfg(unix)]
     symlink(home.join("code/p/target"), home.join("code/link")).unwrap();
     age_folders(home);
     dir
@@ -74,17 +95,38 @@ fn age_folders(dir: &Path) {
     folders.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
 
     for folder in folders {
-        File::open(&folder)
-            .unwrap()
+        open_folder_for_times(&folder)
             .set_times(FileTimes::new().set_modified(old))
             .unwrap();
     }
 }
 
+/// A folder opened so that its times can be set.
+#[cfg(unix)]
+fn open_folder_for_times(folder: &Path) -> File {
+    File::open(folder).unwrap()
+}
+
+/// A folder opened so that its times can be set: Windows opens a folder only with backup semantics, and
+/// `SetFileTime` needs `FILE_WRITE_ATTRIBUTES`, which a read-only open does not give.
+#[cfg(windows)]
+fn open_folder_for_times(folder: &Path) -> File {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_WRITE_ATTRIBUTES: u32 = 0x0000_0100;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+    File::options()
+        .access_mode(FILE_WRITE_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(folder)
+        .unwrap()
+}
+
 #[test]
 fn a_dry_run_lists_the_plan_and_changes_nothing() {
     let dir = fixture();
-    let home = fs::canonicalize(dir.path()).unwrap();
+    let home = canonical(dir.path());
     let before = listing(&home);
 
     let output = clean(&home, &["--safe", "--dry-run", "--verbose"]);
@@ -96,9 +138,11 @@ fn a_dry_run_lists_the_plan_and_changes_nothing() {
     );
     let out = text(&output);
     assert!(out.starts_with("Dry run: nothing was changed."), "{out}");
-    assert!(out.contains("rust-target  delete"), "{out}");
+    // Nothing is deleted for good on Windows: the build output goes to the Recycle Bin.
+    let action = if cfg!(windows) { "move to trash" } else { "delete" };
+    assert!(out.contains(&format!("rust-target  {action}")), "{out}");
     assert!(
-        out.contains(&format!("{}/code/p/target", home.display())),
+        out.contains(&home.join("code/p/target").display().to_string()),
         "{out}"
     );
     assert!(
@@ -119,6 +163,7 @@ fn a_named_rule_that_found_nothing_is_reported() {
     assert!(out.contains("Found nothing for: python-cache"), "{out}");
 }
 
+#[cfg(unix)]
 #[test]
 fn with_yes_it_cleans_what_the_plan_lists_and_nothing_else() {
     let dir = fixture();
@@ -184,20 +229,16 @@ fn without_dry_run_or_a_selection_it_refuses_and_changes_nothing() {
 }
 
 fn clean_yes(home: &Path, rules: &[&str]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_platter-cli"));
+    let mut command = cli(home);
     command.arg("clean").arg(home);
     for rule in rules {
         command.args(["--rule", rule]);
     }
-    command
-        .arg("--yes")
-        .env("HOME", home)
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("XDG_DATA_HOME")
-        .output()
-        .unwrap()
+
+    command.arg("--yes").output().unwrap()
 }
 
+#[cfg(unix)]
 #[test]
 fn emptying_the_trash_keeps_its_folders() {
     let dir = tempfile::tempdir().unwrap();
@@ -222,6 +263,7 @@ fn emptying_the_trash_keeps_its_folders() {
     assert!(!trash.join("directorysizes").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_trash_part_that_is_a_link_is_left_alone() {
     let dir = tempfile::tempdir().unwrap();
@@ -246,8 +288,10 @@ fn a_trash_part_that_is_a_link_is_left_alone() {
     );
 }
 
+#[cfg(unix)]
 const NAMESPACE_CHILD: &str = "PLATTER_TEST_NAMESPACE_CHILD";
 
+#[cfg(unix)]
 #[test]
 fn a_second_path_to_the_home_does_not_get_past_the_protected_places() {
     if let Some(dir) = std::env::var_os(NAMESPACE_CHILD) {
@@ -346,7 +390,7 @@ fn a_second_path_to_the_home_does_not_get_past_the_protected_places() {
 #[test]
 fn with_yes_a_run_that_cleans_nothing_or_misses_a_named_rule_fails() {
     let dir = fixture();
-    let home = fs::canonicalize(dir.path()).unwrap();
+    let home = canonical(dir.path());
 
     let nothing = clean_yes(&home, &["python-cache"]);
     let kept_only = clean_yes(&home, &["documents"]);
@@ -355,6 +399,7 @@ fn with_yes_a_run_that_cleans_nothing_or_misses_a_named_rule_fails() {
     assert!(!kept_only.status.success(), "everything was refused");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_protected_folder_reached_through_a_link_is_protected_where_it_really_is() {
     let dir = tempfile::tempdir().unwrap();

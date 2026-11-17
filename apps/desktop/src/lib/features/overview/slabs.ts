@@ -1,6 +1,7 @@
 import type { NodeDto, NodeId } from '../../api/types';
 import { childColors } from '../../folderColor';
 import { SLATE } from '../../palette';
+import { platform } from '../../state/platform.svelte';
 
 /** One layer of the "What is on the disk" stack. */
 export interface Slab {
@@ -99,7 +100,10 @@ function candidatesOf(levels: SlabLevel[]): Candidate[] {
       .map((node) => ({
         node,
         // Files in the root keep their plain name; everything else is shown by its path.
-        name: node.kind === 'file' && level.path === '' ? node.name : `${level.path}/${node.name}`,
+        name:
+          node.kind === 'file' && level.path === ''
+            ? node.name
+            : `${level.path}${platform.separator}${node.name}`,
       }));
   });
 }

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { platform } from '../../state/platform.svelte';
 import { settings } from '../../state/settings.svelte';
 import { theme } from '../../state/theme.svelte';
 import { ui } from '../../state/ui.svelte';
@@ -77,6 +78,25 @@ describe('Install updates automatically', () => {
     await fireEvent.click(toggle);
 
     expect(settings.autoInstallUpdates).toBe(false);
+  });
+});
+
+describe('Settings on Windows', () => {
+  afterEach(() => {
+    platform.os = 'linux';
+  });
+
+  it('leaves out the pacman row, which has nothing to set there, and keeps the automatic install switch', () => {
+    platform.os = 'windows';
+    render(CleanupSettingsCard);
+
+    expect(screen.queryByRole('button', { name: /Keep package versions/ })).toBeNull();
+    expect(screen.getByRole('switch', { name: 'Ask for administrator rights when needed' })).toBeTruthy();
+
+    render(UpdatesSettingsCard);
+
+    expect(screen.getByRole('switch', { name: 'Install updates automatically' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Check now' })).toBeTruthy();
   });
 });
 

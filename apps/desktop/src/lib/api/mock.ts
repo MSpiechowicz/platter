@@ -5,6 +5,7 @@ import { createMockUpdate, type MockUpdateOptions } from './mock-update';
 import { createMockHistory, type MockHistoryOptions } from './mock-history';
 import { createMockUserRules, type MockUserRulesOptions } from './mock-user-rules';
 import { toDto } from './mock-dto';
+import { isAbsolutePath, isSamePath, joinPath } from '../paths';
 import { REAL_BYTES, REAL_ROOT, SKEW_BYTES, SKEW_ROOT } from './mock-layouts';
 import { lodOf } from './mock-lod';
 import { largestDirs } from './mock-summary';
@@ -16,6 +17,7 @@ import type {
   ChildrenPage,
   ExternalLink,
   NodeId,
+  OsName,
   PathDto,
   ScanEvent,
   ScanId,
@@ -71,6 +73,30 @@ export const MOCK_VOLUMES: VolumeDto[] = [
   },
 ];
 
+/** The volumes of a Windows machine (`?os=windows`): drives with a letter and a label, no device path. */
+export const MOCK_WINDOWS_VOLUMES: VolumeDto[] = [
+  {
+    id: 'C:',
+    mountPoint: 'C:\\',
+    label: 'Windows',
+    device: 'C:',
+    fsType: 'NTFS',
+    total: 953 * GB,
+    available: 241 * GB,
+    removable: false,
+  },
+  {
+    id: 'D:',
+    mountPoint: 'D:\\',
+    label: 'Data',
+    device: 'D:',
+    fsType: 'NTFS',
+    total: 1863 * GB,
+    available: 702 * GB,
+    removable: false,
+  },
+];
+
 const btrfsRoot = MOCK_VOLUMES[0] as VolumeDto;
 
 /** A disk with several physical filesystems, and a btrfs root whose subvolumes are mounted in many places. */
@@ -109,6 +135,8 @@ export interface MockOptions {
   pickedFolder?: string | null;
   /** Test hook: what the picker for a folder to leave out returns (`null`: cancelled). */
   pickedExcluded?: string | null;
+  /** Test hook: the system the mock stands for: the folders the pickers offer follow its path style (default `linux`). */
+  os?: OsName;
   /** Test hook: warnings the finished scan reports. */
   warnings?: ScanWarning[];
   /** Test hook: timers and starting state of the advisor model's state machine (see `mock-advisor.ts`). */
@@ -215,10 +243,9 @@ function pathOf(tree: MockTree, node: MockNode): PathDto {
 
   const root = chain[0] as MockNode;
   const rest = chain.slice(1).map((entry) => entry.name);
-  const prefix = tree.rootPath.replace(/\/+$/, '');
 
   return {
-    path: rest.length === 0 ? tree.rootPath : `${prefix}/${rest.join('/')}`,
+    path: rest.reduce(joinPath, tree.rootPath),
     segments: [
       { id: root.id, name: root.name },
       ...chain.slice(1).map((entry) => ({ id: entry.id, name: entry.name })),
@@ -301,7 +328,9 @@ export function createMockApi(options: MockOptions = {}): Api {
   const durationMs = options.durationMs ?? 2000;
   const tickMs = options.tickMs ?? 100;
   const clock = options.now ?? (() => Math.floor(Date.now() / 1000));
-  const volumes = options.volumes ?? MOCK_VOLUMES;
+  const windows = options.os === 'windows';
+  const volumes = options.volumes ?? (windows ? MOCK_WINDOWS_VOLUMES : MOCK_VOLUMES);
+  const demoHome = windows ? 'C:\\Users\\demo' : '/home/demo';
   const warnings = options.warnings;
   const scans = new Map<ScanId, ScanRecord>();
   let nextId: ScanId = 1;
@@ -328,7 +357,7 @@ export function createMockApi(options: MockOptions = {}): Api {
       return REAL_BYTES;
     }
 
-    const volume = volumes.find((candidate) => candidate.mountPoint === root);
+    const volume = volumes.find((candidate) => isSamePath(candidate.mountPoint, root));
 
     return volume ? volume.total - volume.available : FOLDER_BYTES;
   };
@@ -452,11 +481,11 @@ export function createMockApi(options: MockOptions = {}): Api {
     },
 
     async pickFolder() {
-      return options.pickedFolder === undefined ? '/home/demo' : options.pickedFolder;
+      return options.pickedFolder === undefined ? demoHome : options.pickedFolder;
     },
 
     async pickExcludedFolder() {
-      return options.pickedExcluded === undefined ? '/home/demo/Videos' : options.pickedExcluded;
+      return options.pickedExcluded === undefined ? joinPath(demoHome, 'Videos') : options.pickedExcluded;
     },
 
     async startScan(scanOptions: ScanOptions, onEvent) {
@@ -468,7 +497,7 @@ export function createMockApi(options: MockOptions = {}): Api {
       }
 
       const bad = excluded.find(
-        (path) => !path.startsWith('/') || utf8Length(path) > MAX_EXCLUDED_PATH_BYTES,
+        (path) => !isAbsolutePath(path) || utf8Length(path) > MAX_EXCLUDED_PATH_BYTES,
       );
 
       if (bad !== undefined) {

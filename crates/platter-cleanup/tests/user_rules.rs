@@ -26,6 +26,7 @@ fn env() -> Environment {
         user_dirs: Vec::new(),
         now: NOW,
         os: Os::Linux,
+        system_root: None,
     }
 }
 
@@ -105,7 +106,7 @@ fn a_user_safe_folder_is_planned_for_the_trash_and_never_deleted() {
     assert_eq!(group.targets()[0].display_path(), "/home/u/stuff/big");
     assert_eq!(plan.allocated, 1100);
     assert!(matches!(
-        action_for("user-safe", &CleanupOptions::default()),
+        action_for("user-safe", &CleanupOptions::default(), Os::Linux),
         Some(CleanupAction::Trash)
     ));
 }

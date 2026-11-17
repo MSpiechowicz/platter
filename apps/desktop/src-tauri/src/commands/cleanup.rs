@@ -21,11 +21,11 @@ use std::time::{Duration, Instant};
 
 use platter_cleanup::{
     ADVISOR, CleanupAction, CleanupEvent, CleanupOptions, CleanupPlan, CleanupReport, Disk, KeepVersions,
-    KeptFolders, TargetOutcome, TargetResult, execute, plan_cleanup_with as make_plan, plan_labelled_with,
-    plan_marked, undo,
+    KeptFolders, PathStyle, TargetOutcome, TargetResult, execute, plan_cleanup_with as make_plan,
+    plan_labelled_with, plan_marked, undo,
 };
 use platter_core::dto::{ScanId, Verdict};
-use platter_core::{CancelToken, ModelLabel, ModelVerdict, NodeId};
+use platter_core::{CancelToken, ModelLabel, ModelVerdict, NodeId, Os};
 use platter_platform::environment::home_trash;
 use platter_rules::RuleSet;
 use serde::{Deserialize, Serialize};
@@ -170,6 +170,7 @@ impl CleanupRegistry {
 
     /// Stores a plan made without user rules (generation 0).
     #[cfg(test)]
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn store(&self, scan: ScanId, plan: CleanupPlan) -> PlanId {
         self.store_made_with(scan, plan, 0, |_| true)
             .expect("an unconditional store succeeds")
@@ -230,6 +231,7 @@ impl CleanupRegistry {
 
     /// Whether a plan is waiting to be started.
     #[cfg(test)]
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn has_plan(&self, id: PlanId) -> bool {
         self.lock().plans.contains_key(&id)
     }
@@ -828,7 +830,7 @@ pub async fn plan(
             .filter(|id| *id != ADVISOR)
             .collect();
         // Learnt once for the request: one overall time limit, however many plans it makes.
-        let kept = KeptFolders::learn(&rules, &platform.entry_probe);
+        let kept = KeptFolders::learn_for(PathStyle::for_os(env.os), &rules, &platform.entry_probe);
         let mut plan = make_plan(&tree, &env, &rules, &ids, &platform.entry_probe, &kept, &options);
 
         if !labels.is_empty() {
@@ -1095,7 +1097,8 @@ fn action_dto(action: CleanupAction) -> ActionDto {
         CleanupAction::Delete => ActionDto::Delete,
         CleanupAction::EmptyFolder => ActionDto::EmptyFolder,
         CleanupAction::EmptyTrash => ActionDto::EmptyTrash,
-        CleanupAction::Trash => ActionDto::Trash,
+        // Moves to the trash, as `Trash` does: what is inside the folder is what goes.
+        CleanupAction::Trash | CleanupAction::TrashChildren => ActionDto::Trash,
         CleanupAction::RunTool(_) => ActionDto::RunTool,
     }
 }
@@ -1196,12 +1199,18 @@ pub fn question(plan: &CleanupPlan) -> Option<Question> {
         return None;
     }
 
-    let lasting = groups.iter().any(|group| group.action() != CleanupAction::Trash);
+    let bin = bin_name(plan.os());
+    let lasting = groups.iter().any(|group| {
+        !matches!(
+            group.action(),
+            CleanupAction::Trash | CleanupAction::TrashChildren
+        )
+    });
     let mut lines = vec![
         if lasting {
             "Platter is about to do the following. Some of it cannot be undone.".to_owned()
         } else {
-            "Platter is about to move the following to the trash. It can be put back from there.".to_owned()
+            format!("Platter is about to move the following to the {bin}. It can be put back from there.")
         },
         String::new(),
     ];
@@ -1216,7 +1225,10 @@ pub fn question(plan: &CleanupPlan) -> Option<Question> {
             CleanupAction::EmptyTrash => {
                 format!("• Empty the trash for good: everything in it, {size} when scanned")
             }
-            CleanupAction::Trash => format!("• Move to the trash: {title}, {count} items, {size}"),
+            CleanupAction::Trash => format!("• Move to the {bin}: {title}, {count} items, {size}"),
+            CleanupAction::TrashChildren => {
+                format!("• Move what is inside to the {bin}: {title}, {count} folders, {size}")
+            }
             CleanupAction::RunTool(tool) => format!(
                 "• Run{}: {} {}",
                 if tool.needs_elevation() {
@@ -1253,6 +1265,11 @@ pub fn question(plan: &CleanupPlan) -> Option<Question> {
     })
 }
 
+/// What the place for things that can be put back is called on `os`.
+fn bin_name(os: Os) -> &'static str {
+    if os == Os::Windows { "Recycle Bin" } else { "trash" }
+}
+
 /// `text`, cut to [`QUESTION_CHARS`] characters.
 fn capped(mut text: String) -> String {
     if text.chars().count() > QUESTION_CHARS {
@@ -1269,10 +1286,20 @@ fn capped(mut text: String) -> String {
 pub(crate) fn put_back_question(items: &[(Vec<u8>, u64)]) -> Question {
     let size = human_bytes(items.iter().map(|(_, size)| *size).fold(0, u64::saturating_add));
     let count = items.len();
+    let os = platter_platform::environment::current_os();
+    let bin = bin_name(os);
+    // Linux moves with `RENAME_NOREPLACE`. The Windows shell has nothing like it: Platter checks that the
+    // old name is free right before, which is all it can promise.
+    let overwrite = if os == Os::Windows {
+        "Platter checks first that the old place is free, and leaves it alone when something is there."
+    } else {
+        "Nothing that is there now is overwritten."
+    };
     let mut lines = vec![
-        "Platter is about to put the following back from the trash, to where it was before the cleanup. \
-         Nothing that is there now is overwritten."
-            .to_owned(),
+        format!(
+            "Platter is about to put the following back from the {bin}, to where it was before the cleanup. \
+             {overwrite}"
+        ),
         String::new(),
         format!(
             "• Put back: {count} {}, {size}",
@@ -1381,6 +1408,9 @@ fn outcome_dto(outcome: &TargetOutcome) -> OutcomeDto {
             None,
             removed.errors.len() as u64 + removed.more_errors + removed.skipped_mounts,
         ),
+        // Gone from its place with nothing to put back (deleted for good, or it may be in the Recycle Bin):
+        // it is told as removed, with the reason and one problem, never as trashed.
+        TargetOutcome::NotRecycled(why) => (OutcomeKind::Removed, Some(why.clone()), 1),
         TargetOutcome::Trashed(_) => (OutcomeKind::Trashed, None, 0),
         TargetOutcome::ByTool(command) => (OutcomeKind::ByTool, Some(command.clone()), 0),
         TargetOutcome::Skipped(why) => (OutcomeKind::Skipped, Some(why.clone()), 0),

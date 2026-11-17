@@ -162,6 +162,7 @@ impl HistoryService {
 
     /// Why nothing is recorded, when the file cannot be used.
     #[cfg(test)]
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn problem(&self) -> Option<String> {
         self.lock().as_ref().err().map(|closed| closed.problem.clone())
     }
@@ -595,7 +596,10 @@ fn clamp(value: u64) -> u64 {
 fn did_something(outcome: &TargetOutcome) -> bool {
     matches!(
         outcome,
-        TargetOutcome::Removed(_) | TargetOutcome::Trashed(_) | TargetOutcome::ByTool(_)
+        TargetOutcome::Removed(_)
+            | TargetOutcome::NotRecycled(_)
+            | TargetOutcome::Trashed(_)
+            | TargetOutcome::ByTool(_)
     )
 }
 
@@ -630,9 +634,10 @@ fn describe_run(
             }
         }
 
-        let method = method_of(*action);
-        if !methods.contains(&method) {
-            methods.push(method);
+        for method in methods_of(*action, &done) {
+            if !methods.contains(&method) {
+                methods.push(method);
+            }
         }
         if *action == CleanupAction::EmptyTrash {
             emptied_trash = true;
@@ -643,7 +648,7 @@ fn describe_run(
     let removed = results.iter().filter(|result| {
         matches!(
             result.outcome,
-            TargetOutcome::Removed(_) | TargetOutcome::ByTool(_)
+            TargetOutcome::Removed(_) | TargetOutcome::NotRecycled(_) | TargetOutcome::ByTool(_)
         )
     });
     let removed_here = removed
@@ -722,18 +727,56 @@ fn labels(rule_id: &str, done: &[&TargetResult]) -> Vec<String> {
 }
 
 fn name_of(path: &str) -> String {
-    path.trim_end_matches('/')
-        .rsplit('/')
+    // A path that starts like `C:\` is a Windows one: its separator is the backslash.
+    let separator = if is_windows_path(path) { '\\' } else { '/' };
+
+    path.trim_end_matches(separator)
+        .rsplit(separator)
         .next()
         .filter(|name| !name.is_empty())
         .unwrap_or(path)
         .to_owned()
 }
 
+/// Whether `path` starts with a drive root, as a path on Windows does.
+fn is_windows_path(path: &str) -> bool {
+    matches!(path.as_bytes(), [letter, b':', b'\\', ..] if letter.is_ascii_alphabetic())
+}
+
+/// How a group got rid of what it did: by its action, except that an entry that went without a restorable
+/// item in the trash (`NotRecycled`) was deleted, not trashed. History never shows a move to the trash for
+/// something that has nothing to put back. The store has no place for the reason, which the run's report
+/// carries.
+fn methods_of(action: CleanupAction, done: &[&TargetResult]) -> Vec<Method> {
+    let planned = method_of(action);
+    if planned.kind != MethodKind::Trash {
+        return vec![planned];
+    }
+
+    let mut methods = Vec::new();
+    if done
+        .iter()
+        .any(|result| matches!(result.outcome, TargetOutcome::Trashed(_)))
+    {
+        methods.push(planned);
+    }
+    if done
+        .iter()
+        .any(|result| matches!(result.outcome, TargetOutcome::NotRecycled(_)))
+    {
+        methods.push(Method {
+            kind: MethodKind::Deleted,
+            command: None,
+        });
+    }
+
+    methods
+}
+
 fn method_of(action: CleanupAction) -> Method {
     let (kind, command) = match action {
         CleanupAction::Delete | CleanupAction::EmptyFolder => (MethodKind::Deleted, None),
-        CleanupAction::Trash => (MethodKind::Trash, None),
+        CleanupAction::Trash | CleanupAction::TrashChildren => (MethodKind::Trash, None),
         CleanupAction::EmptyTrash => (MethodKind::EmptiedTrash, None),
         CleanupAction::RunTool(_) => (MethodKind::Tool, command_text(action).map(|(text, _)| text)),
     };

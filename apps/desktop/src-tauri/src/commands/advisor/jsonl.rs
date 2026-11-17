@@ -66,7 +66,7 @@ pub(super) fn append_line(path: &Path, line: &[u8], cap: usize) -> io::Result<()
 /// The end of the file at `path`: its last `max` bytes, from the start of a line (so at most `max` bytes, and
 /// only whole lines). Empty when there is no file. A link, a folder or any other file that is not regular is
 /// refused.
-#[cfg_attr(not(all(feature = "advisor", unix)), allow(dead_code))]
+#[cfg(any(feature = "advisor", test))]
 pub(super) fn read_tail(path: &Path, max: usize) -> io::Result<Vec<u8>> {
     let mut file = match platter_platform::open_nofollow(path) {
         Ok(file) => file,
@@ -152,7 +152,20 @@ fn replace(path: &Path, dir: &Path, bytes: &[u8]) -> io::Result<()> {
         return Err(error);
     }
 
+    sync_dir(dir)
+}
+
+/// Makes a rename in `dir` durable.
+#[cfg(not(windows))]
+fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
+}
+
+/// Windows cannot open a folder to sync it: the rename is as durable as the filesystem makes it, and the file
+/// itself was synced before it.
+#[cfg(windows)]
+fn sync_dir(_dir: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// Creates `path` (it must not exist, and a link there is never followed), writes `bytes` and syncs.

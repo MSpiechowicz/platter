@@ -112,6 +112,17 @@ describe('SettingsStore', () => {
     expect(new SettingsStore(new MemoryStorage()).excludedPaths).toEqual([]);
   });
 
+  it('keeps Windows folders to leave out too, and drops a drive letter alone or a relative path', () => {
+    const storage = new MemoryStorage();
+
+    storage.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({ excludedPaths: ['C:\\Users\\demo\\Videos', 'C:', 'Users\\demo', 'D:/data', '/a'] }),
+    );
+
+    expect(new SettingsStore(storage).excludedPaths).toEqual(['C:\\Users\\demo\\Videos', 'D:/data', '/a']);
+  });
+
   it('saves a change and restores it in a new store', () => {
     const storage = new MemoryStorage();
     const first = new SettingsStore(storage);

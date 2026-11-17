@@ -17,7 +17,7 @@ export interface UpdateOffer {
   notes: string[];
   /** Size of the download, when the release says. */
   sizeBytes: number | null;
-  /** This copy can install it itself (it runs from an AppImage). Otherwise the release page is offered. */
+  /** This copy can install it itself (an AppImage on Linux, the setup's copy on Windows). Otherwise the release page is offered. */
   canInstall: boolean;
 }
 
@@ -317,7 +317,10 @@ export interface HistoryRestoreDto {
   items: UndoDto[];
 }
 
-/** `unavailable`: the runtime is not built into this app (Windows, macOS for now). */
+/** The operating system the app runs on (a closed set). The mock says `linux`, or `windows` with the `os` hook. */
+export type OsName = 'linux' | 'windows' | 'macos';
+
+/** `unavailable`: the runtime is not built into this app (macOS for now). */
 export type ModelState = 'unavailable' | 'notDownloaded' | 'downloading' | 'onDisk' | 'loading' | 'loaded';
 
 export type UnloadAfter = 'oneMinute' | 'fiveMinutes' | 'windowClose';
@@ -375,6 +378,8 @@ export interface AdvisorStatusDto {
   ramTotal: number;
   /** This build can run the model on a graphics card; when false the switch for it is not shown. */
   gpuSupported: boolean;
+  /** The operating system this app runs on: the wording (Recycle Bin or trash) and the path style follow it. */
+  os: OsName;
   /** Where the loaded model runs, while loaded. */
   device?: DeviceDto;
   /** Video memory the model takes, while loaded on a graphics card. */

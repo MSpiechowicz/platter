@@ -9,6 +9,7 @@ import type {
   AdvisorModelDto,
   AdvisorOptionsDto,
   AdvisorStatusDto,
+  OsName,
   EntryMatchDto,
   FolderMatchDto,
   GpuProblemChoice,
@@ -187,8 +188,10 @@ export interface MockAdvisorOptions {
   /** Where the machine starts (default `none`). */
   state?: MockAdvisorState;
   options?: AdvisorOptionsDto;
-  /** The graphics card of the build (default `works`). */
+  /** The graphics card of the build (default `works`, and `none` on Windows, which has no card support). */
   gpu?: MockGpu;
+  /** The system the app reports in its status (default `linux`). */
+  os?: OsName;
   /** A graphics card incident the mock starts with (default none). */
   gpuIncident?: MockGpuIncident;
   /** Test hook: something that is not a file is at the log's path, so clearing the log fails with `io`. */
@@ -654,7 +657,8 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
 
   let state: ModelState = 'notDownloaded';
   let options: AdvisorOptionsDto = { ...(init.options ?? DEFAULT_OPTIONS) };
-  const gpu = init.gpu ?? 'works';
+  const os = init.os ?? 'linux';
+  const gpu = init.gpu ?? (os === 'windows' ? 'none' : 'works');
   /** The unanswered incident. */
   let pendingGpu: GpuProblemDto | undefined;
   /** The card is blocked from the incident until "try again": the model runs on the processor. */
@@ -702,6 +706,7 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
       options: { ...options },
       ramTotal: RAM_TOTAL,
       gpuSupported: gpu !== 'none',
+      os,
     };
 
     // A loaded model that had to leave the failing card says so; switching the card off clears the line.

@@ -79,7 +79,10 @@ fn scan_text_prints_totals_top_and_stats() {
 
 #[test]
 fn scanning_a_missing_path_fails_with_a_message() {
-    let output = cli(&["scan", "/definitely/not/here"]);
+    let dir = fixture();
+    let missing = dir.path().join("not-here");
+
+    let output = cli(&["scan", missing.to_str().unwrap()]);
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("platter-cli:"));
@@ -120,8 +123,12 @@ fn volumes_json_is_an_array_of_volume_dtos() {
     }
 }
 
+// A Windows file name cannot hold the ASCII control characters this name has. The escaping is covered by
+// `format.rs` and, with the characters Windows allows (C1, DEL, bidi), by the next test.
+#[cfg(unix)]
 const HOSTILE_NAME: &str = "evil\x1b[2J\x1b]0;pwned\x07\u{202e}gpj.exe";
 
+#[cfg(unix)]
 #[test]
 fn hostile_file_names_cannot_inject_terminal_sequences() {
     let dir = tempfile::tempdir().unwrap();
@@ -296,12 +303,13 @@ fn scan_leaves_out_an_excluded_folder_and_counts_nothing_in_it() {
 #[test]
 fn an_excluded_folder_that_does_not_exist_is_ignored_with_a_warning() {
     let dir = fixture();
+    let missing = dir.path().join("not-here");
     let report = cli(&[
         "scan",
         path_arg(&dir),
         "--json",
         "--exclude",
-        "/definitely/not/here",
+        missing.to_str().unwrap(),
     ]);
 
     assert!(

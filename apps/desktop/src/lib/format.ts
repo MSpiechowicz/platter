@@ -141,9 +141,5 @@ export function formatShare(fraction: number): string {
   return fraction > 0 && fraction < 0.01 ? '<1%' : formatPercent(fraction);
 }
 
-/** The last path segment: "/dev/nvme0n1p2" gives "nvme0n1p2". */
-export function baseName(path: string): string {
-  const trimmed = path.replace(/\/+$/, '');
-
-  return trimmed.slice(trimmed.lastIndexOf('/') + 1) || trimmed || '/';
-}
+/** The last path segment: "/dev/nvme0n1p2" gives "nvme0n1p2", "C:\\Users\\me" gives "me". */
+export { baseName } from './paths';

@@ -1,3 +1,8 @@
+// These tests build the Linux layout (a home with `/` paths, the freedesktop trash, symbolic links), so the
+// tests themselves run on Unix; what is Windows-specific is tested in `wording.rs` (here) and in `platter-cleanup`,
+// `platter-platform` (the Recycle Bin, on Windows only).
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
+
 use std::fs::{self, File, FileTimes};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -158,6 +163,7 @@ pub(crate) fn until_finished(receiver: &mpsc::Receiver<CleanupEventDto>) -> Vec<
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn a_plan_names_only_known_rules() {
     let state = AppState::for_test();
@@ -174,6 +180,7 @@ fn a_plan_names_only_known_rules() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_plan_is_described_and_kept_in_the_backend() {
     let state = AppState::for_test();
@@ -198,6 +205,7 @@ fn a_plan_is_described_and_kept_in_the_backend() {
     assert!(wire["groups"][0].get("command").is_none());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_declined_confirmation_deletes_nothing_and_uses_the_plan_up() {
     let state = AppState::for_test();
@@ -222,6 +230,7 @@ fn a_declined_confirmation_deletes_nothing_and_uses_the_plan_up() {
     assert!(!state.scans.is_outdated(scan));
 }
 
+#[cfg(unix)]
 #[test]
 fn an_approved_cleanup_runs_reports_and_outdates_the_scan() {
     let state = AppState::for_test();
@@ -276,6 +285,7 @@ fn an_approved_cleanup_runs_reports_and_outdates_the_scan() {
     assert_eq!(wire["outdatedScan"], scan);
 }
 
+#[cfg(unix)]
 #[test]
 fn an_older_plan_of_an_outdated_scan_is_refused() {
     let state = AppState::for_test();
@@ -293,6 +303,7 @@ fn an_older_plan_of_an_outdated_scan_is_refused() {
     assert_eq!(stale.unwrap_err().code(), ApiErrorCode::Invalid);
 }
 
+#[cfg(unix)]
 #[test]
 fn one_run_at_a_time_and_a_reservation_frees_its_slot_however_it_ends() {
     let registry = Arc::new(CleanupRegistry::default());
@@ -316,6 +327,7 @@ fn one_run_at_a_time_and_a_reservation_frees_its_slot_however_it_ends() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_plan_stays_startable_when_a_restore_began_after_the_first_look() {
     let registry = Arc::new(CleanupRegistry::default());
@@ -335,6 +347,7 @@ fn a_plan_stays_startable_when_a_restore_began_after_the_first_look() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_cannot_be_undone_while_its_history_record_is_being_written() {
     let registry = CleanupRegistry::default();
@@ -360,6 +373,7 @@ fn a_run_cannot_be_undone_while_its_history_record_is_being_written() {
     assert_eq!(registry.take_by_history(42).map(|done| done.cleanup), Some(5));
 }
 
+#[cfg(unix)]
 #[test]
 fn only_runs_that_trashed_something_are_kept_for_undo_and_emptying_the_trash_forgets_them() {
     let registry = CleanupRegistry::default();
@@ -407,6 +421,7 @@ impl Confirm for Panics {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn a_broken_dialog_counts_as_no_and_frees_the_slot() {
     let state = AppState::for_test();
@@ -422,6 +437,7 @@ fn a_broken_dialog_counts_as_no_and_frees_the_slot() {
     assert!(root.join("p/target/debug/obj").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn an_empty_plan_cannot_be_started() {
     let state = AppState::for_test();
@@ -438,6 +454,7 @@ fn an_empty_plan_cannot_be_started() {
     assert!(!state.scans.is_outdated(scan), "nothing ran, nothing changed");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_plan_whose_scan_is_gone_is_refused() {
     let state = AppState::for_test();
@@ -453,6 +470,7 @@ fn a_plan_whose_scan_is_gone_is_refused() {
     assert!(root.join("p/target").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn every_plan_with_something_to_do_is_asked_about_and_the_question_is_safe_to_show() {
     use platter_core::testing::{FakeFs, NOW};
@@ -482,6 +500,7 @@ fn every_plan_with_something_to_do_is_asked_about_and_the_question_is_safe_to_sh
         user_dirs: Vec::new(),
         now: NOW,
         os: Os::Linux,
+        system_root: None,
     };
     let make = |ids: &[&str]| {
         platter_cleanup::plan_cleanup(
@@ -559,11 +578,13 @@ fn system_plan(ids: &[&str], options: CleanupOptions) -> CleanupPlan {
         user_dirs: Vec::new(),
         now: NOW,
         os: Os::Linux,
+        system_root: None,
     };
 
     platter_cleanup::plan_cleanup(&tree, &env, &RuleSet::builtin(), ids, &fs, &options)
 }
 
+#[cfg(unix)]
 #[test]
 fn the_confirmation_and_the_description_name_the_versions_the_plan_keeps() {
     let keep_three = CleanupOptions {
@@ -590,6 +611,7 @@ fn the_confirmation_and_the_description_name_the_versions_the_plan_keeps() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_default_plan_keeps_two_versions_and_asks_for_admin() {
     let plan = system_plan(&["pacman-cache"], CleanupOptions::default());
@@ -607,6 +629,7 @@ fn a_default_plan_keeps_two_versions_and_asks_for_admin() {
     assert!(described.refused.is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_plan_without_admin_lists_the_elevated_tools_it_left_out_with_the_reason() {
     let without_admin = CleanupOptions {
@@ -644,6 +667,7 @@ fn a_plan_without_admin_lists_the_elevated_tools_it_left_out_with_the_reason() {
     assert!(!question(&plan).unwrap().text.contains("administrator"));
 }
 
+#[cfg(unix)]
 #[test]
 fn the_options_of_a_plan_command_are_checked_and_default_when_missing() {
     let resolve = |wire: serde_json::Value| {
@@ -686,6 +710,7 @@ fn the_options_of_a_plan_command_are_checked_and_default_when_missing() {
     assert!(unknown.is_err());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_marked_plan_carries_the_options_it_was_made_with() {
     let state = AppState::for_test();
@@ -714,6 +739,7 @@ fn a_marked_plan_carries_the_options_it_was_made_with() {
     assert!(plan.refused.is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn the_question_about_putting_back_names_a_bounded_number_of_places_and_shows_them_safely() {
     let many: Vec<(Vec<u8>, u64)> = (0..30)
@@ -754,6 +780,7 @@ fn the_question_about_putting_back_names_a_bounded_number_of_places_and_shows_th
     assert!(put_back_question(&huge).text.chars().count() <= QUESTION_CHARS + 2);
 }
 
+#[cfg(unix)]
 #[test]
 fn undo_waits_for_a_running_cleanup_and_quitting_does_not_wait_for_an_unanswered_dialog() {
     let state = AppState::for_test();
@@ -773,6 +800,7 @@ fn undo_waits_for_a_running_cleanup_and_quitting_does_not_wait_for_an_unanswered
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn marked_items_are_planned_as_review_items_for_the_trash() {
     let state = AppState::for_test();
@@ -801,6 +829,7 @@ fn marked_items_are_planned_as_review_items_for_the_trash() {
     assert!(plan.needs_confirmation);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_marked_plan_takes_known_node_ids_only() {
     let state = AppState::for_test();
@@ -881,6 +910,7 @@ fn label(state: &AppState, scan: ScanId, labels: &[(&str, ModelVerdict)]) {
     ));
 }
 
+#[cfg(unix)]
 #[test]
 fn the_advisor_group_is_planned_from_the_review_labels_as_review_items_for_the_trash() {
     let state = AppState::for_test();
@@ -913,6 +943,7 @@ fn the_advisor_group_is_planned_from_the_review_labels_as_review_items_for_the_t
     assert_eq!(wire["groups"][0]["verdict"], "review");
 }
 
+#[cfg(unix)]
 #[test]
 fn the_advisor_group_is_refused_without_review_labels_and_while_the_advisor_is_off() {
     let state = AppState::for_test();
@@ -948,6 +979,7 @@ fn the_advisor_group_is_refused_without_review_labels_and_while_the_advisor_is_o
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_label_a_rule_covers_is_left_to_the_rule_and_never_planned_twice() {
     let state = AppState::for_test();
@@ -991,6 +1023,7 @@ fn a_label_a_rule_covers_is_left_to_the_rule_and_never_planned_twice() {
     assert!(plan.refused.is_empty(), "{:?}", plan.refused);
 }
 
+#[cfg(unix)]
 #[test]
 fn when_every_label_is_one_a_rule_speaks_for_there_is_nothing_to_plan() {
     let state = AppState::for_test();
@@ -1009,6 +1042,7 @@ fn when_every_label_is_one_a_rule_speaks_for_there_is_nothing_to_plan() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn the_labels_do_not_outlive_the_disk_they_describe() {
     let state = AppState::for_test();
@@ -1033,6 +1067,7 @@ fn the_labels_do_not_outlive_the_disk_they_describe() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn the_advisor_group_is_confirmed_in_words_that_name_the_model_and_the_trash() {
     let state = AppState::for_test();
@@ -1092,6 +1127,7 @@ fn say(state: &AppState, scan: ScanId, path: &str, verdict: crate::commands::rul
 
 use crate::commands::rules::UserVerdictDto::{Keep as KeepIt, Safe as SafeIt};
 
+#[cfg(unix)]
 #[test]
 fn a_user_keep_stops_a_rule_from_planning_the_folder_it_keeps_or_holds() {
     let (state, _home, _) = state_with_rules();
@@ -1117,6 +1153,7 @@ fn a_user_keep_stops_a_rule_from_planning_the_folder_it_keeps_or_holds() {
     assert!(plan_of(&state, scan, &["rust-target"]).unwrap().groups.is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_user_keep_inside_a_cleaned_folder_stops_that_folder_being_planned() {
     let (state, _home, _) = state_with_rules();
@@ -1132,6 +1169,7 @@ fn a_user_keep_inside_a_cleaned_folder_stops_that_folder_being_planned() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_user_keep_refuses_marked_folders_inside_around_and_equal_to_it() {
     let (state, _home, _) = state_with_rules();
@@ -1157,6 +1195,7 @@ fn a_user_keep_refuses_marked_folders_inside_around_and_equal_to_it() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_user_keep_blocks_the_advisor_plan() {
     let (state, _home, _) = state_with_rules();
@@ -1173,6 +1212,7 @@ fn a_user_keep_blocks_the_advisor_plan() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_user_safe_folder_is_planned_for_the_trash_and_a_keep_id_is_never_planned() {
     let (state, _home, _) = state_with_rules();
@@ -1198,6 +1238,7 @@ fn a_user_safe_folder_is_planned_for_the_trash_and_a_keep_id_is_never_planned() 
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn the_user_rule_ids_are_known_and_match_nothing_while_there_are_no_user_rules() {
     let state = AppState::for_test();
@@ -1211,6 +1252,7 @@ fn the_user_rule_ids_are_known_and_match_nothing_while_there_are_no_user_rules()
     assert_eq!(plan.not_found, ["user-safe"]);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_broken_rules_file_refuses_every_plan() {
     let (state, _home, path) = state_with_rules();
@@ -1245,6 +1287,7 @@ fn a_broken_rules_file_refuses_every_plan() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn changing_a_rule_drops_the_plans_that_were_waiting() {
     let (state, _home, _) = state_with_rules();
@@ -1273,6 +1316,7 @@ fn changing_a_rule_drops_the_plans_that_were_waiting() {
     assert_eq!(started.unwrap_err().code(), ApiErrorCode::NotFound);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_plan_taken_before_the_rules_changed_by_hand_is_refused_at_start() {
     let (state, _home, path) = state_with_rules();
@@ -1295,4 +1339,51 @@ fn a_plan_taken_before_the_rules_changed_by_hand_is_refused_at_start() {
 
     assert_eq!(started.unwrap_err().code(), ApiErrorCode::Invalid);
     assert!(root.join("p/target/debug/obj").exists(), "nothing was cleaned");
+}
+
+/// What runs on every system: the words and the shapes that do not need a disk.
+#[test]
+fn the_place_that_keeps_things_is_called_what_the_system_calls_it() {
+    assert_eq!(bin_name(Os::Windows), "Recycle Bin");
+    for os in [Os::Linux, Os::MacOs, Os::Other] {
+        assert_eq!(bin_name(os), "trash");
+    }
+}
+
+#[test]
+fn emptying_a_folder_into_the_bin_is_shown_as_a_move_to_the_trash() {
+    assert_eq!(action_dto(CleanupAction::TrashChildren), ActionDto::Trash);
+    assert_eq!(action_dto(CleanupAction::Trash), ActionDto::Trash);
+    assert_eq!(command_text(CleanupAction::TrashChildren), None);
+}
+
+#[test]
+fn an_entry_the_system_took_away_without_recycling_it_says_so_and_counts_as_a_problem() {
+    let dto = outcome_dto(&TargetOutcome::NotRecycled(
+        "it is gone but not in the Recycle Bin".to_owned(),
+    ));
+
+    assert_eq!(dto.kind, OutcomeKind::Removed);
+    assert_eq!(dto.problems, 1);
+    assert_eq!(
+        dto.detail.as_deref(),
+        Some("it is gone but not in the Recycle Bin")
+    );
+}
+
+#[test]
+fn a_removal_tells_no_detail_whatever_went_wrong_inside_so_linux_is_as_it_was() {
+    let mut removed = platter_core::Removed::default();
+    removed.note(b"/x/inner".to_vec(), "permission denied".to_owned());
+
+    let dto = outcome_dto(&TargetOutcome::Removed(removed));
+
+    assert_eq!(
+        (dto.kind, dto.problems, dto.detail),
+        (OutcomeKind::Removed, 1, None)
+    );
+    assert_eq!(
+        outcome_dto(&TargetOutcome::Removed(platter_core::Removed::default())).detail,
+        None
+    );
 }

@@ -2,10 +2,19 @@ use platter_core::{UserVerdict, render_user_rules};
 
 use super::*;
 
+/// An absolute path in the style of the OS under test: `/a/b` is `C:\a\b` on Windows.
+fn abs(path: &str) -> String {
+    if cfg!(windows) {
+        format!("C:{}", path.replace('/', "\\"))
+    } else {
+        path.to_owned()
+    }
+}
+
 fn file_with(folders: &[(&str, UserVerdict)]) -> UserRulesFile {
     let mut file = UserRulesFile::default();
     for (folder, verdict) in folders {
-        file.set(Path::new(folder), *verdict).unwrap();
+        file.set(Path::new(&abs(folder)), *verdict).unwrap();
     }
     file
 }
@@ -52,7 +61,7 @@ fn saving_replaces_the_file_and_leaves_no_temporary_file() {
     let Loaded::Rules(file) = load(&path) else {
         panic!("the file reads back");
     };
-    assert_eq!(file.rules[0].folder, Path::new("/b"));
+    assert_eq!(file.rules[0].folder, Path::new(&abs("/b")));
     let names: Vec<_> = std::fs::read_dir(root.path())
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -144,6 +153,26 @@ fn a_link_at_the_path_is_refused_not_followed() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn a_link_at_the_path_is_refused_not_followed_on_windows() {
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().join("real.json");
+    save(&real, &file_with(&[("/a", UserVerdict::Keep)])).unwrap();
+    let path = root.path().join("rules.json");
+    // A file symbolic link needs a privilege an ordinary account may not hold: nothing to test then.
+    if std::os::windows::fs::symlink_file(&real, &path).is_err() {
+        return;
+    }
+
+    let loaded = load(&path);
+    let error = save(&path, &UserRulesFile::default()).unwrap_err();
+
+    assert!(matches!(loaded, Loaded::Broken(_)), "{loaded:?}");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_fifo_at_the_path_is_broken_without_blocking() {
@@ -213,7 +242,7 @@ fn a_file_that_would_be_too_large_to_read_back_is_refused_and_the_old_file_stays
         huge.rules.push(platter_core::UserRule {
             id: index,
             verdict: UserVerdict::Keep,
-            folder: format!("/{}/{index}", "\u{1}".repeat(400)).into(),
+            folder: abs(&format!("/{}/{index}", "\u{1}".repeat(400))).into(),
         });
     }
     huge.next_id = 121;
@@ -239,7 +268,7 @@ fn the_largest_file_that_is_saved_is_read_back() {
     // As many long folders as fit under the cap.
     let mut index = 0;
     loop {
-        let folder = format!("/{}/{index}", "\u{1}".repeat(300));
+        let folder = abs(&format!("/{}/{index}", "\u{1}".repeat(300)));
         if file.set(Path::new(&folder), UserVerdict::Keep).is_err() {
             break;
         }
@@ -261,7 +290,8 @@ fn a_hand_written_compact_file_near_the_cap_can_be_changed_and_saved_again() {
     let written = loop {
         let id = rules.len() + 1;
         rules.push(format!(
-            r#"{{"id":{id},"verdict":"keep","folder":"/home/u/{}{id}"}}"#,
+            r#"{{"id":{id},"verdict":"keep","folder":"{}{}{id}"}}"#,
+            abs("/home/u/").replace('\\', "\\\\"),
             "a".repeat(1000)
         ));
         let compact = format!(

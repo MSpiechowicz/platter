@@ -1,4 +1,5 @@
 import type { HistoryCleanupDto, HistoryMethodDto, HistoryStatus } from '../../api/types';
+import { platform } from '../../state/platform.svelte';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
@@ -45,16 +46,16 @@ export function formatDaysUntil(days: number): string {
   return plural(Math.round(days / 365), 'year');
 }
 
-/** What the table says about how a cleanup was done: "trash", "deleted", "emptied trash", or the tool's command. */
+/** What the table says about how a cleanup was done: "trash", "deleted", "emptied trash", or the tool's command. "Recycle Bin" for "trash" on Windows. */
 export function methodText(methods: readonly HistoryMethodDto[]): string {
   const names = methods.map((method) => {
     switch (method.kind) {
       case 'trash':
-        return 'trash';
+        return platform.trash;
       case 'deleted':
         return 'deleted';
       case 'emptiedTrash':
-        return 'emptied trash';
+        return `emptied ${platform.trash}`;
       case 'tool':
         return method.command ?? 'tool';
     }
@@ -71,19 +72,19 @@ export function whatText(what: readonly string[]): string {
 export function statusText(status: HistoryStatus): string {
   switch (status) {
     case 'inTrash':
-      return 'in trash';
+      return `in ${platform.trash}`;
     case 'notChecked':
-      return 'may be in trash';
+      return `may be in ${platform.trash}`;
     case 'restored':
       return 'restored';
     case 'noLongerInTrash':
-      return 'no longer in trash';
+      return `no longer in ${platform.trash}`;
     case 'permanent':
       return 'permanent';
   }
 }
 
-/** Restore is offered while the items may still be in the trash. */
+/** Restore is offered while the items may still be in the trash (the Recycle Bin on Windows). */
 export function canRestore(cleanup: Pick<HistoryCleanupDto, 'status'>): boolean {
   return cleanup.status === 'inTrash' || cleanup.status === 'notChecked';
 }

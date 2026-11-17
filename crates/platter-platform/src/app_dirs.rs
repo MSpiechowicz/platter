@@ -4,6 +4,10 @@
 //! `~/.config/platter` and `~/.local/share/platter`. A relative `XDG_*` value is ignored, as the XDG
 //! specification says (and as [`crate::environment`] does for the other variables it reads). Folders
 //! are created with mode 0700 and files with mode 0600.
+//!
+//! On Windows the folders are `%APPDATA%\platter` (settings) and `%LOCALAPPDATA%\platter` (data), from the
+//! known folders of the profile. They are not given a mode: a folder below the profile is closed to other
+//! users by the profile's own access rules.
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -12,16 +16,41 @@ use std::path::{Path, PathBuf};
 
 const APP_DIR: &str = "platter";
 
-/// The folder for the app's settings (`$XDG_CONFIG_HOME/platter`), not created. `None` without a home.
+/// The folder for the app's settings (`$XDG_CONFIG_HOME/platter`, on Windows `%APPDATA%\platter`), not
+/// created. `None` without a home.
 pub fn config_dir() -> Option<PathBuf> {
-    app_dir(std::env::var_os("XDG_CONFIG_HOME"), ".config")
+    #[cfg(windows)]
+    {
+        windows_app_dir(known_folders::KnownFolder::RoamingAppData)
+    }
+    #[cfg(not(windows))]
+    {
+        app_dir(std::env::var_os("XDG_CONFIG_HOME"), ".config")
+    }
 }
 
-/// The folder for the app's data (`$XDG_DATA_HOME/platter`), not created. `None` without a home.
+/// The folder for the app's data (`$XDG_DATA_HOME/platter`, on Windows `%LOCALAPPDATA%\platter`), not
+/// created. `None` without a home.
 pub fn data_dir() -> Option<PathBuf> {
-    app_dir(std::env::var_os("XDG_DATA_HOME"), ".local/share")
+    #[cfg(windows)]
+    {
+        windows_app_dir(known_folders::KnownFolder::LocalAppData)
+    }
+    #[cfg(not(windows))]
+    {
+        app_dir(std::env::var_os("XDG_DATA_HOME"), ".local/share")
+    }
 }
 
+/// `platter` in the known folder `folder` of the profile.
+#[cfg(windows)]
+fn windows_app_dir(folder: known_folders::KnownFolder) -> Option<PathBuf> {
+    known_folders::get_known_folder_path(folder)
+        .filter(|path| path.is_absolute())
+        .map(|base| base.join(APP_DIR))
+}
+
+#[cfg_attr(windows, allow(dead_code))]
 fn app_dir(xdg: Option<OsString>, home_default: &str) -> Option<PathBuf> {
     let home = || std::env::home_dir().filter(|home| home.is_absolute() && home.parent().is_some());
 
@@ -255,8 +284,26 @@ pub fn is_same_file(file: &File, path: &Path) -> io::Result<bool> {
     Ok((first.dev(), first.ino()) == (second.dev(), second.ino()))
 }
 
-/// See the Unix version.
-#[cfg(not(unix))]
+/// See the Unix version: the same volume and file index, looked at through a fresh open that never
+/// follows a link (a link at `path` is an error).
+#[cfg(windows)]
+pub fn is_same_file(file: &File, path: &Path) -> io::Result<bool> {
+    use crate::windows::identity::{identity_of, identity_of_path};
+
+    let again = identity_of_path(path)?;
+    if again.is_reparse_point() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is a link and Platter does not follow it", path.display()),
+        ));
+    }
+    let first = identity_of(file)?;
+
+    Ok((first.volume_serial, first.file_index) == (again.volume_serial, again.file_index))
+}
+
+/// See the Unix version. Where file identities are not known it says `true`.
+#[cfg(not(any(unix, windows)))]
 pub fn is_same_file(_file: &File, _path: &Path) -> io::Result<bool> {
     Ok(true)
 }
@@ -306,7 +353,15 @@ fn private_mode(options: &mut std::fs::OpenOptions) {
     options.mode(0o600);
 }
 
-#[cfg(not(unix))]
+/// Windows: a link at the name is opened as itself (it is then refused as not a regular file).
+#[cfg(windows)]
+fn private_mode(options: &mut std::fs::OpenOptions) {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    options.custom_flags(crate::windows::identity::FILE_FLAG_OPEN_REPARSE_POINT);
+}
+
+#[cfg(not(any(unix, windows)))]
 fn private_mode(_options: &mut std::fs::OpenOptions) {}
 
 /// What `O_NOFOLLOW` reports for a link at the path (`ELOOP`).
@@ -335,8 +390,19 @@ pub fn lock_exclusive(file: &File) -> io::Result<bool> {
     }
 }
 
+/// See the Linux version. On Windows the lock is `LockFileEx` on the whole file (through `File::try_lock`),
+/// held by the open handle.
+#[cfg(windows)]
+pub fn lock_exclusive(file: &File) -> io::Result<bool> {
+    match file.try_lock() {
+        Ok(()) => Ok(true),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
+}
+
 /// See the Linux version. Not available on this system.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn lock_exclusive(_file: &File) -> io::Result<bool> {
     Err(io::Error::from(io::ErrorKind::Unsupported))
 }
@@ -349,8 +415,44 @@ pub fn free_space(path: &Path) -> io::Result<u64> {
     Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
 }
 
+/// Bytes the user can still write on the volume holding `path`, from the volume list of `sysinfo` (the
+/// free space available to the calling user, which counts quotas).
+#[cfg(windows)]
+pub fn free_space(path: &Path) -> io::Result<u64> {
+    let path = dunce::canonicalize(path)?;
+    let disks = sysinfo::Disks::new_with_refreshed_list().map_err(io::Error::other)?;
+
+    let mounts: Vec<(&Path, u64)> = disks
+        .iter()
+        .map(|disk| (disk.mount_point(), disk.available_space()))
+        .collect();
+
+    mount_holding(&path, &mounts).ok_or_else(|| io::Error::other("the volume of the path is not known"))
+}
+
+/// The value of the longest mount point that `path` is inside, compared without regard to ASCII case (as
+/// Windows names are).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn mount_holding(path: &Path, mounts: &[(&Path, u64)]) -> Option<u64> {
+    let names = |path: &Path| -> Vec<String> {
+        path.components()
+            .map(|part| part.as_os_str().to_string_lossy().to_ascii_lowercase())
+            .collect()
+    };
+    let wanted = names(path);
+
+    mounts
+        .iter()
+        .filter_map(|(mount, value)| {
+            let own = names(mount);
+            (wanted.len() >= own.len() && wanted[..own.len()] == own[..]).then_some((own.len(), *value))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, value)| value)
+}
+
 /// Bytes a normal user can still write on the filesystem holding `path`. Not known on this system.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn free_space(_path: &Path) -> io::Result<u64> {
     Err(io::Error::from(io::ErrorKind::Unsupported))
 }
@@ -359,6 +461,7 @@ pub fn free_space(_path: &Path) -> io::Result<u64> {
 mod tests {
     use super::*;
 
+    #[cfg(not(windows))]
     #[test]
     fn an_absolute_xdg_value_wins_and_a_relative_one_is_ignored() {
         let absolute = app_dir(Some("/srv/cfg".into()), ".config");
@@ -419,11 +522,9 @@ mod tests {
         ));
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_private_file_is_created_0600_and_keeps_its_content() {
         use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
 
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("model.partial");
@@ -434,7 +535,12 @@ mod tests {
         let second = open_private_file(&path).unwrap();
 
         assert_eq!(second.metadata().unwrap().len(), 3, "reopening does not truncate");
-        assert_eq!(second.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(second.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -576,7 +682,7 @@ mod tests {
         assert!(folder.kind() == io::ErrorKind::InvalidInput || folder.raw_os_error().is_some());
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn a_name_is_the_same_file_until_another_file_takes_it() {
         let root = tempfile::tempdir().unwrap();
@@ -608,7 +714,7 @@ mod tests {
         assert!(is_same_file(&file, &path).is_err());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn free_space_of_an_existing_folder_is_known_and_a_missing_one_fails() {
         let root = tempfile::tempdir().unwrap();
@@ -617,7 +723,7 @@ mod tests {
         assert!(free_space(&root.path().join("missing")).is_err());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn a_lock_is_exclusive_between_open_files_and_ends_with_its_file() {
         let root = tempfile::tempdir().unwrap();
@@ -628,6 +734,9 @@ mod tests {
 
         assert!(lock_exclusive(&first).unwrap());
         assert!(!lock_exclusive(&second).unwrap(), "held by the first");
+        // `flock` is by open file description, so asking again on the same file is fine; `LockFileEx` is
+        // by handle and a second request on the holding handle is refused like any other.
+        #[cfg(target_os = "linux")]
         assert!(
             lock_exclusive(&first).unwrap(),
             "asking again on the same file is fine"
@@ -639,5 +748,72 @@ mod tests {
             lock_exclusive(&second).unwrap(),
             "free once the first file is closed"
         );
+    }
+
+    #[test]
+    fn the_volume_of_a_path_is_the_longest_mount_point_that_holds_it_in_any_case() {
+        let mounts: Vec<(&Path, u64)> = vec![
+            (Path::new("/"), 1),
+            (Path::new("/mnt"), 2),
+            (Path::new("/mnt/data"), 3),
+            (Path::new("/srv"), 4),
+        ];
+
+        assert_eq!(mount_holding(Path::new("/home/u"), &mounts), Some(1));
+        assert_eq!(mount_holding(Path::new("/mnt/other"), &mounts), Some(2));
+        assert_eq!(mount_holding(Path::new("/MNT/Data/x/y"), &mounts), Some(3));
+        assert_eq!(mount_holding(Path::new("/mnt/data"), &mounts), Some(3));
+        assert_eq!(mount_holding(Path::new("/mntx/data"), &mounts), Some(1));
+        assert_eq!(mount_holding(Path::new("/srv"), &[]), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_folders_are_platter_in_the_roaming_and_local_app_data() {
+        let config = config_dir().expect("the profile has an AppData folder");
+        let data = data_dir().expect("the profile has an AppData folder");
+
+        assert_ne!(config, data);
+        for (folder, variable) in [(&config, "APPDATA"), (&data, "LOCALAPPDATA")] {
+            assert!(folder.ends_with("platter"), "{folder:?}");
+            assert!(folder.is_absolute(), "{folder:?}");
+            assert!(!folder.to_string_lossy().starts_with(r"\\?\"), "{folder:?}");
+            if let Some(base) = std::env::var_os(variable) {
+                assert!(
+                    folder.parent().unwrap().as_os_str().eq_ignore_ascii_case(&base),
+                    "{folder:?} is not below %{variable}%"
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_link_at_a_private_file_is_refused_and_not_followed() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"precious").unwrap();
+        let link = root.path().join("link");
+        // A file symbolic link needs a privilege an ordinary account may not hold: nothing to test then.
+        if std::os::windows::fs::symlink_file(&target, &link).is_err() {
+            return;
+        }
+
+        let refused = open_private_file(&link).unwrap_err();
+
+        assert_eq!(refused.kind(), io::ErrorKind::InvalidInput, "{refused}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"precious");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_missing_file_is_not_the_same_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("history.sqlite");
+        let file = open_private_file(&path).unwrap();
+
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(is_same_file(&file, &path).is_err());
     }
 }

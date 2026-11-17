@@ -2,6 +2,7 @@
   import type { HistoryOverviewDto } from '../../api/types';
   import Card from '../../components/ui/Card.svelte';
   import { fmt } from '../../state/fmt.svelte';
+  import { platform } from '../../state/platform.svelte';
   import { DAYS_FOR_GROWTH, formatDaysUntil } from './format';
   import ProgressRing from './ProgressRing.svelte';
 
@@ -106,9 +107,14 @@
             kind: 'figure',
             id: 'restore',
             big: fmt.size(restorable),
-            caption: 'can still be restored from trash',
+            caption: `can still be restored from ${platform.trash}`,
           }
-        : { kind: 'trash', id: 'restore', big: 'Trash is clear', caption: 'nothing waiting to be restored' },
+        : {
+            kind: 'trash',
+            id: 'restore',
+            big: `${platform.Trash} is clear`,
+            caption: 'nothing waiting to be restored',
+          },
     ];
   });
 </script>

@@ -1,3 +1,4 @@
+import { isRootPath, isUnderPath, isWindowsPath, joinPath, rootOf, separatorOf } from '../paths';
 import { REAL_ROOT, SKEW_ROOT } from './mock-layouts';
 import { childrenOf, DAY, type MockNode, type MockTree } from './mock-tree';
 import type {
@@ -392,6 +393,8 @@ interface Environment {
   root: string;
   /** The home directory, when there is one in the scan or above it. Without one nothing can be kept. */
   home: string | null;
+  /** The separator of the paths of this scan: `\` for a Windows root (`C:\`), `/` otherwise. */
+  sep: '/' | '\\';
   now: number;
   /** What this machine calls the personal folders, where it is not their English name (`Documents` is `Dokumenty`). */
   userDirs: Readonly<Record<string, string>>;
@@ -399,22 +402,59 @@ interface Environment {
 
 function environmentOf(tree: MockTree): Environment {
   const root = tree.rootPath === REAL_ROOT || tree.rootPath === SKEW_ROOT ? '/' : tree.rootPath;
-  const inside = /^\/home\/[^/]+/.exec(root);
   const userDirs = tree.userDirs ?? {};
 
+  if (isWindowsPath(root)) {
+    return windowsEnvironment(tree, root, userDirs);
+  }
+
+  const inside = /^\/home\/[^/]+/.exec(root);
+
   if (inside) {
-    return { root, home: inside[0], now: tree.now, userDirs };
+    return { root, home: inside[0], sep: '/', now: tree.now, userDirs };
   }
 
   if (root === '/') {
     const top = childrenOf(tree, tree.nodes[0] as MockNode).find((child) => child.name === 'home');
     const user = top && childrenOf(tree, top).find((child) => child.kind === 'dir');
 
-    return { root, home: user ? `/home/${user.name}` : null, now: tree.now, userDirs };
+    return { root, home: user ? `/home/${user.name}` : null, sep: '/', now: tree.now, userDirs };
   }
 
-  return { root, home: null, now: tree.now, userDirs };
+  return { root, home: null, sep: '/', now: tree.now, userDirs };
 }
+
+/** The same for a Windows scan: the profile folder is `C:\Users\<name>`, found inside the scan or at the top of a drive. */
+function windowsEnvironment(
+  tree: MockTree,
+  root: string,
+  userDirs: Readonly<Record<string, string>>,
+): Environment {
+  const inside = /^[A-Za-z]:\\Users\\[^\\]+/i.exec(root);
+
+  if (inside) {
+    return { root, home: inside[0], sep: '\\', now: tree.now, userDirs };
+  }
+
+  if (isRootPath(root)) {
+    const top = childrenOf(tree, tree.nodes[0] as MockNode).find((child) => child.name === 'Users');
+    const user = top && childrenOf(tree, top).find((child) => child.kind === 'dir');
+
+    return {
+      root,
+      home: user ? joinPath(joinPath(root, 'Users'), user.name) : null,
+      sep: '\\',
+      now: tree.now,
+      userDirs,
+    };
+  }
+
+  return { root, home: null, sep: '\\', now: tree.now, userDirs };
+}
+
+/** `relative` is written with `/` in the rule table and takes the scan's own separator. */
+const homeBelow = (env: Environment, home: string, relative: string): string =>
+  joinPath(home, env.sep === '/' ? relative : relative.replace(/\//g, env.sep));
 
 /** The folders a path rule (fixed, home or personal folder, or the user's own) is about, as far as they are known. */
 function claimedPaths(matcher: Matcher, env: Environment, user: readonly UserRuleInput[]): string[] {
@@ -422,9 +462,9 @@ function claimedPaths(matcher: Matcher, env: Environment, user: readonly UserRul
     case 'fixed':
       return [matcher.path];
     case 'home':
-      return env.home ? [`${env.home}/${matcher.relative}`] : [];
+      return env.home ? [homeBelow(env, env.home, matcher.relative)] : [];
     case 'userDir':
-      return env.home ? [`${env.home}/${env.userDirs[matcher.name] ?? matcher.name}`] : [];
+      return env.home ? [joinPath(env.home, env.userDirs[matcher.name] ?? matcher.name)] : [];
     case 'user':
       return user.filter((entry) => entry.verdict === matcher.verdict).map((entry) => entry.folder);
     default:
@@ -438,7 +478,7 @@ function regionPath(files: FilesMatcher, env: Environment): string | null {
     return null;
   }
 
-  return files.home === '' ? env.home : `${env.home}/${files.home}`;
+  return files.home === '' ? env.home : homeBelow(env, env.home, files.home);
 }
 
 function holds(age: Age | undefined, mtime: number, now: number): boolean {
@@ -458,15 +498,20 @@ export function shortenHome(path: string, home: string | null): string {
     return '~';
   }
 
-  return home && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+  return home && isUnderPath(path, home) ? `~${path.slice(home.length)}` : path;
 }
 
-const joinPath = (base: string, tail: string): string =>
-  base.endsWith('/') ? `${base}${tail}` : `${base}/${tail}`;
+/** `tail` below `folder` as the interface shows it: with `~` for the home folder, and the folder's own separator. */
+function shownBelow(folder: string, home: string | null, tail: string): string {
+  const shown = shortenHome(folder, home);
+
+  return shown.endsWith(separatorOf(folder)) ? `${shown}${tail}` : `${shown}${separatorOf(folder)}${tail}`;
+}
 
 /** The deepest folder that holds all the paths. */
 function commonParent(paths: string[]): string {
-  const split = paths.map((path) => path.split('/').slice(0, -1));
+  const separator = separatorOf(paths[0] ?? '/');
+  const split = paths.map((path) => path.split(separator).slice(0, -1));
   const first = split[0] ?? [];
   let length = first.length;
 
@@ -480,7 +525,9 @@ function commonParent(paths: string[]): string {
     length = shared;
   }
 
-  return first.slice(0, length).join('/') || '/';
+  const joined = first.slice(0, length).join(separator);
+
+  return isRootPath(joined) ? rootOf(joined) : joined;
 }
 
 /** The rule's work so far: sums, the matched nodes and where they are. */
@@ -546,22 +593,19 @@ function namedMatches(tree: MockTree, env: Environment, rule: Named, node: MockN
     return false;
   }
 
-  const parentParts = path.split('/').slice(0, -1);
+  const parentParts = path.split(separatorOf(path)).slice(0, -1);
 
   if (rule.notInside?.some((name) => parentParts.includes(name))) {
     return false;
   }
 
-  return !rule.notBelow?.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+  return !rule.notBelow?.some((prefix) => isUnderPath(path, prefix));
 }
 
 /** Whether the scan has a folder at this absolute path (`root` is the scan root's own path). */
 function hasFolderAt(tree: MockTree, root: string, path: string): boolean {
-  const namesOf = (full: string): string[] => {
-    const trimmed = full.replace(/\/+$/, '');
-
-    return trimmed === '' ? [] : trimmed.slice(1).split('/');
-  };
+  // `C:` is the first name of a Windows path, so a drive root and a path on it start the same way.
+  const namesOf = (full: string): string[] => full.split(/[\\/]/).filter((name) => name !== '');
   const names = namesOf(path);
   const rootNames = namesOf(root);
 
@@ -638,10 +682,9 @@ class Evaluation {
       }
 
       const active = this.activeBelow(path, current.active);
-      const prefix = path === '/' ? '' : path;
 
       for (const child of childrenOf(this.tree, node)) {
-        stack.push({ node: child, path: `${prefix}/${child.name}`, active });
+        stack.push({ node: child, path: joinPath(path, child.name), active });
       }
     }
   }
@@ -689,9 +732,7 @@ class Evaluation {
 
   /** A kept folder lies strictly below `path`. */
   private holdsKept(path: string): boolean {
-    const prefix = path === '/' ? '/' : `${path}/`;
-
-    return this.kept.some((folder) => folder.startsWith(prefix) && folder !== path);
+    return this.kept.some((folder) => isUnderPath(folder, path) && folder !== path);
   }
 
   /** Records the directory under `rule` unless it may not be suggested. Returns whether the folder is taken (not entered). */
@@ -796,9 +837,10 @@ function displayPath(rule: Rule, found: Found, env: Environment): string {
         return shortenHome(found.paths[0] as string, env.home);
       }
 
-      const pattern = matcher.type === 'named' ? `**/${namePattern(matcher.named, found.names)}` : '**';
+      const pattern =
+        matcher.type === 'named' ? `**${env.sep}${namePattern(matcher.named, found.names)}` : '**';
 
-      return joinPath(shortenHome(commonParent(found.paths), env.home), pattern);
+      return shownBelow(commonParent(found.paths), env.home, pattern);
     }
   }
 }
@@ -860,7 +902,7 @@ export function folderPathOf(tree: MockTree, node: MockNode): string {
     names.unshift(at.name);
   }
 
-  return joinPath(environmentOf(tree).root, names.join('/')).replace(/\/$/, '') || '/';
+  return names.reduce(joinPath, environmentOf(tree).root);
 }
 
 /** The ids of all rules, in the table's order (the backend plans groups in this order). */
@@ -918,9 +960,7 @@ function analyse(tree: MockTree, user: readonly UserRuleInput[]): Analysis {
   const insideKept = RULES.some(
     (entry) =>
       entry.verdict === 'keep' &&
-      claimedPaths(entry.matcher, env, user).some(
-        (kept) => env.root !== kept && env.root.startsWith(`${kept}/`),
-      ),
+      claimedPaths(entry.matcher, env, user).some((kept) => env.root !== kept && isUnderPath(env.root, kept)),
   );
 
   const evaluation = new Evaluation(tree, env, user);
@@ -1103,7 +1143,7 @@ function advisorSuggestion(
   const shown =
     nodes.length === 1
       ? shortenHome(paths[0] as string, view.home)
-      : joinPath(shortenHome(commonParent(paths), view.home), '**');
+      : shownBelow(commonParent(paths), view.home, '**');
 
   return {
     id: ADVISOR_ID,

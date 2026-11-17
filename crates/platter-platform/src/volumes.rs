@@ -37,10 +37,15 @@ impl VolumeProvider for SystemVolumes {
                     return None;
                 }
 
-                let device = disk.name().to_string_lossy().into_owned();
+                let Identity { id, device, label } = identify(
+                    disk.name().to_string_lossy().into_owned(),
+                    &fs_type,
+                    &mount_point,
+                    disk.is_removable(),
+                );
                 Some(Volume {
-                    id: mount_point.to_string_lossy().into_owned(),
-                    label: label_for(&device, &fs_type, &mount_point),
+                    id,
+                    label,
                     mount_point,
                     device,
                     fs_type,
@@ -70,7 +75,72 @@ fn is_hidden(fs_type: &str, mount_point: &Path) -> bool {
             .any(|prefix| name.starts_with(prefix))
 }
 
+/// How a volume is named to the user.
+struct Identity {
+    id: String,
+    device: String,
+    label: String,
+}
+
+/// The id, device and label of a volume, from the name `sysinfo` gives the disk (the device node on
+/// Linux, the volume label on Windows).
+#[cfg(not(windows))]
+fn identify(name: String, fs_type: &str, mount_point: &Path, _removable: bool) -> Identity {
+    let label = label_for(&name, fs_type, mount_point);
+
+    Identity {
+        id: mount_point.to_string_lossy().into_owned(),
+        device: name,
+        label,
+    }
+}
+
+/// On Windows a drive is known by its letter: that is its id and its device (the page lists the device
+/// next to the label, so two drives never merge into one row), and the label is the volume label.
+#[cfg(windows)]
+fn identify(name: String, _fs_type: &str, mount_point: &Path, removable: bool) -> Identity {
+    let mount = mount_point.to_string_lossy();
+    let drive = drive_letter(&mount);
+
+    Identity {
+        id: drive.clone().unwrap_or_else(|| mount.clone().into_owned()),
+        device: drive.unwrap_or_default(),
+        label: windows_label(&name, removable),
+    }
+}
+
+/// The label of a Windows volume: the volume label, else the name Explorer gives a drive without one.
+/// Never `Root` (every drive is the root of its own tree). The drive letter is the device.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_label(volume_label: &str, removable: bool) -> String {
+    let label = volume_label.trim();
+
+    if !label.is_empty() {
+        label.to_owned()
+    } else if removable {
+        "Removable Disk".to_owned()
+    } else {
+        "Local Disk".to_owned()
+    }
+}
+
+/// `C:` for the mount point `C:\` (or `c:`), `None` for anything else (a volume mounted in a folder).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn drive_letter(mount_point: &str) -> Option<String> {
+    let mut chars = mount_point.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    if chars.next() != Some(':') {
+        return None;
+    }
+    if !matches!(chars.as_str(), "" | "\\" | "/") {
+        return None;
+    }
+
+    Some(format!("{}:", letter.to_ascii_uppercase()))
+}
+
 /// Filesystem label when the OS knows one, else the mount point's last component, else `Root`.
+#[cfg(not(windows))]
 fn label_for(device: &str, fs_type: &str, mount_point: &Path) -> String {
     if let Some(label) = os_label(device, fs_type) {
         return label;
@@ -86,7 +156,7 @@ fn os_label(device: &str, fs_type: &str) -> Option<String> {
     crate::linux::labels::label_of(device, fs_type)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn os_label(_device: &str, _fs_type: &str) -> Option<String> {
     None
 }
@@ -133,6 +203,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn labels_fall_back_to_the_mount_point_name() {
         assert_eq!(
@@ -140,5 +211,44 @@ mod tests {
             "backup"
         );
         assert_eq!(label_for("/dev/none-existent", "ext4", Path::new("/")), "Root");
+    }
+
+    #[test]
+    fn a_windows_volume_is_labelled_by_its_volume_label_and_never_called_root() {
+        assert_eq!(windows_label("Windows", false), "Windows");
+        assert_eq!(windows_label(" Games ", false), "Games");
+        assert_eq!(windows_label("", false), "Local Disk");
+        assert_eq!(windows_label("  ", true), "Removable Disk");
+    }
+
+    #[test]
+    fn a_drive_letter_is_only_a_drive_root() {
+        assert_eq!(drive_letter("C:\\").as_deref(), Some("C:"));
+        assert_eq!(drive_letter("C:\\mnt"), None);
+        assert_eq!(drive_letter("1:\\"), None);
+        assert_eq!(drive_letter("/mnt/c"), None);
+        assert_eq!(drive_letter(""), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_system_drive_is_listed_by_its_letter_and_never_called_root() {
+        let drive = std::env::var("SystemDrive")
+            .unwrap_or_else(|_| "C:".into())
+            .to_ascii_uppercase();
+
+        let volumes = SystemVolumes.list();
+
+        let system = volumes
+            .iter()
+            .find(|volume| volume.id == drive)
+            .unwrap_or_else(|| panic!("{drive} is listed in {volumes:?}"));
+        assert_eq!(system.device, drive);
+        assert_eq!(system.mount_point, Path::new(&format!("{drive}\\")));
+        assert_ne!(system.label, "Root");
+        assert!(system.total > 0 && system.available <= system.total);
+        for volume in &volumes {
+            assert!(!volume.label.is_empty() && volume.label != "Root", "{volume:?}");
+        }
     }
 }

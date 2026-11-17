@@ -3,22 +3,17 @@
 //! graphics card. What is checked is what a caller sees: answers, errors, and the incident of a helper that
 //! crashed or hung.
 
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use platter_ai::protocol::{LineReader, MAX_LINE_BYTES, PROTOCOL_VERSION, Reply, Request, write_message};
 use platter_ai::testing::{
     FakeControl, FakeEngine, Fault, Phase, SpawnerControl, ThreadSpawner, card, tiny_spec,
 };
 use platter_ai::{
-    AiError, Engine, Exit, GpuDevice, IncidentKind, Limits, Placement, ProcessEngine, RuntimeProcess,
-    Spawned, Spawner, VerifiedModel, Waited, verify,
+    AiError, Engine, Exit, GpuDevice, IncidentKind, Limits, Placement, ProcessEngine, VerifiedModel, verify,
 };
 use platter_platform::RuntimeMode;
 
@@ -66,7 +61,9 @@ fn rig_with(limits: Limits) -> Rig {
     let (dir, model) = model();
     let (fake, control) = FakeEngine::new();
     drop(fake);
+    // On Windows the helper opens the model by the path in the `load` and so needs to know its size.
     let (spawner, remote) = ThreadSpawner::new(&control);
+    let spawner = spawner.expecting(content().len() as u64);
     control.set_reply("answer");
     control.set_gpus(vec![card(1, XTX, 23_000, false)]);
 
@@ -521,342 +518,408 @@ fn a_helper_that_hangs_while_loading_is_killed_when_the_load_runs_out_of_time() 
     assert_eq!(rig.spawner.running(), 0);
 }
 
-// ---- A helper that is played by a script ----
+// ---- The model goes by path (Windows) ----
 
-struct Scripted {
-    script: Option<Box<dyn FnOnce(UnixStream) + Send>>,
-    /// The process does not end when it is killed (it is stuck in a driver).
-    stuck: bool,
+/// On Windows the helper is not handed the file: the `load` names its path, the helper opens it (the app holds it
+/// with a share mode that lets nobody change it), and the file stays as it was checked while it is loaded.
+#[cfg(windows)]
+mod by_path {
+    use super::*;
+
+    #[test]
+    fn the_helper_loads_the_file_the_app_checked_by_its_path_and_nobody_can_change_it_meanwhile() {
+        let mut rig = rig();
+        let path = rig.model.path();
+
+        rig.load(Placement::Cpu);
+
+        assert_eq!(rig.judge().unwrap(), "answer");
+        assert!(
+            std::fs::write(&path, b"swapped").is_err(),
+            "no write while it is loaded"
+        );
+        assert!(std::fs::rename(&path, path.with_extension("moved")).is_err());
+        assert!(std::fs::remove_file(&path).is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            content(),
+            "the bytes that were hashed"
+        );
+
+        rig.engine.unload();
+        drop(rig.model);
+        std::fs::write(&path, b"free again").expect("nothing holds the file after the unload");
+    }
+
+    #[test]
+    fn a_file_that_is_not_the_size_the_helper_expects_is_not_loaded() {
+        let (_dir, model) = model();
+        let (fake, control) = FakeEngine::new();
+        drop(fake);
+        let (spawner, remote) = ThreadSpawner::new(&control);
+        let mut engine = ProcessEngine::with_limits(spawner.expecting(7), quick());
+
+        let loaded = engine.load(&model, 2, Placement::Cpu);
+
+        let Err(AiError::Load(text)) = loaded else {
+            panic!("a file of the wrong size was loaded: {loaded:?}");
+        };
+        assert!(text.contains("wrong size"), "{text}");
+        assert!(control.calls().is_empty(), "the engine never saw it");
+        assert_eq!(remote.running(), 0);
+    }
 }
 
-struct Stand;
+/// The helper played by a script over a socket: Unix only (it speaks to the app by hand over a socket pair).
+#[cfg(unix)]
+mod scripted {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
 
-/// A process that is never gone, whatever is done to it.
-struct Stuck;
+    use platter_ai::protocol::{LineReader, MAX_LINE_BYTES, PROTOCOL_VERSION, Reply, Request, write_message};
+    use platter_ai::{RuntimeProcess, SocketWire, Spawned, Spawner, Waited};
 
-impl RuntimeProcess for Stuck {
-    fn id(&self) -> u32 {
-        2
+    use super::*;
+
+    // ---- A helper that is played by a script ----
+
+    struct Scripted {
+        script: Option<Box<dyn FnOnce(UnixStream) + Send>>,
+        /// The process does not end when it is killed (it is stuck in a driver).
+        stuck: bool,
     }
 
-    fn kill(&mut self) {}
+    struct Stand;
 
-    fn wait_for(&mut self, timeout: Duration) -> Waited {
-        thread::sleep(timeout);
-        Waited::Running
+    /// A process that is never gone, whatever is done to it.
+    struct Stuck;
+
+    impl RuntimeProcess for Stuck {
+        fn id(&self) -> u32 {
+            2
+        }
+
+        fn kill(&mut self) {}
+
+        fn wait_for(&mut self, timeout: Duration) -> Waited {
+            thread::sleep(timeout);
+            Waited::Running
+        }
     }
-}
 
-impl RuntimeProcess for Stand {
-    fn id(&self) -> u32 {
-        1
+    impl RuntimeProcess for Stand {
+        fn id(&self) -> u32 {
+            1
+        }
+
+        fn kill(&mut self) {}
+
+        fn wait_for(&mut self, _timeout: Duration) -> Waited {
+            Waited::Exited(None)
+        }
     }
 
-    fn kill(&mut self) {}
+    impl Spawner for Scripted {
+        fn spawn(&mut self, _model: Option<std::fs::File>, _mode: RuntimeMode) -> std::io::Result<Spawned> {
+            let (app, helper) = UnixStream::pair()?;
+            let script = self.script.take().expect("one helper");
+            thread::spawn(move || script(helper));
 
-    fn wait_for(&mut self, _timeout: Duration) -> Waited {
-        Waited::Exited(None)
+            Ok(Spawned {
+                process: if self.stuck {
+                    Box::new(Stuck)
+                } else {
+                    Box::new(Stand)
+                },
+                wire: Box::new(SocketWire::new(app)),
+                stderr: Box::new(std::io::empty()),
+            })
+        }
     }
-}
 
-impl Spawner for Scripted {
-    fn spawn(&mut self, _model: Option<std::fs::File>, _mode: RuntimeMode) -> std::io::Result<Spawned> {
-        let (app, helper) = UnixStream::pair()?;
-        let script = self.script.take().expect("one helper");
-        thread::spawn(move || script(helper));
-
-        Ok(Spawned {
-            process: if self.stuck {
-                Box::new(Stuck)
-            } else {
-                Box::new(Stand)
+    fn scripted(limits: Limits, script: impl FnOnce(UnixStream) + Send + 'static) -> ProcessEngine<Scripted> {
+        ProcessEngine::with_limits(
+            Scripted {
+                script: Some(Box::new(script)),
+                stuck: false,
             },
-            socket: app,
-            stderr: Box::new(std::io::empty()),
-        })
+            limits,
+        )
     }
-}
 
-fn scripted(limits: Limits, script: impl FnOnce(UnixStream) + Send + 'static) -> ProcessEngine<Scripted> {
-    ProcessEngine::with_limits(
-        Scripted {
-            script: Some(Box::new(script)),
-            stuck: false,
-        },
-        limits,
-    )
-}
+    fn stuck(limits: Limits, script: impl FnOnce(UnixStream) + Send + 'static) -> ProcessEngine<Scripted> {
+        ProcessEngine::with_limits(
+            Scripted {
+                script: Some(Box::new(script)),
+                stuck: true,
+            },
+            limits,
+        )
+    }
 
-fn stuck(limits: Limits, script: impl FnOnce(UnixStream) + Send + 'static) -> ProcessEngine<Scripted> {
-    ProcessEngine::with_limits(
-        Scripted {
-            script: Some(Box::new(script)),
-            stuck: true,
-        },
-        limits,
-    )
-}
-
-/// Says hello, takes the load and says it is done, then reads until the app lets go.
-fn loaded_then_quiet(peer: UnixStream) {
-    hello(&peer, PROTOCOL_VERSION);
-    let mut lines = LineReader::new(peer.try_clone().unwrap());
-    let Request::Load { threads, .. } = next_request(&mut lines) else {
-        panic!("a load comes first");
-    };
-    write_message(&peer, &Reply::Loaded { millis: 1, threads }).unwrap();
-
-    let mut sink = Vec::new();
-    let _ = (&peer).read_to_end(&mut sink);
-}
-
-fn hello(peer: &UnixStream, version: u32) {
-    write_message(peer, &Reply::Hello { version, pid: 7 }).unwrap();
-}
-
-fn next_request(lines: &mut LineReader<UnixStream>) -> Request {
-    lines.read::<Request>().unwrap().expect("a request")
-}
-
-#[test]
-fn a_helper_that_speaks_another_protocol_version_is_refused() {
-    let mut engine = scripted(quick(), |peer| {
-        hello(&peer, PROTOCOL_VERSION + 1);
-        thread::sleep(Duration::from_millis(300));
-    });
-
-    let cards = engine.gpus();
-    let incident = engine.take_incident().expect("an incident");
-
-    assert!(cards.is_empty());
-    assert_eq!(incident.what, IncidentKind::Crash);
-    assert_eq!(engine.process_id(), None);
-}
-
-#[test]
-fn a_helper_that_says_nothing_is_a_hang() {
-    let mut engine = scripted(
-        Limits {
-            probe: Duration::from_millis(100),
-            ..quick()
-        },
-        |peer| {
-            thread::sleep(Duration::from_millis(600));
-            drop(peer);
-        },
-    );
-
-    assert!(engine.gpus().is_empty());
-    assert_eq!(
-        engine.take_incident().map(|incident| incident.what),
-        Some(IncidentKind::Hang)
-    );
-}
-
-#[test]
-fn a_line_over_the_limit_ends_the_helper_as_a_crash() {
-    let (_dir, model) = model();
-    let mut engine = scripted(quick(), |peer| {
+    /// Says hello, takes the load and says it is done, then reads until the app lets go.
+    fn loaded_then_quiet(peer: UnixStream) {
         hello(&peer, PROTOCOL_VERSION);
         let mut lines = LineReader::new(peer.try_clone().unwrap());
-        let _load = next_request(&mut lines);
-
-        let mut peer = peer;
-        let long = vec![b'x'; MAX_LINE_BYTES + 100];
-        let _ = peer.write_all(&long);
-        let _ = peer.write_all(b"\n");
-        thread::sleep(Duration::from_millis(300));
-    });
-
-    let loaded = engine.load(&model, 1, Placement::Cpu);
-
-    assert!(matches!(loaded, Err(AiError::Load(_))), "{loaded:?}");
-    assert_eq!(
-        engine.take_incident().map(|incident| incident.what),
-        Some(IncidentKind::Crash)
-    );
-}
-
-#[test]
-fn a_reply_that_is_not_a_message_ends_the_helper_as_a_crash() {
-    let mut engine = scripted(quick(), |mut peer| {
-        hello(&peer, PROTOCOL_VERSION);
-        let mut lines = LineReader::new(peer.try_clone().unwrap());
-        let _gpus = next_request(&mut lines);
-        let _ = peer.write_all(b"this is not json\n");
-        thread::sleep(Duration::from_millis(300));
-    });
-
-    assert!(engine.gpus().is_empty());
-    assert_eq!(
-        engine.take_incident().map(|incident| incident.what),
-        Some(IncidentKind::Crash)
-    );
-}
-
-#[test]
-fn a_reply_for_another_question_is_ignored() {
-    let (_dir, model) = model();
-    let mut engine = scripted(quick(), |peer| {
-        hello(&peer, PROTOCOL_VERSION);
-        let mut lines = LineReader::new(peer.try_clone().unwrap());
-
         let Request::Load { threads, .. } = next_request(&mut lines) else {
             panic!("a load comes first");
         };
         write_message(&peer, &Reply::Loaded { millis: 1, threads }).unwrap();
 
-        let Request::Judge { id, .. } = next_request(&mut lines) else {
-            panic!("a question comes next");
-        };
-        let stale = id + 50;
-        for reply in [
-            Reply::Generation {
-                id: stale,
-                text: "stale".to_owned(),
-                tokens: 1,
-                tokens_per_s: 1.0,
-            },
-            Reply::Progress { id: Some(stale) },
-            Reply::Error {
-                id: Some(stale),
-                kind: platter_ai::protocol::ErrorKind::Run,
-                text: "stale".to_owned(),
-            },
-            Reply::Generation {
-                id,
-                text: "fresh".to_owned(),
-                tokens: 1,
-                tokens_per_s: 1.0,
-            },
-        ] {
-            write_message(&peer, &reply).unwrap();
-        }
         let mut sink = Vec::new();
         let _ = (&peer).read_to_end(&mut sink);
-    });
-    engine.load(&model, 1, Placement::Cpu).unwrap();
+    }
 
-    let answer = engine.judge("p", "g", 4, &AtomicBool::new(false));
+    fn hello(peer: &UnixStream, version: u32) {
+        write_message(peer, &Reply::Hello { version, pid: 7 }).unwrap();
+    }
 
-    assert_eq!(answer.unwrap().text, "fresh");
-    assert_eq!(engine.take_incident(), None);
-}
+    fn next_request(lines: &mut LineReader<UnixStream>) -> Request {
+        lines.read::<Request>().unwrap().expect("a request")
+    }
 
-#[test]
-fn a_helper_that_is_not_gone_after_the_kill_is_waited_for_once_and_then_left_alone() {
-    let (_dir, model) = model();
-    let mut engine = stuck(
-        Limits {
-            shutdown: Duration::from_millis(100),
-            kill: Duration::from_millis(600),
-            ..quick()
-        },
-        loaded_then_quiet,
-    );
-    engine.load(&model, 1, Placement::Cpu).unwrap();
-    let began = Instant::now();
+    #[test]
+    fn a_helper_that_speaks_another_protocol_version_is_refused() {
+        let mut engine = scripted(quick(), |peer| {
+            hello(&peer, PROTOCOL_VERSION + 1);
+            thread::sleep(Duration::from_millis(300));
+        });
 
-    engine.unload();
+        let cards = engine.gpus();
+        let incident = engine.take_incident().expect("an incident");
 
-    // The time to stop, and one wait for it after the kill: not the second wait that letting go of it made.
-    assert!(
-        began.elapsed() >= Duration::from_millis(700),
-        "{:?}",
-        began.elapsed()
-    );
-    assert!(
-        began.elapsed() < Duration::from_millis(1_100),
-        "{:?}",
-        began.elapsed()
-    );
-    let incident = engine.take_incident().expect("an incident");
-    assert_eq!((incident.what, incident.exit), (IncidentKind::Hang, None));
-}
+        assert!(cards.is_empty());
+        assert_eq!(incident.what, IncidentKind::Crash);
+        assert_eq!(engine.process_id(), None);
+    }
 
-#[test]
-fn a_helper_that_does_not_read_is_a_hang_when_a_request_cannot_be_written() {
-    let (_dir, model) = model();
-    let mut engine = scripted(
-        Limits {
-            write: Duration::from_millis(200),
-            ..quick()
-        },
-        |peer| {
+    #[test]
+    fn a_helper_that_says_nothing_is_a_hang() {
+        let mut engine = scripted(
+            Limits {
+                probe: Duration::from_millis(100),
+                ..quick()
+            },
+            |peer| {
+                thread::sleep(Duration::from_millis(600));
+                drop(peer);
+            },
+        );
+
+        assert!(engine.gpus().is_empty());
+        assert_eq!(
+            engine.take_incident().map(|incident| incident.what),
+            Some(IncidentKind::Hang)
+        );
+    }
+
+    #[test]
+    fn a_line_over_the_limit_ends_the_helper_as_a_crash() {
+        let (_dir, model) = model();
+        let mut engine = scripted(quick(), |peer| {
+            hello(&peer, PROTOCOL_VERSION);
+            let mut lines = LineReader::new(peer.try_clone().unwrap());
+            let _load = next_request(&mut lines);
+
+            let mut peer = peer;
+            let long = vec![b'x'; MAX_LINE_BYTES + 100];
+            let _ = peer.write_all(&long);
+            let _ = peer.write_all(b"\n");
+            thread::sleep(Duration::from_millis(300));
+        });
+
+        let loaded = engine.load(&model, 1, Placement::Cpu);
+
+        assert!(matches!(loaded, Err(AiError::Load(_))), "{loaded:?}");
+        assert_eq!(
+            engine.take_incident().map(|incident| incident.what),
+            Some(IncidentKind::Crash)
+        );
+    }
+
+    #[test]
+    fn a_reply_that_is_not_a_message_ends_the_helper_as_a_crash() {
+        let mut engine = scripted(quick(), |mut peer| {
+            hello(&peer, PROTOCOL_VERSION);
+            let mut lines = LineReader::new(peer.try_clone().unwrap());
+            let _gpus = next_request(&mut lines);
+            let _ = peer.write_all(b"this is not json\n");
+            thread::sleep(Duration::from_millis(300));
+        });
+
+        assert!(engine.gpus().is_empty());
+        assert_eq!(
+            engine.take_incident().map(|incident| incident.what),
+            Some(IncidentKind::Crash)
+        );
+    }
+
+    #[test]
+    fn a_reply_for_another_question_is_ignored() {
+        let (_dir, model) = model();
+        let mut engine = scripted(quick(), |peer| {
+            hello(&peer, PROTOCOL_VERSION);
+            let mut lines = LineReader::new(peer.try_clone().unwrap());
+
+            let Request::Load { threads, .. } = next_request(&mut lines) else {
+                panic!("a load comes first");
+            };
+            write_message(&peer, &Reply::Loaded { millis: 1, threads }).unwrap();
+
+            let Request::Judge { id, .. } = next_request(&mut lines) else {
+                panic!("a question comes next");
+            };
+            let stale = id + 50;
+            for reply in [
+                Reply::Generation {
+                    id: stale,
+                    text: "stale".to_owned(),
+                    tokens: 1,
+                    tokens_per_s: 1.0,
+                },
+                Reply::Progress { id: Some(stale) },
+                Reply::Error {
+                    id: Some(stale),
+                    kind: platter_ai::protocol::ErrorKind::Run,
+                    text: "stale".to_owned(),
+                },
+                Reply::Generation {
+                    id,
+                    text: "fresh".to_owned(),
+                    tokens: 1,
+                    tokens_per_s: 1.0,
+                },
+            ] {
+                write_message(&peer, &reply).unwrap();
+            }
+            let mut sink = Vec::new();
+            let _ = (&peer).read_to_end(&mut sink);
+        });
+        engine.load(&model, 1, Placement::Cpu).unwrap();
+
+        let answer = engine.judge("p", "g", 4, &AtomicBool::new(false));
+
+        assert_eq!(answer.unwrap().text, "fresh");
+        assert_eq!(engine.take_incident(), None);
+    }
+
+    #[test]
+    fn a_helper_that_is_not_gone_after_the_kill_is_waited_for_once_and_then_left_alone() {
+        let (_dir, model) = model();
+        let mut engine = stuck(
+            Limits {
+                shutdown: Duration::from_millis(100),
+                kill: Duration::from_millis(600),
+                ..quick()
+            },
+            loaded_then_quiet,
+        );
+        engine.load(&model, 1, Placement::Cpu).unwrap();
+        let began = Instant::now();
+
+        engine.unload();
+
+        // The time to stop, and one wait for it after the kill: not the second wait that letting go of it made.
+        assert!(
+            began.elapsed() >= Duration::from_millis(700),
+            "{:?}",
+            began.elapsed()
+        );
+        assert!(
+            began.elapsed() < Duration::from_millis(1_100),
+            "{:?}",
+            began.elapsed()
+        );
+        let incident = engine.take_incident().expect("an incident");
+        assert_eq!((incident.what, incident.exit), (IncidentKind::Hang, None));
+    }
+
+    #[test]
+    fn a_helper_that_does_not_read_is_a_hang_when_a_request_cannot_be_written() {
+        let (_dir, model) = model();
+        let mut engine = scripted(
+            Limits {
+                write: Duration::from_millis(200),
+                ..quick()
+            },
+            |peer| {
+                hello(&peer, PROTOCOL_VERSION);
+                let mut lines = LineReader::new(peer.try_clone().unwrap());
+                let Request::Load { threads, .. } = next_request(&mut lines) else {
+                    panic!("a load comes first");
+                };
+                write_message(&peer, &Reply::Loaded { millis: 1, threads }).unwrap();
+                // Nothing is read from here on, for longer than any test waits.
+                thread::sleep(Duration::from_secs(3));
+            },
+        );
+        engine.load(&model, 1, Placement::Cpu).unwrap();
+        let big = "x".repeat(MAX_LINE_BYTES - 1_000);
+        let began = Instant::now();
+
+        let failed = engine.judge(&big, "g", 4, &AtomicBool::new(false));
+        let incident = engine.take_incident().expect("an incident");
+
+        assert!(matches!(failed, Err(AiError::Run(_))), "{failed:?}");
+        assert_eq!(incident.what, IncidentKind::Hang);
+        assert!(began.elapsed() < Duration::from_secs(2), "{:?}", began.elapsed());
+        assert_eq!(engine.process_id(), None);
+    }
+
+    #[test]
+    fn what_a_helper_writes_while_nobody_asks_is_held_back_and_its_next_answer_still_comes() {
+        static WRITTEN: AtomicUsize = AtomicUsize::new(0);
+        let (_dir, model) = model();
+        let mut engine = scripted(quick(), |peer| {
             hello(&peer, PROTOCOL_VERSION);
             let mut lines = LineReader::new(peer.try_clone().unwrap());
             let Request::Load { threads, .. } = next_request(&mut lines) else {
                 panic!("a load comes first");
             };
             write_message(&peer, &Reply::Loaded { millis: 1, threads }).unwrap();
-            // Nothing is read from here on, for longer than any test waits.
-            thread::sleep(Duration::from_secs(3));
-        },
-    );
-    engine.load(&model, 1, Placement::Cpu).unwrap();
-    let big = "x".repeat(MAX_LINE_BYTES - 1_000);
-    let began = Instant::now();
 
-    let failed = engine.judge(&big, "g", 4, &AtomicBool::new(false));
-    let incident = engine.take_incident().expect("an incident");
-
-    assert!(matches!(failed, Err(AiError::Run(_))), "{failed:?}");
-    assert_eq!(incident.what, IncidentKind::Hang);
-    assert!(began.elapsed() < Duration::from_secs(2), "{:?}", began.elapsed());
-    assert_eq!(engine.process_id(), None);
-}
-
-#[test]
-fn what_a_helper_writes_while_nobody_asks_is_held_back_and_its_next_answer_still_comes() {
-    static WRITTEN: AtomicUsize = AtomicUsize::new(0);
-    let (_dir, model) = model();
-    let mut engine = scripted(quick(), |peer| {
-        hello(&peer, PROTOCOL_VERSION);
-        let mut lines = LineReader::new(peer.try_clone().unwrap());
-        let Request::Load { threads, .. } = next_request(&mut lines) else {
-            panic!("a load comes first");
-        };
-        write_message(&peer, &Reply::Loaded { millis: 1, threads }).unwrap();
-
-        // From now on it writes progress for a question nobody asked, as fast as the socket takes it. This
-        // thread is its only writer, and gives the answer to the question that does come.
-        let (asked, question) = mpsc::channel();
-        let writer = peer.try_clone().unwrap();
-        thread::spawn(move || {
-            loop {
-                let reply = match question.try_recv() {
-                    Ok(id) => Reply::Generation {
-                        id,
-                        text: "fresh".to_owned(),
-                        tokens: 1,
-                        tokens_per_s: 1.0,
-                    },
-                    Err(_) => Reply::Progress { id: Some(9_999) },
-                };
-                if write_message(&writer, &reply).is_err() {
-                    return;
+            // From now on it writes progress for a question nobody asked, as fast as the socket takes it. This
+            // thread is its only writer, and gives the answer to the question that does come.
+            let (asked, question) = mpsc::channel();
+            let writer = peer.try_clone().unwrap();
+            thread::spawn(move || {
+                loop {
+                    let reply = match question.try_recv() {
+                        Ok(id) => Reply::Generation {
+                            id,
+                            text: "fresh".to_owned(),
+                            tokens: 1,
+                            tokens_per_s: 1.0,
+                        },
+                        Err(_) => Reply::Progress { id: Some(9_999) },
+                    };
+                    if write_message(&writer, &reply).is_err() {
+                        return;
+                    }
+                    WRITTEN.fetch_add(1, Ordering::SeqCst);
                 }
-                WRITTEN.fetch_add(1, Ordering::SeqCst);
-            }
+            });
+
+            let Request::Judge { id, .. } = next_request(&mut lines) else {
+                panic!("a question comes next");
+            };
+            asked.send(id).unwrap();
+            let mut sink = Vec::new();
+            let _ = (&peer).read_to_end(&mut sink);
         });
+        engine.load(&model, 1, Placement::Cpu).unwrap();
 
-        let Request::Judge { id, .. } = next_request(&mut lines) else {
-            panic!("a question comes next");
-        };
-        asked.send(id).unwrap();
-        let mut sink = Vec::new();
-        let _ = (&peer).read_to_end(&mut sink);
-    });
-    engine.load(&model, 1, Placement::Cpu).unwrap();
+        // Idle: the flood stops at what the queue and the socket hold, far short of what it could write.
+        thread::sleep(Duration::from_millis(600));
+        let held = WRITTEN.load(Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(200));
 
-    // Idle: the flood stops at what the queue and the socket hold, far short of what it could write.
-    thread::sleep(Duration::from_millis(600));
-    let held = WRITTEN.load(Ordering::SeqCst);
-    thread::sleep(Duration::from_millis(200));
-
-    assert!(held < 20_000, "{held} messages were taken while nobody asked");
-    assert_eq!(WRITTEN.load(Ordering::SeqCst), held, "and it waits there");
-    let answer = engine.judge("p", "g", 4, &AtomicBool::new(false));
-    assert_eq!(answer.unwrap().text, "fresh");
-    assert_eq!(engine.take_incident(), None);
+        assert!(held < 20_000, "{held} messages were taken while nobody asked");
+        assert_eq!(WRITTEN.load(Ordering::SeqCst), held, "and it waits there");
+        let answer = engine.judge("p", "g", 4, &AtomicBool::new(false));
+        assert_eq!(answer.unwrap().text, "fresh");
+        assert_eq!(engine.take_incident(), None);
+    }
 }

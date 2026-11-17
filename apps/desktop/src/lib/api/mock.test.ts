@@ -1019,3 +1019,57 @@ describe('getSuggestions', () => {
     await expect(createMockApi(FAST).getSuggestions(4242)).rejects.toMatchObject({ code: 'notFound' });
   });
 });
+
+describe('the Windows demo disk', () => {
+  const WINDOWS = { ...FAST, os: 'windows' as const };
+
+  it('lists the drives C:\\ and D:\\ and offers folders with backslashes', async () => {
+    const api = createMockApi(WINDOWS);
+
+    expect((await api.listVolumes()).map((volume) => volume.mountPoint)).toEqual(['C:\\', 'D:\\']);
+    expect(await api.pickFolder()).toBe('C:\\Users\\demo');
+    expect(await api.pickExcludedFolder()).toBe('C:\\Users\\demo\\Videos');
+  });
+
+  it('takes a folder to leave out that starts at a drive, not a bare drive letter', async () => {
+    const api = createMockApi(WINDOWS);
+    const start = (excluded: string[]) =>
+      api.startScan({ root: 'C:\\', oneFileSystem: true, excluded }, () => {});
+
+    await expect(start(['C:\\Users\\demo\\Videos'])).resolves.toBeTypeOf('number');
+    await expect(start(['C:'])).rejects.toMatchObject({ code: 'invalid' });
+    await expect(start(['Users\\demo'])).rejects.toMatchObject({ code: 'invalid' });
+  });
+
+  it('scans the drive with backslash paths and the volume usage', async () => {
+    const api = createMockApi(WINDOWS);
+    const { id, rootId, totals } = await scan(api, 'C:\\');
+    const [volume] = await api.listVolumes();
+    const top = await allChildren(api, id, rootId);
+    const users = top.find((child) => child.name === 'Users');
+    const [profile] = await allChildren(api, id, users?.id ?? rootId);
+
+    expect(totals.allocated).toBeGreaterThan(0);
+    expect(volume?.total).toBeGreaterThan(totals.allocated);
+    expect((await api.getPath(id, rootId)).path).toBe('C:\\');
+    expect((await api.getPath(id, users?.id ?? rootId)).path).toBe('C:\\Users');
+    expect((await api.getPath(id, profile?.id ?? rootId)).path).toBe('C:\\Users\\demo');
+    expect(top.find((child) => child.name === '$Recycle.Bin')).toMatchObject({ kind: 'mount' });
+  });
+
+  it('suggests folders of the profile by their paths, with ~ for the profile folder', async () => {
+    const api = createMockApi(WINDOWS);
+    const { id } = await scan(api, 'C:\\');
+    const { suggestions } = await api.getSuggestions(id);
+    const targets = suggestions.find((entry) => entry.id === 'rust-target');
+
+    expect(targets?.path).toBe('~\\Projekty\\rust-playground\\target');
+    expect(suggestions.find((entry) => entry.id === 'node-modules')?.path).toBe(
+      '~\\Projekty\\**\\node_modules',
+    );
+
+    const first = targets?.nodes[0] ?? 0;
+
+    expect((await api.getPath(id, first)).path).toMatch(/^C:\\Users\\demo\\Projekty\\[^\\]+\\target$/);
+  });
+});

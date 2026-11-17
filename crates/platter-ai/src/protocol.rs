@@ -1,5 +1,5 @@
 //! What the app and its helper process say to each other: one JSON object a line, over the socket that is
-//! the helper's standard input.
+//! the helper's standard input (Unix) or over its standard input and output pipes (Windows).
 //!
 //! The helper speaks first (`Hello`), then answers requests one at a time. A `Judge` is answered with a
 //! `Generation` or an `Error` carrying the same id; while it runs the helper may send `Progress` lines with
@@ -16,8 +16,10 @@ use serde::{Deserialize, Serialize};
 use crate::engine::{AiError, GpuDevice, Placement};
 
 /// Bumped whenever a message changes. The helper is the same binary as the app, so a mismatch means
-/// something is badly wrong, not that a version needs support.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// something is badly wrong, not that a version needs support. Version 1 is the Unix protocol (the model is the
+/// helper's standard output). Version 2 is the Windows one: the same lines, and `load` names the model's path
+/// (see [`Request::Load`]).
+pub const PROTOCOL_VERSION: u32 = if cfg!(windows) { 2 } else { 1 };
 /// The longest line either side accepts (the newline not counted): a prompt or an answer is a few KiB.
 pub const MAX_LINE_BYTES: usize = 1 << 20;
 
@@ -29,11 +31,19 @@ pub enum Request {
     Gpus {},
     /// Load the model the helper was given. `card` is the description of the card the app chose, as it saw
     /// it in an earlier `Gpus` answer: the helper refuses when the card at that index is a different one.
+    ///
+    /// `model` is the absolute path of the model file (Windows only, protocol version 2): the app holds that
+    /// file open so that nobody can change or replace it (see `platter_platform::windows::pinned`), and the
+    /// helper opens it by that path and loads what it opened. It is left out of the line when there is none, so
+    /// that the Unix helper, which is handed the file as its standard output, hears the same line as before and
+    /// refuses a path.
     #[serde(rename_all = "camelCase")]
     Load {
         threads: u32,
         placement: Placement,
         card: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Judge {
@@ -238,11 +248,13 @@ mod tests {
             threads: 8,
             placement: Placement::Gpu { index: 1 },
             card: Some("AMD Radeon RX 7900 XTX (RADV NAVI31)".to_owned()),
+            model: None,
         });
         round_trip(Request::Load {
             threads: 2,
             placement: Placement::Cpu,
             card: None,
+            model: Some("C:\\Users\\Zoë\\AppData\\Local\\platter\\models\\模型.gguf".to_owned()),
         });
         round_trip(Request::Judge {
             id: 7,
@@ -284,6 +296,36 @@ mod tests {
             kind: ErrorKind::NotLoaded,
             text: "no".to_owned(),
         });
+    }
+
+    #[test]
+    fn a_load_without_a_model_path_is_the_line_it_always_was_and_one_with_a_path_carries_it() {
+        let without = Request::Load {
+            threads: 2,
+            placement: Placement::Cpu,
+            card: None,
+            model: None,
+        };
+        let with = Request::Load {
+            threads: 2,
+            placement: Placement::Cpu,
+            card: None,
+            model: Some("C:\\m.gguf".to_owned()),
+        };
+
+        let line = |request: &Request| String::from_utf8(encode(request).unwrap()).unwrap();
+
+        assert_eq!(
+            line(&without),
+            "{\"type\":\"load\",\"threads\":2,\"placement\":\"cpu\",\"card\":null}\n"
+        );
+        assert!(line(&with).contains(r#""model":"C:\\m.gguf""#), "{}", line(&with));
+        // A line from the version 1 app has no field for it, and is still read.
+        let old = r#"{"type":"load","threads":2,"placement":"cpu","card":null}"#;
+        assert_eq!(
+            LineReader::new(old.as_bytes()).read::<Request>().unwrap(),
+            Some(without)
+        );
     }
 
     #[test]

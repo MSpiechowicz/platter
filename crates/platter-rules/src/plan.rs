@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use platter_core::dto::Verdict;
-use platter_core::{Environment, NodeId, NodeKind, Tree, UserRule};
+use platter_core::{Environment, NodeId, NodeKind, Os, Tree, UserRule};
 
-use crate::resolve::locate;
+use crate::resolve::{locate, same_os_str, strip_prefix_folded};
 use crate::rule::{Matcher, Named, Rule, RuleSet};
 
 /// What a rule does at a node it is anchored to.
@@ -42,6 +42,8 @@ impl Plan {
     pub fn new(tree: &Tree, env: &Environment, set: &RuleSet) -> Self {
         let mut anchors = Vec::new();
         let mut named = Vec::new();
+        // Windows file names are not case sensitive, so a rule's path finds the folder however it is spelled.
+        let fold_case = env.os == Os::Windows;
 
         for (index, rule) in set.rules().iter().enumerate() {
             if rule.os.is_some_and(|os| os != env.os) {
@@ -49,14 +51,34 @@ impl Plan {
             }
 
             match &rule.matcher {
-                Matcher::Fixed(_) | Matcher::Home(_) | Matcher::UserDir(_) | Matcher::User(_) => {
+                Matcher::Fixed(_)
+                | Matcher::Home(_)
+                | Matcher::System(_)
+                | Matcher::UserDir(_)
+                | Matcher::User(_) => {
                     for path in claimed_paths(rule, env, set.user()) {
-                        push_anchor(&mut anchors, tree, &path, index, rule.verdict, Role::Claim);
+                        push_anchor(
+                            &mut anchors,
+                            tree,
+                            &path,
+                            index,
+                            rule.verdict,
+                            Role::Claim,
+                            fold_case,
+                        );
                     }
                 }
                 Matcher::Files(files) => {
                     if let Some(path) = under_home(env, files.home_relative) {
-                        push_anchor(&mut anchors, tree, &path, index, rule.verdict, Role::Region);
+                        push_anchor(
+                            &mut anchors,
+                            tree,
+                            &path,
+                            index,
+                            rule.verdict,
+                            Role::Region,
+                            fold_case,
+                        );
                     }
                 }
                 Matcher::Named(_) => named.push(index),
@@ -123,6 +145,7 @@ fn claimed_paths(rule: &Rule, env: &Environment, user: &[UserRule]) -> Vec<PathB
     match &rule.matcher {
         Matcher::Fixed(path) => vec![PathBuf::from(path)],
         Matcher::Home(relative) => one(under_home(env, relative)),
+        Matcher::System(relative) => one(env.system_root.as_ref().map(|root| root.join(relative))),
         Matcher::UserDir(dir) => one(env.user_dir(*dir)),
         Matcher::User(verdict) => user
             .iter()
@@ -143,9 +166,18 @@ pub(crate) fn kept_root(tree: &Tree, env: &Environment, set: &RuleSet) -> Option
             return None;
         }
 
+        let fold_case = env.os == Os::Windows;
+
         claimed_paths(rule, env, set.user())
             .iter()
-            .any(|kept| root != kept && root.starts_with(kept))
+            .any(|kept| {
+                if fold_case {
+                    !same_os_str(root.as_os_str(), kept.as_os_str())
+                        && strip_prefix_folded(root, kept).is_some()
+                } else {
+                    root != kept && root.starts_with(kept)
+                }
+            })
             .then_some(index)
     })
 }
@@ -162,8 +194,9 @@ fn push_anchor(
     rule: usize,
     verdict: Verdict,
     role: Role,
+    fold_case: bool,
 ) {
-    let Some(node) = locate(tree, path) else {
+    let Some(node) = locate(tree, path, fold_case) else {
         return;
     };
 

@@ -21,6 +21,7 @@
 //! the job's labels are stored with the scan when it ends. While it runs, the status names the scan.
 
 use std::collections::HashSet;
+#[cfg(any(feature = "advisor", test))]
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
@@ -31,19 +32,23 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use platter_ai::{
-    AdvisorHandle, AdvisorWorker, Device, Engine, Fetch, FolderFacts, LabelRun, MODEL, ModelSpec, ModelState,
-    Options, RuleContext, ScanQuestion, StateTicket, Status, Stopped, UnloadAfter, WorkerConfig, WorkerError,
-    facts,
+    AdvisorHandle, Device, FolderFacts, LabelRun, MODEL, ModelSpec, ModelState, Options, RuleContext,
+    ScanQuestion, StateTicket, Status, Stopped, UnloadAfter, WorkerError, facts,
 };
-#[cfg(all(feature = "advisor", unix))]
+#[cfg(any(feature = "advisor", test))]
+use platter_ai::{AdvisorWorker, Engine, Fetch, WorkerConfig};
+#[cfg(feature = "advisor")]
 use platter_ai::{ProcessEngine, RealSpawner};
 use platter_cleanup::{CandidateLimits, Protected, label_candidates, with_real_keeps};
-use platter_core::dto::{ApiErrorCode, ScanId, SuggestionDto, SuggestionSource, SuggestionsDto, Verdict};
+use platter_core::dto::{
+    ApiErrorCode, OsDto, ScanId, SuggestionDto, SuggestionSource, SuggestionsDto, Verdict,
+};
 use platter_core::{
     EntryProbe, Environment, ModelLabel, ModelVerdict, NodeId, NodeKind, Tree, UserRule, UserVerdict,
 };
 use platter_core::{find_entries_until as search_entries_until, find_folders as search_folders};
 use platter_platform::Platform;
+use platter_platform::environment::current_os;
 use platter_platform::paths::node_path;
 use platter_rules::{Explainer, RuleSet, scan_is_kept};
 use serde::{Deserialize, Serialize};
@@ -145,8 +150,12 @@ impl From<&Device> for DeviceDto {
     }
 }
 
-/// Whether this build can run the model on a graphics card.
-const GPU_SUPPORTED: bool = cfg!(feature = "gpu-vulkan");
+/// Whether this build can run the model on a graphics card: every Linux build with the advisor (the
+/// desktop crate's target dependency turns Vulkan on there), and any build that asks for `gpu-vulkan`.
+const GPU_SUPPORTED: bool = cfg!(any(
+    feature = "gpu-vulkan",
+    all(feature = "advisor", target_os = "linux")
+));
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -182,6 +191,8 @@ pub struct AdvisorStatusDto {
     pub ram_total: u64,
     /// This build can run the model on a graphics card.
     pub gpu_supported: bool,
+    /// The operating system this app runs on (the web view's wording and path handling follow it).
+    pub os: OsDto,
     /// Where the model runs, while it is loaded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<DeviceDto>,
@@ -408,6 +419,7 @@ impl View {
             ram_bytes: status.ram_bytes,
             ram_total: status.ram_total,
             gpu_supported: GPU_SUPPORTED,
+            os: current_os().into(),
             device: status.device.as_ref().map(DeviceDto::from),
             video_bytes: status.video_bytes,
             tokens_per_second: status.tokens_per_second,
@@ -543,7 +555,7 @@ impl AdvisorService {
     /// [`crate::advisor_runtime`]). The graphics card problem log is read here: a problem the user has not
     /// answered blocks the card until they do.
     pub fn production() -> Self {
-        #[cfg(all(feature = "advisor", unix))]
+        #[cfg(feature = "advisor")]
         {
             if platter_platform::model_runtime_supported()
                 && let Some(data) = platter_platform::data_dir()
@@ -603,6 +615,7 @@ impl AdvisorService {
 
     /// [`spawn`](Self::spawn) with the log the graphics card problems are written to. What the log says is
     /// waiting for an answer starts with the card blocked, and every incident the worker tells is written to it.
+    #[cfg(any(feature = "advisor", test))]
     pub fn spawn_logged(
         mut config: WorkerConfig,
         engine: Box<dyn Engine>,
@@ -1000,6 +1013,7 @@ impl AdvisorService {
             ram_bytes: None,
             ram_total: platter_platform::total_memory_bytes().unwrap_or(0),
             gpu_supported: false,
+            os: current_os().into(),
             device: None,
             video_bytes: None,
             tokens_per_second: None,

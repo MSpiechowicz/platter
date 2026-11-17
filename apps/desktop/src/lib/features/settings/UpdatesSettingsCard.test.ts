@@ -3,6 +3,7 @@ import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '../../api/client';
 import type { UpdateCheck } from '../../api/types';
+import { platform } from '../../state/platform.svelte';
 import { settings } from '../../state/settings.svelte';
 import { ui } from '../../state/ui.svelte';
 import { updater } from '../../state/update.svelte';
@@ -163,6 +164,20 @@ describe('UpdatesSettingsCard', () => {
         'A package manager installs updates for this copy of Platter. Platter tells you when one is out.',
       ),
     ).toBeTruthy();
+  });
+
+  it('says on Windows that this copy is not the installed one, and names no package manager', () => {
+    platform.os = 'windows';
+    updater.canInstall = false;
+
+    try {
+      render(UpdatesSettingsCard);
+
+      expect(screen.getByText(/not installed with the Platter setup/)).toBeTruthy();
+      expect(screen.queryByText(/package manager/)).toBeNull();
+    } finally {
+      platform.os = 'linux';
+    }
   });
 });
 

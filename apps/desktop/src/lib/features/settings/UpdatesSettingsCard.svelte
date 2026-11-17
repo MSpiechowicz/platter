@@ -6,6 +6,7 @@
   import Toggle from '../../components/ui/Toggle.svelte';
   import { formatAgo } from '../../format';
   import { delayed } from '../../state/delayed.svelte';
+  import { platform } from '../../state/platform.svelte';
   import { settings, type UpdateSchedule } from '../../state/settings.svelte';
   import { ui } from '../../state/ui.svelte';
   import { updater } from '../../state/update.svelte';
@@ -118,7 +119,12 @@
 
   {#if updater.canInstall === false}
     <p class="package">
-      A package manager installs updates for this copy of Platter. Platter tells you when one is out.
+      {#if platform.isWindows}
+        This copy was not installed with the Platter setup. Platter tells you when an update is out. The new
+        setup is on the release page.
+      {:else}
+        A package manager installs updates for this copy of Platter. Platter tells you when one is out.
+      {/if}
     </p>
   {/if}
 </Card>

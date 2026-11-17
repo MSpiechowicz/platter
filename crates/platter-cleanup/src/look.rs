@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use platter_core::EntryProbe;
 
-use crate::path::owned;
+use crate::path::PathStyle;
 
 /// How many folders are looked at at the same time. A look at a mount that does not answer holds one of
 /// these until the probe gives up on it, so a few more than one keep the rest of the list from waiting
@@ -71,12 +71,17 @@ pub(crate) struct KeepLook {
 ///
 /// The top folder is never looked up as the place a link leads to (a link to `/` is not a folder worth
 /// protecting: it would hold everything), and its identity is never learned.
-pub(crate) fn look_up(probe: &impl EntryProbe, paths: &[Vec<u8>], budget: Duration) -> Vec<Option<Looked>> {
+pub(crate) fn look_up(
+    probe: &impl EntryProbe,
+    style: PathStyle,
+    paths: &[Vec<u8>],
+    budget: Duration,
+) -> Vec<Option<Looked>> {
     let started = Instant::now();
     let answers: Mutex<Vec<Option<Looked>>> = Mutex::new(vec![None; paths.len()]);
 
     run_pool(LOOKS_AT_ONCE, paths.len(), started, budget, |index| {
-        let (looked, _) = look(probe, &paths[index], &Links::Unknown, started, budget);
+        let (looked, _) = look(probe, style, &paths[index], &Links::Unknown, started, budget);
         answers.lock().unwrap_or_else(|poisoned| poisoned.into_inner())[index] = Some(looked);
     });
 
@@ -92,12 +97,17 @@ pub(crate) fn look_up(probe: &impl EntryProbe, paths: &[Vec<u8>], budget: Durati
 ///
 /// The answer has one entry per path. One whose links could not be settled, or that the limit ran out
 /// before (it could be a link), is `settled: false`.
-pub(crate) fn look_up_keeps(probe: &impl EntryProbe, paths: &[Vec<u8>], budget: Duration) -> Vec<KeepLook> {
+pub(crate) fn look_up_keeps(
+    probe: &impl EntryProbe,
+    style: PathStyle,
+    paths: &[Vec<u8>],
+    budget: Duration,
+) -> Vec<KeepLook> {
     let started = Instant::now();
 
     let read: Mutex<Vec<Option<Links>>> = Mutex::new(vec![None; paths.len()]);
     run_pool(LINK_READS_AT_ONCE, paths.len(), started, budget, |index| {
-        let links = read_links(probe, &paths[index], started, budget);
+        let links = read_links(probe, style, &paths[index], started, budget);
         read.lock().unwrap_or_else(|poisoned| poisoned.into_inner())[index] = Some(links);
     });
     // A path not reached could be a link: nothing is known of it.
@@ -110,7 +120,7 @@ pub(crate) fn look_up_keeps(probe: &impl EntryProbe, paths: &[Vec<u8>], budget: 
 
     let answers: Mutex<Vec<Option<KeepLook>>> = Mutex::new(vec![None; paths.len()]);
     run_pool(LOOKS_AT_ONCE, paths.len(), started, budget, |index| {
-        let (looked, settled) = look(probe, &paths[index], &links[index], started, budget);
+        let (looked, settled) = look(probe, style, &paths[index], &links[index], started, budget);
         answers.lock().unwrap_or_else(|poisoned| poisoned.into_inner())[index] =
             Some(KeepLook { looked, settled });
     });
@@ -121,7 +131,7 @@ pub(crate) fn look_up_keeps(probe: &impl EntryProbe, paths: &[Vec<u8>], budget: 
         .into_iter()
         .zip(&links)
         .zip(paths)
-        .map(|((answer, links), path)| answer.unwrap_or_else(|| from_links(links, path)))
+        .map(|((answer, links), path)| answer.unwrap_or_else(|| from_links(style, links, path)))
         .collect()
 }
 
@@ -161,14 +171,15 @@ fn run_pool(workers: usize, count: usize, started: Instant, budget: Duration, ta
 /// its links already found out; when that settled where the folder is, the disk is not asked again.
 fn look(
     probe: &impl EntryProbe,
+    style: PathStyle,
     path: &[u8],
     links: &Links,
     started: Instant,
     budget: Duration,
 ) -> (Looked, bool) {
-    let literal = owned(path);
+    let literal = style.owned(path);
     let elsewhere = |parts: Vec<Vec<u8>>| {
-        Some(parts).filter(|parts| !parts.is_empty() && Some(parts) != literal.as_ref())
+        Some(parts).filter(|parts| !parts.is_empty() && !is_same_place(style, parts, literal.as_deref()))
     };
 
     let (mut real, mut settled) = match links {
@@ -179,7 +190,11 @@ fn look(
     };
     if matches!(links, Links::Unknown | Links::Lost) {
         // The canonical path, when the disk tells it: it settles the question either way.
-        if let Some(parts) = probe.resolve(path).ok().and_then(|resolved| owned(&resolved)) {
+        if let Some(parts) = probe
+            .resolve(path)
+            .ok()
+            .and_then(|resolved| style.owned(&resolved))
+        {
             real = elsewhere(parts);
             settled = true;
         }
@@ -189,7 +204,9 @@ fn look(
         return (Looked { real, identity: None }, settled);
     }
 
-    let looked_at = real.as_deref().map_or_else(|| path.to_vec(), join_parts);
+    let looked_at = real
+        .as_deref()
+        .map_or_else(|| path.to_vec(), |real| style.join(real));
     let identity = probe
         .probe(&looked_at)
         .ok()
@@ -199,14 +216,19 @@ fn look(
     (Looked { real, identity }, settled)
 }
 
+/// Whether `parts` is the folder `literal` as the style compares names (Windows: without regard to ASCII
+/// case, so the canonical spelling of a folder is not taken for another place than the one typed).
+fn is_same_place(style: PathStyle, parts: &[Vec<u8>], literal: Option<&[Vec<u8>]>) -> bool {
+    literal.is_some_and(|literal| literal.len() == parts.len() && style.is_within(parts, literal))
+}
+
 /// What a keep folder came to when no look at the disk was made for it (the limit ran out): only what
 /// reading its links found.
-fn from_links(links: &Links, path: &[u8]) -> KeepLook {
-    let literal = owned(path);
+fn from_links(style: PathStyle, links: &Links, path: &[u8]) -> KeepLook {
+    let literal = style.owned(path);
     let real = match links {
-        Links::To(parts) => {
-            Some(parts.clone()).filter(|parts| !parts.is_empty() && Some(parts) != literal.as_ref())
-        }
+        Links::To(parts) => Some(parts.clone())
+            .filter(|parts| !parts.is_empty() && !is_same_place(style, parts, literal.as_deref())),
         _ => None,
     };
 
@@ -222,8 +244,19 @@ fn from_links(links: &Links, path: &[u8]) -> KeepLook {
 /// [`LINK_HOPS`] links. No disk that a link leads to is touched, so a link to a mount that does not
 /// answer is still known for where it leads. Every call is bounded by the probe, and none is made once
 /// `budget` has run out.
-fn read_links(probe: &impl EntryProbe, path: &[u8], started: Instant, budget: Duration) -> Links {
-    let Some(mut pending) = owned(path) else {
+fn read_links(
+    probe: &impl EntryProbe,
+    style: PathStyle,
+    path: &[u8],
+    started: Instant,
+    budget: Duration,
+) -> Links {
+    // On Windows a link is a reparse point, whose text is not read here: where a path really is comes
+    // from the canonical path (`resolve`) instead, and the probe refuses a link on the way of a target.
+    if style == PathStyle::Windows {
+        return Links::Unknown;
+    }
+    let Some(mut pending) = style.owned(path) else {
         return Links::Unknown;
     };
     pending.reverse();
@@ -244,7 +277,7 @@ fn read_links(probe: &impl EntryProbe, path: &[u8], started: Instant, budget: Du
         }
 
         real.push(part);
-        match probe.read_link(&join_parts(&real)) {
+        match probe.read_link(&style.join(&real)) {
             Ok(text) => {
                 hops += 1;
                 if hops > LINK_HOPS || text.is_empty() {
@@ -294,15 +327,4 @@ fn read_links(probe: &impl EntryProbe, path: &[u8], started: Instant, budget: Du
 /// there was one.
 fn failed(hops: usize) -> Links {
     if hops == 0 { Links::Unknown } else { Links::Lost }
-}
-
-/// The path of `parts`.
-pub(crate) fn join_parts(parts: &[Vec<u8>]) -> Vec<u8> {
-    let mut path = Vec::new();
-    for part in parts {
-        path.push(b'/');
-        path.extend_from_slice(part);
-    }
-
-    path
 }

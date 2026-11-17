@@ -42,6 +42,28 @@ pub fn pinned_path(file: &File) -> PathBuf {
     PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
+/// What keeps a model file's path naming the file that was checked, besides the open file itself. On Linux
+/// nothing: `/proc/self/fd/N` follows the descriptor, so there is nothing more to hold.
+#[derive(Debug)]
+pub struct Pin(());
+
+impl Pin {
+    /// The pin of a file that was handed over already open (a descriptor of the helper).
+    pub fn inherited() -> Self {
+        Self(())
+    }
+
+    /// A path that names `file` (the file this pin was made with) for as long as it is open.
+    pub fn path(&self, file: &File) -> Option<PathBuf> {
+        Some(pinned_path(file))
+    }
+}
+
+/// [`open_nofollow`], and what keeps its name pointing at it.
+pub fn open_pinned(path: &Path) -> io::Result<(File, Pin)> {
+    open_nofollow(path).map(|file| (file, Pin(())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

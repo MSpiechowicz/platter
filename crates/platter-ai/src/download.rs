@@ -201,10 +201,21 @@ pub fn download(
 
     partial.file.sync_all().map_err(io_error)?;
     std::fs::rename(&partial.path, &target).map_err(io_error)?;
-    File::open(dir)
-        .and_then(|folder| folder.sync_all())
-        .map_err(io_error)?;
+    sync_dir(dir).map_err(io_error)?;
 
+    Ok(())
+}
+
+/// Makes the rename in `dir` durable.
+#[cfg(not(windows))]
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    File::open(dir)?.sync_all()
+}
+
+/// Windows cannot open a folder to sync it without backup semantics, and failing here would report a
+/// download that is complete and verified as failed. The file itself was synced before the rename.
+#[cfg(windows)]
+fn sync_dir(_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 

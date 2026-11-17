@@ -54,6 +54,9 @@ pub struct Environment {
     /// The current time in unix seconds; ages are measured against it.
     pub now: i64,
     pub os: Os,
+    /// Windows only: the system folder (`%SystemRoot%`, `C:\Windows`), absolute; `None` on every other
+    /// OS and when it is not known. Rules and the cleanup guard protect it and what is inside.
+    pub system_root: Option<PathBuf>,
 }
 
 impl Environment {

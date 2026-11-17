@@ -29,23 +29,28 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use platter_ai::{Exit, GpuIncident, IncidentKind};
+use platter_ai::IncidentKind;
+#[cfg(any(feature = "advisor", test))]
+use platter_ai::{Exit, GpuIncident};
 use serde_json::{Value, json};
 
 use super::jsonl;
 use super::log::utc_time;
 use crate::error::{CommandError, CommandResult};
 
-#[cfg_attr(not(all(feature = "advisor", unix)), allow(dead_code))]
 /// The log's file name, in the app's data folder.
+#[cfg(any(feature = "advisor", test))]
 pub const FILE_NAME: &str = "advisor-gpu.log";
 /// The log is cut to this size (about 256 KiB) when a line would pass it.
 pub const MAX_BYTES: usize = 256 * 1024;
 /// The greatest number the web view can hold exactly (2^53 - 1). A greater id or time is not used.
+#[cfg(any(feature = "advisor", test))]
 const MAX_SAFE_ID: u64 = (1 << 53) - 1;
 /// A card name is cut to this many characters.
+#[cfg(any(feature = "advisor", test))]
 const MAX_CARD_CHARS: usize = 120;
 /// The helper's last words and the detail are cut to this many characters before they are written.
+#[cfg(any(feature = "advisor", test))]
 const MAX_TEXT_CHARS: usize = 8192;
 
 /// What went wrong.
@@ -57,6 +62,7 @@ pub enum What {
 }
 
 impl What {
+    #[cfg(any(feature = "advisor", test))]
     fn name(self) -> &'static str {
         match self {
             Self::Crash => "crash",
@@ -65,7 +71,7 @@ impl What {
         }
     }
 
-    #[cfg_attr(not(all(feature = "advisor", unix)), allow(dead_code))]
+    #[cfg(any(feature = "advisor", test))]
     fn named(name: &str) -> Option<Self> {
         match name {
             "crash" => Some(Self::Crash),
@@ -122,6 +128,7 @@ struct State {
     /// The last GPU incident, answered or not.
     last: Option<Problem>,
     /// The greatest id in the log (or made this session): the next is above it.
+    #[cfg(any(feature = "advisor", test))]
     newest_id: u64,
 }
 
@@ -148,7 +155,7 @@ impl GpuLog {
 
     /// The log at `path`, as it is now. A file that is not there, cannot be read or is not a regular file is an
     /// empty log (and is left alone).
-    #[cfg_attr(not(all(feature = "advisor", unix)), allow(dead_code))]
+    #[cfg(any(feature = "advisor", test))]
     pub fn open(path: PathBuf) -> Self {
         let state = jsonl::read_tail(&path, 2 * MAX_BYTES).map_or_else(
             |_| State::default(),
@@ -163,7 +170,7 @@ impl GpuLog {
     }
 
     /// The log in the app's data folder, as it is now.
-    #[cfg_attr(not(all(feature = "advisor", unix)), allow(dead_code))]
+    #[cfg(feature = "advisor")]
     pub fn production() -> Self {
         match platter_platform::data_dir() {
             Some(dir) => Self::open(dir.join(FILE_NAME)),
@@ -182,6 +189,7 @@ impl GpuLog {
     }
 
     /// Writes an incident. One on a graphics card becomes the pending problem (and the last one).
+    #[cfg(any(feature = "advisor", test))]
     pub fn record(&self, incident: &GpuIncident) {
         let _writing = self.lock_writers();
 
@@ -277,6 +285,7 @@ fn millis(at: SystemTime) -> u64 {
 
 /// A card name as it is shown and kept: no control characters, at most [`MAX_CARD_CHARS`] characters, no
 /// space at either end. `None` when nothing is left.
+#[cfg(any(feature = "advisor", test))]
 fn clean_card(card: &str) -> Option<String> {
     let visible: String = card.chars().filter(|c| !c.is_control()).collect();
     let cleaned: String = visible.trim().chars().take(MAX_CARD_CHARS).collect();
@@ -285,13 +294,19 @@ fn clean_card(card: &str) -> Option<String> {
     (!cleaned.is_empty()).then(|| cleaned.to_owned())
 }
 
+#[cfg(any(feature = "advisor", test))]
 fn cut(text: &str) -> String {
     text.chars().take(MAX_TEXT_CHARS).collect()
 }
 
+#[cfg(any(feature = "advisor", test))]
 fn incident_line(id: u64, at: u64, card: Option<&str>, incident: &GpuIncident) -> Vec<u8> {
     let exit = match incident.exit {
-        Some(Exit::Code(code)) => json!({ "code": code }),
+        // A Windows exit code is a number nobody reads (0xC0000005 is -1073741819): the text says what it is.
+        Some(Exit::Code(code)) => match platter_platform::exit_text(platter_platform::Exit::Code(code)) {
+            Some(text) => json!({ "code": code, "text": text }),
+            None => json!({ "code": code }),
+        },
         Some(Exit::Signal(signal)) => json!({ "signal": signal }),
         None => Value::Null,
     };
@@ -332,6 +347,7 @@ fn to_line(value: &Value) -> Vec<u8> {
 /// The greatest id a line may have when the log is read at `now`: ids are times in milliseconds, so one more
 /// than a year ahead was not written by Platter. Skipping those keeps every new id below [`MAX_SAFE_ID`] and
 /// unique.
+#[cfg(any(feature = "advisor", test))]
 fn latest_id(now: SystemTime) -> u64 {
     const YEAR_MS: u64 = 366 * 24 * 60 * 60 * 1000;
 
@@ -340,7 +356,7 @@ fn latest_id(now: SystemTime) -> u64 {
 
 /// What the log says: the lines it can read, in order. A line that is not JSON, is of another type, lacks a
 /// field or has an id above `latest` is skipped.
-#[cfg_attr(not(all(feature = "advisor", unix)), allow(dead_code))]
+#[cfg(any(feature = "advisor", test))]
 fn read(bytes: &[u8], latest: u64) -> State {
     let mut state = State::default();
 

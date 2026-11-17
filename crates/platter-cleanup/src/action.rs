@@ -1,5 +1,7 @@
 //! How the matches of each rule are cleaned.
 
+use platter_core::Os;
+
 /// A program that cleans what it owns, with fixed arguments. The UI never supplies arguments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tool {
@@ -91,6 +93,9 @@ pub enum CleanupAction {
     EmptyFolder,
     /// Move to the trash, so it can be restored. For the user's own files.
     Trash,
+    /// Move every direct child of the folder to the trash and keep the folder: `EmptyFolder` where
+    /// nothing is ever deleted for good (Windows, see [`action_for`]).
+    TrashChildren,
     /// Empty a freedesktop trash folder: everything inside its `files/`, `info/` and `expunged/` goes, and
     /// its size cache; the folders themselves stay, so file managers keep a working trash.
     EmptyTrash,
@@ -98,10 +103,57 @@ pub enum CleanupAction {
     RunTool(Tool),
 }
 
-/// The action for a rule, or `None` when Platter does not clean what the rule finds (a `keep` rule, or
-/// something that needs a tool Platter does not drive yet, such as btrfs snapshots). The options choose
-/// among fixed commands, never build one.
-pub fn action_for(rule_id: &str, options: &CleanupOptions) -> Option<CleanupAction> {
+/// The action for a rule on `os`, or `None` when Platter does not clean what the rule finds (a `keep` rule,
+/// something that needs a tool Platter does not drive yet, such as btrfs snapshots, or a rule that does
+/// not exist on that OS). The options choose among fixed commands, never build one.
+///
+/// On Windows nothing is deleted for good: `Delete` becomes `Trash`, `EmptyFolder` becomes `TrashChildren`,
+/// and the rules and tools of Linux (`EmptyTrash`, `pacman`, `journalctl`...) do not exist. A lost race
+/// on a move to the Recycle Bin is a recycle the user can undo, where a lost race on a delete is not.
+pub fn action_for(rule_id: &str, options: &CleanupOptions, os: Os) -> Option<CleanupAction> {
+    match os {
+        Os::Windows => windows_action_for(rule_id),
+        Os::Linux | Os::MacOs | Os::Other => unix_action_for(rule_id, options),
+    }
+}
+
+/// The action for a rule on Windows: only moves to the Recycle Bin, and the tools Windows has.
+fn windows_action_for(rule_id: &str) -> Option<CleanupAction> {
+    use CleanupAction::{RunTool, Trash, TrashChildren};
+
+    let action = match rule_id {
+        "rust-target" | "rust-target-recent" | "node-modules" | "node-modules-recent" | "python-cache" => {
+            Trash
+        }
+        "npm-cache"
+        | "bun-cache"
+        | "pnpm-store"
+        | "yarn-cache"
+        | "cargo-registry"
+        | "gradle-cache"
+        | "maven-repository"
+        | "nuget-packages"
+        | "go-modules"
+        | "win-temp"
+        | "win-npm-cache"
+        | "win-pip-cache"
+        | "win-nuget-http-cache"
+        | "win-nuget-v3-cache"
+        | "win-crash-dumps" => TrashChildren,
+        "old-downloads" | "disk-images" | "user-safe" => Trash,
+        // Windows' own component store: only `DISM` may touch it, and only as the administrator.
+        "win-component-store" => RunTool(Tool {
+            program: "dism",
+            args: &["/Online", "/Cleanup-Image", "/StartComponentCleanup"],
+            needs_elevation: true,
+        }),
+        _ => return None,
+    };
+
+    Some(action)
+}
+
+fn unix_action_for(rule_id: &str, options: &CleanupOptions) -> Option<CleanupAction> {
     use CleanupAction::{Delete, EmptyFolder, EmptyTrash, RunTool, Trash};
 
     let action = match rule_id {

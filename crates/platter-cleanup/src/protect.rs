@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use platter_core::{EntryProbe, Environment, UserDir};
 
-use crate::look::{Looked, join_parts, look_up};
-use crate::path::{components, display, is_within, owned};
+use crate::look::{Looked, look_up};
+use crate::path::PathStyle;
 
 /// How long looking the protected places up on the disk may take in all, for one plan request: the
 /// places share it as the kept folders share [`KEPT_LEARNING_BUDGET`](crate::KEPT_LEARNING_BUDGET).
@@ -64,13 +64,61 @@ const HOME_INSIDE: &[&str] = &[
     ".git-credentials",
 ];
 
+/// Folders of a Windows profile (below the profile folder, written with `/`) nothing inside of may be a
+/// target: keys and credentials, the settings that follow the user (`AppData\Roaming`), the per-user
+/// registry hive, and the profiles of the browsers and mail programs.
+const WINDOWS_HOME_INSIDE: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".docker",
+    ".config",
+    ".netrc",
+    "_netrc",
+    ".git-credentials",
+    "AppData/Roaming",
+    "AppData/Local/Microsoft/Credentials",
+    "AppData/Local/Microsoft/Vault",
+    "AppData/Local/Microsoft/Windows",
+    "AppData/Local/Google/Chrome/User Data",
+    "AppData/Local/Microsoft/Edge/User Data",
+    "AppData/Local/BraveSoftware",
+    "AppData/Local/Mozilla",
+    "AppData/Local/Thunderbird",
+];
+
+/// Folders at the root of the system drive that may be neither a target nor have a target above them.
+const WINDOWS_ROOT_FOLDERS: &[&str] = &[
+    "Program Files",
+    "Program Files (x86)",
+    "ProgramData",
+    "Users",
+    "Recovery",
+    "PerfLogs",
+    "Documents and Settings",
+];
+
+/// Folders at the root of a drive nothing inside of may be a target (besides the folders above).
+const WINDOWS_DRIVE_INSIDE: &[&str] = &["$Recycle.Bin", "System Volume Information", "Recovery"];
+
+/// The folder below `%SystemRoot%` that only an owning tool may clean (`DISM`), by name.
+const WINDOWS_TOOL_FOLDER: &str = "WinSxS";
+
 /// The protected places of one machine, as components.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Protected {
+    style: PathStyle,
     /// Neither these nor anything above them may be a target.
     not_or_above: Vec<Vec<Vec<u8>>>,
     /// Nothing at or below these may be a target.
     not_inside: Vec<Vec<Vec<u8>>>,
+    /// Folders inside a place that is otherwise closed, which the tool that owns them may clean, and
+    /// only that tool (never a plan of Platter's own, never anything inside them). The folders of
+    /// `shelters` are what they lie in.
+    tool_folders: Vec<Vec<Vec<u8>>>,
+    shelters: Vec<Vec<Vec<u8>>>,
     /// The same places by identity (device, inode), so another path to them (a bind mount of the home,
     /// a btrfs top level mounted elsewhere) is recognised too. `inside`: nothing at or below it; else only
     /// the place itself.
@@ -83,57 +131,133 @@ struct Identity {
     ino: u64,
     place: String,
     inside: bool,
+    /// The place is one the tool folders lie in (see [`Protected`]).
+    sheltering: bool,
 }
 
 impl Protected {
     /// The protected places for `env`. `None` without a known home directory: then personal folders
     /// cannot be told apart, and cleanup refuses everything.
     pub fn for_environment(env: &Environment) -> Option<Self> {
+        let style = PathStyle::for_os(env.os);
         let home = env.home.as_ref()?;
-        let home_bytes = home.as_os_str().as_encoded_bytes();
-        let home_parts = owned(home_bytes)?;
-        if home_parts.is_empty() {
+        let home_parts = style.owned(home.as_os_str().as_encoded_bytes())?;
+
+        // The top (`/`) is no home folder, and neither is a drive root.
+        let least = if style == PathStyle::Windows { 2 } else { 1 };
+        if home_parts.len() < least {
             return None;
         }
 
-        let mut not_or_above: Vec<Vec<Vec<u8>>> = vec![Vec::new(), home_parts.clone()];
-        let mut not_inside: Vec<Vec<Vec<u8>>> = Vec::new();
+        let mut protected = Self {
+            style,
+            not_or_above: vec![home_parts.clone()],
+            not_inside: Vec::new(),
+            tool_folders: Vec::new(),
+            shelters: Vec::new(),
+            identities: Vec::new(),
+        };
+        match style {
+            PathStyle::Posix => protected.add_posix_places(&home_parts),
+            PathStyle::Windows => protected.add_windows_places(env, &home_parts),
+        }
 
-        for folder in SYSTEM_FOLDERS {
-            not_or_above.extend(owned(folder.as_bytes()));
-        }
-        for folder in SYSTEM_INSIDE {
-            not_inside.extend(owned(folder.as_bytes()));
-        }
-        for folder in HOME_INSIDE {
-            let mut parts = home_parts.clone();
-            parts.extend(folder.split('/').map(|part| part.as_bytes().to_vec()));
-            not_inside.push(parts);
-        }
         for dir in UserDir::ALL {
-            if let Some(path) = env.user_dir(dir)
-                && let Some(parts) = owned(path.as_os_str().as_encoded_bytes())
-            {
-                not_or_above.push(parts.clone());
-                not_inside.push(parts);
+            if let Some(parts) = user_dir_parts(env, style, &home_parts, dir) {
+                protected.not_or_above.push(parts.clone());
+                protected.not_inside.push(parts);
             }
         }
 
         // The folders above the home and the personal folders, so that they are known by identity too
         // (a second path to `/data` must not reach the `/data/users/u` above a home).
-        let above: Vec<Vec<Vec<u8>>> = not_or_above
+        let mut above: Vec<Vec<Vec<u8>>> = protected
+            .not_or_above
             .iter()
             .flat_map(|place| (1..place.len()).map(|length| place[..length].to_vec()))
             .collect();
-        not_or_above.extend(above);
-        not_or_above.sort();
-        not_or_above.dedup();
+        // On Windows the folders above a place that is closed inside (`AppData`, `AppData\Local`,
+        // `AppData\Local\Microsoft`, `...\Google\Chrome`...) may not be targets either: moving one whole
+        // takes the closed place with it. On Linux they are left as they are (`~/.local` is no target of
+        // a rule, and a home folder's own list stays what it was).
+        if style == PathStyle::Windows {
+            above.extend(
+                protected
+                    .not_inside
+                    .iter()
+                    .flat_map(|place| (1..place.len()).map(|length| place[..length].to_vec())),
+            );
+        }
+        protected.not_or_above.extend(above);
+        protected.not_or_above.sort();
+        protected.not_or_above.dedup();
 
-        Some(Self {
-            not_or_above,
-            not_inside,
-            identities: Vec::new(),
-        })
+        Some(protected)
+    }
+
+    fn add_posix_places(&mut self, home_parts: &[Vec<u8>]) {
+        // The top itself: `/` has no components.
+        self.not_or_above.push(Vec::new());
+
+        for folder in SYSTEM_FOLDERS {
+            self.not_or_above.extend(self.style.owned(folder.as_bytes()));
+        }
+        for folder in SYSTEM_INSIDE {
+            self.not_inside.extend(self.style.owned(folder.as_bytes()));
+        }
+        for folder in HOME_INSIDE {
+            self.not_inside.push(below(home_parts, folder, '/'));
+        }
+    }
+
+    /// The Windows places: the system folder, the program folders, the data folders of programs and
+    /// users, the profile and what in it is the user's own, and the special folders of every drive.
+    fn add_windows_places(&mut self, env: &Environment, home_parts: &[Vec<u8>]) {
+        let style = self.style;
+        let drive_of_home = home_parts[0].clone();
+
+        // `%SystemRoot%` as the environment knows it. Without it the usual place on the home drive is
+        // protected, which errs toward protecting.
+        let system_root = env
+            .system_root
+            .as_ref()
+            .and_then(|root| style.owned(root.as_os_str().as_encoded_bytes()))
+            .filter(|root| root.len() >= 2)
+            .unwrap_or_else(|| vec![drive_of_home.clone(), b"Windows".to_vec()]);
+        let system_drive = system_root[0].clone();
+
+        self.not_or_above.push(system_root.clone());
+        self.not_inside.push(system_root.clone());
+        self.shelters.push(system_root.clone());
+        let mut tool = system_root.clone();
+        tool.push(WINDOWS_TOOL_FOLDER.as_bytes().to_vec());
+        self.tool_folders.push(tool);
+
+        for folder in WINDOWS_ROOT_FOLDERS {
+            self.not_or_above
+                .push(below(std::slice::from_ref(&system_drive), folder, '/'));
+        }
+        for folder in ["Program Files", "Program Files (x86)", "ProgramData"] {
+            self.not_inside
+                .push(below(std::slice::from_ref(&system_drive), folder, '/'));
+        }
+        for drive in [&system_drive, &drive_of_home] {
+            for folder in WINDOWS_DRIVE_INSIDE {
+                self.not_inside
+                    .push(below(std::slice::from_ref(drive), folder, '/'));
+            }
+            self.not_or_above
+                .push(below(std::slice::from_ref(drive), "$Recycle.Bin", '/'));
+            self.not_or_above.push(below(
+                std::slice::from_ref(drive),
+                "System Volume Information",
+                '/',
+            ));
+        }
+
+        for folder in WINDOWS_HOME_INSIDE {
+            self.not_inside.push(below(home_parts, folder, '/'));
+        }
     }
 
     /// [`Protected::for_environment`] with every place also looked up on the disk, so that another path to
@@ -161,6 +285,7 @@ impl Protected {
     /// it has run out), so a mount that does not answer cannot hold planning for one probe limit per
     /// place. A place not looked at in time is protected by its path alone.
     pub(crate) fn learn_identities(&mut self, probe: &impl EntryProbe, budget: Duration) {
+        let style = self.style;
         let places: Vec<(Vec<Vec<u8>>, bool)> = self
             .not_inside
             .iter()
@@ -168,16 +293,23 @@ impl Protected {
             .chain(self.not_or_above.iter().map(|place| (place.clone(), false)))
             .filter(|(place, _)| !place.is_empty())
             .collect();
-        let paths: Vec<Vec<u8>> = places.iter().map(|(place, _)| join_parts(place)).collect();
+        let paths: Vec<Vec<u8>> = places.iter().map(|(place, _)| style.join(place)).collect();
 
-        let looked = look_up(probe, &paths, budget);
+        let looked = look_up(probe, style, &paths, budget);
 
         let mut identities = Vec::new();
-        for (((_, inside), path), looked) in places.iter().zip(&paths).zip(looked) {
+        for (((place, inside), path), looked) in places.iter().zip(&paths).zip(looked) {
             let Looked { real, identity } = looked.unwrap_or_default();
 
             if let Some(real) = real {
                 if *inside {
+                    // On Windows the folders above a closed place may not be targets (see
+                    // `for_environment`). That holds where the place really is too: `AppData\Roaming`
+                    // behind a junction to `D:\Sync\Roaming` makes `D:\Sync` a folder that holds it.
+                    if style == PathStyle::Windows {
+                        self.not_or_above
+                            .extend((1..real.len()).map(|length| real[..length].to_vec()));
+                    }
                     self.not_inside.push(real);
                 } else {
                     self.not_or_above.push(real);
@@ -189,6 +321,11 @@ impl Protected {
                     ino,
                     place: String::from_utf8_lossy(path).into_owned(),
                     inside: *inside,
+                    sheltering: *inside
+                        && self
+                            .shelters
+                            .iter()
+                            .any(|shelter| self.same_place(shelter, place)),
                 });
             }
         }
@@ -196,11 +333,14 @@ impl Protected {
     }
 
     /// The protected place met on the way to a target, by identity: `way` is the identity of every
-    /// component from the top down, the target last.
-    pub(crate) fn hit_by_identity(&self, way: &[(u64, u64)]) -> Option<String> {
+    /// component from the top down, the target last. `by_tool_folder`: the target is a folder only its
+    /// owning tool may clean and is acted on by that tool (see [`Protected::is_tool_folder`]), so the
+    /// places it lies in do not count.
+    pub(crate) fn hit_by_identity(&self, way: &[(u64, u64)], by_tool_folder: bool) -> Option<String> {
         let target = way.last()?;
         self.identities
             .iter()
+            .filter(|known| !(by_tool_folder && known.sheltering))
             .find(|known| {
                 let id = (known.dev, known.ino);
                 if known.inside {
@@ -212,13 +352,25 @@ impl Protected {
             .map(|known| known.place.clone())
     }
 
+    /// Whether `target` is a folder that is closed to every plan but one by the tool that owns it (the
+    /// component store of Windows, cleaned by `DISM`). Only the folder itself: nothing inside it.
+    pub(crate) fn is_tool_folder<A: AsRef<[u8]>>(&self, target: &[A]) -> bool {
+        self.tool_folders
+            .iter()
+            .any(|folder| self.same_place(folder, target))
+    }
+
+    fn same_place<A: AsRef<[u8]>, B: AsRef<[u8]>>(&self, a: &[A], b: &[B]) -> bool {
+        a.len() == b.len() && self.style.is_within(a, b)
+    }
+
     /// The protected place the exact path `path_bytes` is, holds or lies inside, as a readable path; `None`
     /// when no protected place is hit. This looks at the path only; planning also compares identities.
     /// A path that is not plainly absolute (relative, or with `.`, `..` or an empty part) is refused too.
     pub fn refuses(&self, path_bytes: &[u8]) -> Option<String> {
-        match components(path_bytes) {
+        match self.style.components(path_bytes) {
             Some(parts) => self.hit(&parts),
-            None => Some(display(path_bytes)),
+            None => Some(crate::path::display(path_bytes)),
         }
     }
 
@@ -238,20 +390,214 @@ impl Protected {
             .map(|entry| (entry.meta.dev, entry.meta.ino))
             .collect();
 
-        self.hit_by_identity(&way)
+        self.hit_by_identity(&way, false)
     }
 
     /// The protected place `target` hits, if any, as a readable path.
     pub(crate) fn hit<A: AsRef<[u8]>>(&self, target: &[A]) -> Option<String> {
-        let above = self.not_or_above.iter().find(|place| is_within(place, target));
-        let inside = self.not_inside.iter().find(|place| is_within(target, place));
+        self.hit_for(target, false)
+    }
 
-        above.or(inside).map(|place| {
-            let names: Vec<String> = place
+    /// [`Protected::hit`] for a target that its owning tool cleans (`by_tool`): a folder that only a tool
+    /// may clean is let through then (see [`Protected::is_tool_folder`]).
+    pub(crate) fn hit_for<A: AsRef<[u8]>>(&self, target: &[A], by_tool: bool) -> Option<String> {
+        // A drive root, or something above one, is never a target.
+        if self.style == PathStyle::Windows && target.len() <= 1 {
+            let parts: Vec<Vec<u8>> = target.iter().map(|part| part.as_ref().to_vec()).collect();
+
+            return Some(self.style.show(&parts));
+        }
+
+        // The bin and the volume information of any drive, whichever drives this machine has.
+        if self.style == PathStyle::Windows
+            && let Some(name) = target.get(1)
+            && WINDOWS_DRIVE_INSIDE
                 .iter()
-                .map(|part| String::from_utf8_lossy(part).into_owned())
-                .collect();
-            format!("/{}", names.join("/"))
-        })
+                .any(|special| self.style.same_name(name.as_ref(), special.as_bytes()))
+        {
+            let parts: Vec<Vec<u8>> = target[..2].iter().map(|part| part.as_ref().to_vec()).collect();
+
+            return Some(self.style.show(&parts));
+        }
+
+        let sheltered = by_tool && self.is_tool_folder(target);
+        let above = self
+            .not_or_above
+            .iter()
+            .find(|place| self.style.is_within(place, target));
+        let inside = self.not_inside.iter().find(|place| {
+            self.style.is_within(target, place)
+                && !(sheltered
+                    && self
+                        .shelters
+                        .iter()
+                        .any(|shelter| self.same_place(shelter, place)))
+        });
+
+        above.or(inside).map(|place| self.style.show(place))
+    }
+}
+
+/// `names` (parts of a path, joined with `separator`) below the folder `base`.
+fn below(base: &[Vec<u8>], names: &str, separator: char) -> Vec<Vec<u8>> {
+    let mut parts = base.to_vec();
+    parts.extend(names.split(separator).map(|part| part.as_bytes().to_vec()));
+
+    parts
+}
+
+/// Where the personal folder `dir` is: as the environment says, else under its default name below the
+/// home folder. Joined by parts, so a Windows environment is read right on any OS.
+fn user_dir_parts(
+    env: &Environment,
+    style: PathStyle,
+    home_parts: &[Vec<u8>],
+    dir: UserDir,
+) -> Option<Vec<Vec<u8>>> {
+    if let Some((_, path)) = env.user_dirs.iter().find(|(kind, _)| *kind == dir) {
+        return style.owned(path.as_os_str().as_encoded_bytes());
+    }
+
+    let mut parts = home_parts.to_vec();
+    parts.push(dir.default_name().as_bytes().to_vec());
+
+    Some(parts)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::io;
+    use std::path::PathBuf;
+
+    use platter_core::{EntryKind, EntryMeta, Os, ProbedEntry};
+
+    use super::*;
+
+    const STYLE: PathStyle = PathStyle::Windows;
+
+    fn environment() -> Environment {
+        Environment {
+            home: Some(PathBuf::from("C:\\Users\\Me")),
+            user_dirs: Vec::new(),
+            now: 0,
+            os: Os::Windows,
+            system_root: Some(PathBuf::from("C:\\Windows")),
+        }
+    }
+
+    fn parts(path: &str) -> Vec<Vec<u8>> {
+        STYLE.owned(path.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn only_the_tool_that_owns_the_component_store_may_clean_it_and_nothing_inside() {
+        let protected = Protected::for_environment(&environment()).unwrap();
+
+        let store = parts("C:\\Windows\\WinSxS");
+        assert!(protected.hit_for(&store, false).is_some());
+        assert!(protected.hit_for(&store, true).is_none());
+        assert!(protected.hit_for(&parts("c:\\WINDOWS\\winsxs"), true).is_none());
+
+        for other in [
+            "C:\\Windows\\WinSxS\\amd64_x",
+            "C:\\Windows\\System32",
+            "C:\\Windows",
+            "C:\\Windows\\Installer",
+            "C:\\Program Files",
+        ] {
+            assert!(protected.hit_for(&parts(other), true).is_some(), "{other}");
+        }
+    }
+
+    /// A disk that is a table of paths and what each component is: (device, inode).
+    struct Disk(HashMap<Vec<u8>, Vec<(u64, u64)>>);
+
+    impl EntryProbe for Disk {
+        fn probe(&self, path: &[u8]) -> io::Result<Vec<ProbedEntry>> {
+            let way = self.0.get(path).ok_or(io::ErrorKind::NotFound)?;
+
+            Ok(way
+                .iter()
+                .map(|(dev, ino)| ProbedEntry {
+                    meta: EntryMeta {
+                        kind: EntryKind::Dir,
+                        allocated: 0,
+                        apparent: 0,
+                        mtime: 0,
+                        dev: *dev,
+                        ino: *ino,
+                        nlink: 1,
+                        is_mount_root: false,
+                    },
+                    mount_id: None,
+                    birth: None,
+                })
+                .collect())
+        }
+    }
+
+    #[test]
+    fn a_short_name_for_a_protected_folder_is_caught_by_its_identity() {
+        let disk = Disk(HashMap::from([
+            (b"C:\\Program Files".to_vec(), vec![(1, 1), (1, 50)]),
+            (b"C:\\PROGRA~1\\App".to_vec(), vec![(1, 1), (1, 50), (1, 60)]),
+            (
+                b"C:\\Users\\Me\\code".to_vec(),
+                vec![(1, 1), (1, 2), (1, 3), (1, 70)],
+            ),
+        ]));
+        let protected = Protected::on_disk(&environment(), &disk).unwrap();
+
+        // The spelling gives nothing away, the folder it leads through does.
+        assert_eq!(protected.refuses(b"C:\\PROGRA~1\\App"), None);
+        assert_eq!(
+            protected.refuses_on_disk(&disk, b"C:\\PROGRA~1\\App").as_deref(),
+            Some("C:\\Program Files")
+        );
+        assert_eq!(protected.refuses_on_disk(&disk, b"C:\\Users\\Me\\code"), None);
+    }
+
+    /// A disk on which some places are reached through a junction: `resolve` gives where they really are.
+    struct Linked(Disk, HashMap<Vec<u8>, Vec<u8>>);
+
+    impl EntryProbe for Linked {
+        fn probe(&self, path: &[u8]) -> io::Result<Vec<ProbedEntry>> {
+            self.0.probe(path)
+        }
+
+        fn resolve(&self, path: &[u8]) -> io::Result<Vec<u8>> {
+            Ok(self.1.get(path).cloned().unwrap_or_else(|| path.to_vec()))
+        }
+    }
+
+    #[test]
+    fn the_folders_above_a_closed_place_behind_a_junction_are_refused_where_it_really_is() {
+        let roaming = b"C:\\Users\\Me\\AppData\\Roaming".to_vec();
+        let disk = Linked(
+            Disk(HashMap::from([(
+                roaming.clone(),
+                vec![(1, 1), (1, 2), (1, 3), (1, 4), (2, 90)],
+            )])),
+            HashMap::from([(roaming, b"D:\\Sync\\Roaming".to_vec())]),
+        );
+        let protected = Protected::on_disk(&environment(), &disk).unwrap();
+
+        assert!(protected.refuses(b"D:\\Sync").is_some());
+        assert!(protected.refuses(b"D:\\Sync\\Roaming\\x").is_some());
+        assert_eq!(protected.refuses(b"D:\\Other"), None);
+    }
+
+    #[test]
+    fn a_folder_that_only_a_tool_may_clean_is_not_caught_by_the_identity_of_the_folder_it_lies_in() {
+        let disk = Disk(HashMap::from([
+            (b"C:\\Windows".to_vec(), vec![(1, 1), (1, 40)]),
+            (b"C:\\Windows\\WinSxS".to_vec(), vec![(1, 1), (1, 40), (1, 41)]),
+        ]));
+        let protected = Protected::on_disk(&environment(), &disk).unwrap();
+        let way = [(1, 1), (1, 40), (1, 41)];
+
+        assert!(protected.hit_by_identity(&way, false).is_some());
+        assert!(protected.hit_by_identity(&way, true).is_none());
     }
 }

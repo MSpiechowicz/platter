@@ -8,8 +8,16 @@ pub fn physical_cores() -> Option<usize> {
     parse_physical_cores(&std::fs::read_to_string("/proc/cpuinfo").ok()?)
 }
 
+/// Physical cores (not hardware threads), from the system through `sysinfo`.
+#[cfg(windows)]
+pub fn physical_cores() -> Option<usize> {
+    sysinfo::System::physical_core_count()
+        .ok()
+        .filter(|&cores| cores > 0)
+}
+
 /// Physical cores. Not known on this system.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn physical_cores() -> Option<usize> {
     None
 }
@@ -65,5 +73,13 @@ mod tests {
             None
         );
         assert_eq!(parse_physical_cores(""), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_cores_of_this_machine_are_known() {
+        let cores = physical_cores().expect("the system reports its cores");
+
+        assert!(cores >= 1, "{cores}");
     }
 }

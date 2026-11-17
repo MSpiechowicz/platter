@@ -11,8 +11,9 @@ use platter_core::DEFAULT_MAX_MEMORY_BYTES;
 /// The memory budget of a scan: half of the memory that is available, so the other half stays for the
 /// rest of the system and for the short-lived peak while the finished tree is assembled. There is no
 /// floor: with little free memory the budget is small and only a small folder fits, and the scan's
-/// `TooLarge` message says that is why. On Linux the memory comes from `MemAvailable` in `/proc/meminfo`.
-/// Where it cannot be read, and on other systems, this is the core default.
+/// `TooLarge` message says that is why. On Linux the memory comes from `MemAvailable` in `/proc/meminfo`,
+/// on Windows from the system (through `sysinfo`). Where it cannot be read, and on other systems, this is
+/// the core default.
 pub fn suggested_memory_budget() -> u64 {
     available_memory_bytes().map_or(DEFAULT_MAX_MEMORY_BYTES, memory_budget_for)
 }
@@ -29,8 +30,14 @@ pub fn available_memory_bytes() -> Option<u64> {
     parse_mem_available(&std::fs::read_to_string("/proc/meminfo").ok()?)
 }
 
+/// Memory the system can give to a program now without swapping (`sysinfo`'s available memory).
+#[cfg(windows)]
+pub fn available_memory_bytes() -> Option<u64> {
+    memory_system().map(|system| system.available_memory())
+}
+
 /// Memory the system can give to a program now without swapping. `None` on this system.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn available_memory_bytes() -> Option<u64> {
     None
 }
@@ -41,8 +48,14 @@ pub fn total_memory_bytes() -> Option<u64> {
     parse_mem_total(&std::fs::read_to_string("/proc/meminfo").ok()?)
 }
 
+/// All memory of the machine.
+#[cfg(windows)]
+pub fn total_memory_bytes() -> Option<u64> {
+    memory_system().map(|system| system.total_memory())
+}
+
 /// All memory of the machine. `None` on this system.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn total_memory_bytes() -> Option<u64> {
     None
 }
@@ -56,8 +69,14 @@ pub fn resident_bytes() -> Option<u64> {
     parse_resident(&std::fs::read_to_string("/proc/self/statm").ok()?, page)
 }
 
+/// Memory this process holds in RAM right now (its working set).
+#[cfg(windows)]
+pub fn resident_bytes() -> Option<u64> {
+    resident_bytes_of(std::process::id())
+}
+
 /// Memory this process holds in RAM right now. `None` on this system.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn resident_bytes() -> Option<u64> {
     None
 }
@@ -71,11 +90,39 @@ pub fn resident_bytes_of(pid: u32) -> Option<u64> {
     parse_resident(&std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?, page)
 }
 
+/// Memory the process `pid` holds in RAM right now (its working set). `None` for a process that is gone
+/// or that this one may not look at.
+#[cfg(windows)]
+pub fn resident_bytes_of(pid: u32) -> Option<u64> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new().ok()?;
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().with_memory(),
+    );
+
+    system.process(pid).map(|process| process.memory())
+}
+
 /// Memory the process `pid` holds in RAM right now. `None` on this system.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn resident_bytes_of(pid: u32) -> Option<u64> {
     let _ = pid;
     None
+}
+
+/// The memory of the machine as `sysinfo` reads it now.
+#[cfg(windows)]
+fn memory_system() -> Option<sysinfo::System> {
+    use sysinfo::{MemoryRefreshKind, System};
+
+    let mut system = System::new().ok()?;
+    system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
+
+    Some(system)
 }
 
 /// The `MemAvailable` line of `/proc/meminfo` (`MemAvailable:   12345678 kB`) in bytes.
@@ -174,7 +221,7 @@ mod tests {
         assert_eq!(parse_mem_total("MemAvailable: 1 kB\n"), None);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn this_process_and_machine_report_memory() {
         let resident = resident_bytes().unwrap();
@@ -197,5 +244,28 @@ mod tests {
         // Memory moves between the two reads; the budget is half of something close to `available`.
         assert!(suggested_memory_budget() <= available);
         assert!(suggested_memory_budget() > 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn this_machine_gets_a_budget_below_what_it_has_on_windows() {
+        let total = total_memory_bytes().unwrap();
+
+        // Half of what is available, so never more than half of the machine's memory.
+        assert!(suggested_memory_budget() > 0);
+        assert!(suggested_memory_budget() <= total / 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_process_that_is_gone_has_no_resident_memory() {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "exit"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+
+        assert_eq!(resident_bytes_of(pid), None);
     }
 }

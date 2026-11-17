@@ -13,7 +13,7 @@ vi.mock('./api/mock-advisor', () => ({
   setMockAdvisorState: (value: string) => state.calls.push(`mock:${value}`),
 }));
 
-async function boot(hooks: Record<string, unknown>) {
+async function boot(hooks: Record<string, unknown>, os?: 'windows') {
   vi.resetModules();
   vi.doMock('./hooks', () => ({
     hooks: {
@@ -29,6 +29,8 @@ async function boot(hooks: Record<string, unknown>) {
   }));
 
   const { advisor } = await import('./state/advisor.svelte');
+  const { platform } = await import('./state/platform.svelte');
+  const { scan } = await import('./state/scan.svelte');
   const { settings } = await import('./state/settings.svelte');
   const { updater } = await import('./state/update.svelte');
   const { bootstrap } = await import('./bootstrap');
@@ -41,11 +43,17 @@ async function boot(hooks: Record<string, unknown>) {
   });
   vi.spyOn(advisor, 'watch').mockImplementation(async () => {
     state.calls.push('watch');
+
+    if (os) {
+      advisor.status = { os } as typeof advisor.status;
+    }
   });
+
+  const startScan = vi.spyOn(scan, 'start').mockResolvedValue();
 
   await bootstrap();
 
-  return { advisor, settings, check, start };
+  return { advisor, settings, check, start, platform, startScan };
 }
 
 describe('bootstrap: the advisor', () => {
@@ -86,6 +94,28 @@ describe('bootstrap: the advisor', () => {
     expect(settings.advisorEnabled).toBe(true);
     expect(state.calls).toEqual(['configure:true', 'mock:loaded', 'watch']);
     expect(localStorage.getItem('platter.settings')).toBeNull();
+  });
+});
+
+describe('bootstrap: the system', () => {
+  beforeEach(() => {
+    state.calls = [];
+    localStorage.clear();
+  });
+
+  it('takes the system from the advisor status, Linux without one', async () => {
+    expect((await boot({})).platform.os).toBe('linux');
+    expect((await boot({}, 'windows')).platform.os).toBe('windows');
+  });
+
+  it('scans the drive root of Windows when there is no volume and no root in the URL', async () => {
+    const windows = await boot({ view: 'overview' }, 'windows');
+
+    expect(windows.startScan).toHaveBeenCalledWith(expect.objectContaining({ root: 'C:\\' }));
+
+    const linux = await boot({ view: 'overview' });
+
+    expect(linux.startScan).toHaveBeenCalledWith(expect.objectContaining({ root: '/' }));
   });
 });
 

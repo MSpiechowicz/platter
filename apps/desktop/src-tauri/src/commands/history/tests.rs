@@ -1,5 +1,12 @@
+// These tests build the Linux layout (a home with `/` paths, the freedesktop trash, symbolic links), so the
+// tests themselves run on Unix; what is Windows-specific is tested in `cleanup/wording.rs`, in `platter-cleanup` and in
+// `platter-platform` (the Recycle Bin, on Windows only).
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
+
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -51,6 +58,7 @@ fn report(freed: Option<i128>) -> CleanupReport {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_that_touched_nothing_is_not_recorded() {
     let results = [
@@ -68,6 +76,7 @@ fn a_run_that_touched_nothing_is_not_recorded() {
     assert_eq!(described, None);
 }
 
+#[cfg(unix)]
 #[test]
 fn what_was_freed_is_the_measured_space_floored_at_zero_else_what_the_scan_counted() {
     let groups = [("rust-target", CleanupAction::Delete)];
@@ -84,6 +93,7 @@ fn what_was_freed_is_the_measured_space_floored_at_zero_else_what_the_scan_count
     assert_eq!(panicked.freed, 500);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_that_only_trashed_frees_nothing_but_records_what_it_moved() {
     let groups = [("old-downloads", CleanupAction::Trash)];
@@ -107,6 +117,48 @@ fn a_run_that_only_trashed_frees_nothing_but_records_what_it_moved() {
     assert_eq!(described.what, ["Old downloads"]);
 }
 
+#[test]
+fn an_entry_that_is_gone_without_a_restorable_item_is_recorded_as_deleted_never_as_trashed() {
+    let groups = [("win-temp", CleanupAction::TrashChildren)];
+    let only_lost = [result(
+        "win-temp",
+        "C:\\Users\\u\\AppData\\Local\\Temp\\huge.bin",
+        900,
+        TargetOutcome::NotRecycled("it is gone but not in the Recycle Bin".to_owned()),
+    )];
+
+    let described = describe_run(&groups, &only_lost, None, 1).unwrap();
+
+    assert!(described.items.is_empty(), "there is nothing to put back");
+    assert_eq!(described.trashed, 0);
+    assert_eq!(
+        described
+            .methods
+            .iter()
+            .map(|method| method.kind)
+            .collect::<Vec<_>>(),
+        [MethodKind::Deleted]
+    );
+
+    // Beside a child that did reach the Recycle Bin, both are told, and only that child can be restored.
+    let mixed = [
+        trashed_result("win-temp", "C:\\Users\\u\\AppData\\Local\\Temp\\a.tmp", 100),
+        only_lost[0].clone(),
+    ];
+    let described = describe_run(&groups, &mixed, None, 1).unwrap();
+
+    assert_eq!(described.items.len(), 1);
+    assert_eq!(
+        described
+            .methods
+            .iter()
+            .map(|method| method.kind)
+            .collect::<Vec<_>>(),
+        [MethodKind::Trash, MethodKind::Deleted]
+    );
+}
+
+#[cfg(unix)]
 #[test]
 fn a_run_lists_each_group_that_did_something_once() {
     let groups = [
@@ -143,6 +195,7 @@ fn a_run_lists_each_group_that_did_something_once() {
     assert_eq!((described.at, described.freed, described.trashed), (7, 50, 20));
 }
 
+#[cfg(unix)]
 #[test]
 fn marked_items_are_named_by_their_folder_names_and_the_rest_counted() {
     let paths: Vec<String> = (1..=8)
@@ -168,6 +221,7 @@ fn two_disks() -> FixedVolumes {
     ])
 }
 
+#[cfg(unix)]
 #[test]
 fn a_path_belongs_to_the_disk_with_the_longest_mount_point_holding_it() {
     let history = HistoryService::in_memory(two_disks());
@@ -189,6 +243,7 @@ fn a_path_belongs_to_the_disk_with_the_longest_mount_point_holding_it() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_finished_scan_records_its_disk_and_the_first_usage_of_the_day() {
     let state = AppState::for_test();
@@ -213,6 +268,7 @@ fn a_finished_scan_records_its_disk_and_the_first_usage_of_the_day() {
     assert!(overview.growth_per_day.is_none() && overview.days_until_full.is_none());
 }
 
+#[cfg(unix)]
 #[test]
 fn the_sampler_samples_the_stored_disks_that_are_mounted_and_keeps_the_first_of_the_day() {
     let state = AppState::for_test();
@@ -241,6 +297,7 @@ fn scanned_totals() -> Totals {
     Totals::default()
 }
 
+#[cfg(unix)]
 #[test]
 fn days_outside_one_to_366_are_refused() {
     let state = AppState::for_test();
@@ -253,6 +310,7 @@ fn days_outside_one_to_366_are_refused() {
     assert!(tauri::async_runtime::block_on(overview(&state, 366)).is_ok());
 }
 
+#[cfg(unix)]
 #[test]
 fn an_empty_history_is_an_overview_with_nothing_in_it() {
     let state = AppState::for_test();
@@ -270,6 +328,7 @@ fn an_empty_history_is_an_overview_with_nothing_in_it() {
 
 // ---- Cleanups recorded by the worker ----
 
+#[cfg(unix)]
 #[test]
 fn a_cleanup_that_deleted_something_is_recorded_when_it_ends() {
     let state = AppState::for_test();
@@ -299,6 +358,7 @@ fn a_cleanup_that_deleted_something_is_recorded_when_it_ends() {
     assert_eq!(wire["methods"][0], serde_json::json!({ "kind": "deleted" }));
 }
 
+#[cfg(unix)]
 #[test]
 fn a_history_that_cannot_be_used_stops_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -328,6 +388,7 @@ fn a_history_that_cannot_be_used_stops_nothing() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn the_history_file_is_private_and_a_link_at_its_name_is_not_followed() {
     let dir = tempfile::tempdir().unwrap();
@@ -453,6 +514,7 @@ fn overview_now(state: &AppState) -> HistoryOverviewDto {
     tauri::async_runtime::block_on(overview(state, 30)).unwrap()
 }
 
+#[cfg(unix)]
 #[test]
 fn a_cleanup_that_trashed_is_in_the_trash_until_it_is_restored() {
     let state = approving();
@@ -491,6 +553,7 @@ fn a_cleanup_that_trashed_is_in_the_trash_until_it_is_restored() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn an_item_is_restored_once_and_what_came_back_is_not_offered_again() {
     let state = approving();
@@ -542,6 +605,7 @@ fn an_item_is_restored_once_and_what_came_back_is_not_offered_again() {
     assert_eq!(again.restored, 0);
 }
 
+#[cfg(unix)]
 #[test]
 fn restoring_an_unknown_cleanup_is_not_found() {
     let state = AppState::for_test();
@@ -551,6 +615,7 @@ fn restoring_an_unknown_cleanup_is_not_found() {
     assert_eq!(error.code(), ApiErrorCode::NotFound);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_restore_from_the_history_takes_the_run_away_from_undo() {
     let state = approving();
@@ -564,6 +629,7 @@ fn a_restore_from_the_history_takes_the_run_away_from_undo() {
     assert!(trashed.home.join("a.iso").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn what_a_restore_could_not_put_back_stays_for_undo() {
     let state = approving();
@@ -584,6 +650,7 @@ fn what_a_restore_could_not_put_back_stays_for_undo() {
     assert!(trashed.home.join("a.iso").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn an_undo_marks_what_it_put_back_so_the_history_does_not_restore_it_again() {
     let state = approving();
@@ -602,6 +669,7 @@ fn an_undo_marks_what_it_put_back_so_the_history_does_not_restore_it_again() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn nothing_is_put_back_while_a_cleanup_runs_or_something_else_is_being_put_back() {
     let state = approving();
@@ -635,6 +703,7 @@ fn nothing_is_put_back_while_a_cleanup_runs_or_something_else_is_being_put_back(
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_cleanup_does_not_start_while_things_are_being_put_back() {
     let state = AppState::for_test();
@@ -661,6 +730,7 @@ fn a_cleanup_does_not_start_while_things_are_being_put_back() {
 
 // ---- Asking first ----
 
+#[cfg(unix)]
 #[test]
 fn the_dialog_lists_the_places_that_go_back_with_a_count_and_the_size() {
     let dialog = Dialog::answering(true);
@@ -693,6 +763,7 @@ fn the_dialog_lists_the_places_that_go_back_with_a_count_and_the_size() {
     assert!(!question.text.contains(';'), "{}", question.text);
 }
 
+#[cfg(unix)]
 #[test]
 fn an_undo_asks_the_same_question_and_goes_ahead_when_approved() {
     let dialog = Dialog::answering(true);
@@ -720,6 +791,7 @@ fn an_undo_asks_the_same_question_and_goes_ahead_when_approved() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_declined_undo_moves_nothing_and_leaves_the_run_to_undo_and_to_the_history() {
     let dialog = Dialog::answering(false);
@@ -742,6 +814,7 @@ fn a_declined_undo_moves_nothing_and_leaves_the_run_to_undo_and_to_the_history()
     assert_eq!(id, overview_now(&state).cleanups[0].id);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_declined_restore_from_the_history_moves_nothing_and_leaves_undo_and_the_run_as_they_were() {
     let dialog = Dialog::answering(false);
@@ -774,6 +847,7 @@ fn a_declined_restore_from_the_history_moves_nothing_and_leaves_undo_and_the_run
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_request_that_is_refused_shows_no_dialog() {
     let dialog = Dialog::answering(true);
@@ -795,6 +869,7 @@ fn a_request_that_is_refused_shows_no_dialog() {
     assert!(dialog.asked().is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_that_cannot_be_put_back_any_more_when_the_dialog_closes_moves_nothing() {
     let dialog = Dialog::answering(true);
@@ -825,6 +900,7 @@ fn a_run_that_cannot_be_put_back_any_more_when_the_dialog_closes_moves_nothing()
     assert!(!state.history.is_restoring(), "the slot is free");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_whose_paths_change_under_the_same_ids_while_the_dialog_is_open_moves_nothing() {
     let dialog = Dialog::answering(true);
@@ -874,6 +950,7 @@ fn refused_after_a_change_while_the_dialog_is_open(tamper: fn(&Path)) {
     assert!(!state.history.is_restoring(), "the slot is free");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_restore_whose_trash_paths_change_while_the_dialog_is_open_moves_nothing() {
     refused_after_a_change_while_the_dialog_is_open(|file| {
@@ -881,21 +958,25 @@ fn a_restore_whose_trash_paths_change_while_the_dialog_is_open_moves_nothing() {
     });
 }
 
+#[cfg(unix)]
 #[test]
 fn a_restore_whose_identities_change_while_the_dialog_is_open_moves_nothing() {
     refused_after_a_change_while_the_dialog_is_open(platter_history::testing::change_identities);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_restore_with_fewer_entries_when_the_dialog_closes_moves_nothing() {
     refused_after_a_change_while_the_dialog_is_open(platter_history::testing::drop_first_entry);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_restore_with_more_entries_when_the_dialog_closes_moves_nothing() {
     refused_after_a_change_while_the_dialog_is_open(platter_history::testing::duplicate_entries);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_that_empties_the_trash_while_a_restore_dialog_is_open_makes_the_restore_refuse() {
     let (state, dialog, _dir, file, trashed, id) = asked_on_file();
@@ -946,6 +1027,7 @@ fn on_file() -> (AppState, tempfile::TempDir, PathBuf) {
     (state, dir, file)
 }
 
+#[cfg(unix)]
 fn trash_folder_of(trashed: &Trashed) -> Vec<u8> {
     let TargetOutcome::Trashed(to) = &trashed.results[0].outcome else {
         unreachable!()
@@ -955,6 +1037,7 @@ fn trash_folder_of(trashed: &Trashed) -> Vec<u8> {
     files.parent().unwrap().as_os_str().as_encoded_bytes().to_vec()
 }
 
+#[cfg(unix)]
 #[test]
 fn an_item_that_was_put_back_keeps_no_path_in_the_file() {
     let (state, _dir, file) = on_file();
@@ -975,6 +1058,7 @@ fn an_item_that_was_put_back_keeps_no_path_in_the_file() {
     assert_eq!(overview_now(&state).cleanups[0].status, Status::Restored);
 }
 
+#[cfg(unix)]
 #[test]
 fn an_item_found_gone_keeps_no_path_and_the_overview_says_the_same_as_before() {
     let (state, _dir, file) = on_file();
@@ -1000,6 +1084,7 @@ fn an_item_found_gone_keeps_no_path_and_the_overview_says_the_same_as_before() {
     assert_eq!(first, second, "what is shown does not change");
 }
 
+#[cfg(unix)]
 #[test]
 fn an_item_whose_trash_is_out_of_reach_keeps_its_paths_and_one_whose_trash_is_there_loses_them() {
     let (state, _dir, file) = on_file();
@@ -1030,6 +1115,7 @@ fn an_item_whose_trash_is_out_of_reach_keeps_its_paths_and_one_whose_trash_is_th
     assert_eq!(platter_history::testing::entries_with_paths(&file), 1);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_whose_items_are_all_gone_stays_no_longer_in_the_trash_without_any_path() {
     let (state, _dir, file) = on_file();
@@ -1056,6 +1142,7 @@ fn a_run_whose_items_are_all_gone_stays_no_longer_in_the_trash_without_any_path(
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn an_overview_does_not_forget_the_paths_while_something_is_being_put_back() {
     let (state, _dir, file) = on_file();
@@ -1080,6 +1167,7 @@ fn an_overview_does_not_forget_the_paths_while_something_is_being_put_back() {
     assert_eq!(platter_history::testing::entries_with_paths(&file), 0);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_that_emptied_the_trash_makes_the_history_forget_the_paths_of_what_was_in_it() {
     let (state, _dir, file) = on_file();
@@ -1126,6 +1214,7 @@ fn a_run_that_emptied_the_trash_makes_the_history_forget_the_paths_of_what_was_i
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_that_left_something_in_the_trash_does_not_make_the_history_forget_anything() {
     let trashed_run = |outcome| {
@@ -1170,6 +1259,7 @@ fn recorded_at(state: &AppState, home: &Path, trashed: &Trashed, back: i64) -> i
         .expect("recorded")
 }
 
+#[cfg(unix)]
 #[test]
 fn only_a_run_the_latest_overview_showed_can_be_put_back() {
     let state = approving();
@@ -1191,6 +1281,7 @@ fn only_a_run_the_latest_overview_showed_can_be_put_back() {
     assert!(!other.home.join("b.iso").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_older_than_the_window_is_not_shown_and_cannot_be_put_back() {
     let state = AppState::for_test();
@@ -1205,6 +1296,7 @@ fn a_run_older_than_the_window_is_not_shown_and_cannot_be_put_back() {
     assert!(!trashed.home.join("a.iso").exists(), "nothing was put back");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_on_another_volume_than_the_one_shown_cannot_be_put_back() {
     let mut state = AppState::for_test();
@@ -1227,6 +1319,7 @@ fn a_run_on_another_volume_than_the_one_shown_cannot_be_put_back() {
     assert!(!trashed.home.join("a.iso").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_with_nothing_left_to_put_back_is_refused() {
     let state = approving();
@@ -1250,6 +1343,7 @@ impl VolumeProvider for Broken {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn a_history_that_panics_stops_neither_a_scan_nor_a_cleanup() {
     let mut state = AppState::for_test();
@@ -1270,6 +1364,7 @@ fn a_history_that_panics_stops_neither_a_scan_nor_a_cleanup() {
     state.history.record_scan(&root, &Totals::default());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_run_is_kept_for_undo_and_the_history_before_the_ui_hears_it_ended() {
     let state = AppState::for_test();
@@ -1288,6 +1383,7 @@ fn a_run_is_kept_for_undo_and_the_history_before_the_ui_hears_it_ended() {
 
 // ---- Overviews, one at a time ----
 
+#[cfg(unix)]
 #[test]
 fn one_overview_reads_and_one_waits_and_a_third_is_refused() {
     let state = AppState::for_test();
@@ -1314,6 +1410,7 @@ impl EntryProbe for Counting {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn an_overview_of_a_huge_run_looks_at_a_bounded_number_of_entries_and_says_it_did_not_check() {
     let history = HistoryService::in_memory(FixedVolumes::root());
@@ -1347,6 +1444,7 @@ fn an_overview_of_a_huge_run_looks_at_a_bounded_number_of_entries_and_says_it_di
 
 // ---- A file that was locked ----
 
+#[cfg(unix)]
 #[test]
 fn a_file_another_program_locked_is_used_once_it_is_free_and_a_damaged_one_is_not_tried_again() {
     let dir = tempfile::tempdir().unwrap();
@@ -1390,6 +1488,7 @@ fn a_file_another_program_locked_is_used_once_it_is_free_and_a_damaged_one_is_no
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_history_file_swapped_for_another_between_the_check_and_sqlite_opening_it_is_not_used() {
     let dir = tempfile::tempdir().unwrap();
@@ -1410,6 +1509,7 @@ fn a_history_file_swapped_for_another_between_the_check_and_sqlite_opening_it_is
     assert!(open_in_with(Some(dir.path()), |_| {}).is_ok());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_history_file_that_was_open_to_others_is_closed() {
     let dir = tempfile::tempdir().unwrap();
@@ -1424,4 +1524,22 @@ fn a_history_file_that_was_open_to_others_is_closed() {
     assert_eq!(history.problem(), None);
     let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
     assert_eq!((mode(&file), mode(&place)), (0o600, 0o700));
+}
+
+/// What runs on every system: what is read out of a path or an action, without a disk.
+#[test]
+fn a_name_is_the_last_part_of_a_path_of_either_syntax() {
+    assert_eq!(name_of("/home/u/Projekty/app"), "app");
+    assert_eq!(name_of("/home/u/Projekty/app/"), "app");
+    assert_eq!(name_of("C:\\Users\\u\\Projekty\\app"), "app");
+    assert_eq!(name_of("C:\\Users\\u\\Projekty\\app\\"), "app");
+    // A backslash in a Posix name is part of the name.
+    assert_eq!(name_of("/home/u/a\\b"), "a\\b");
+}
+
+#[test]
+fn emptying_a_folder_into_the_bin_is_recorded_as_a_move_to_the_trash() {
+    assert_eq!(method_of(CleanupAction::TrashChildren).kind, MethodKind::Trash);
+    assert_eq!(method_of(CleanupAction::Trash).kind, MethodKind::Trash);
+    assert_eq!(method_of(CleanupAction::EmptyFolder).kind, MethodKind::Deleted);
 }

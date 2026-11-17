@@ -21,6 +21,16 @@ sysinfo.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { workspace = true, features = ["process", "param"] }
 
+# The Windows reader, probe, remover and tools (packages W1 to W3). Safe wrappers only: `unsafe` is forbidden.
+[target.'cfg(windows)'.dependencies]
+winapi-util.workspace = true
+dunce.workspace = true
+trash.workspace = true
+runas.workspace = true
+win32job.workspace = true
+known-folders.workspace = true
+jiff.workspace = true
+
 [dev-dependencies]
 # The integration tests use the crate's own `testing` helpers; this turns the feature on for them.
 platter-platform = { workspace = true, features = ["testing"] }

@@ -15,6 +15,7 @@ fn env_with(home: Option<&str>) -> Environment {
         user_dirs: Vec::new(),
         now: NOW,
         os: Os::Linux,
+        system_root: None,
     }
 }
 

@@ -4,6 +4,7 @@
   import Dropdown from '../../components/ui/Dropdown.svelte';
   import Field from '../../components/ui/Field.svelte';
   import Toggle from '../../components/ui/Toggle.svelte';
+  import { platform } from '../../state/platform.svelte';
   import { settings } from '../../state/settings.svelte';
   import { ui } from '../../state/ui.svelte';
 
@@ -19,22 +20,25 @@
 </script>
 
 <Card title="Cleanup">
-  <Field
-    label="Keep package versions"
-    description="How many old versions of each package stay in the pacman cache. Other package managers clear their whole cache."
-  >
-    {#snippet control()}
-      <Dropdown
-        options={KEEP_OPTIONS}
-        value={settings.keepPackageVersions}
-        label="Keep package versions"
-        onchange={(value) => {
-          settings.set('keepPackageVersions', value);
-          saved();
-        }}
-      />
-    {/snippet}
-  </Field>
+  <!-- Pacman is a Linux tool: the row has nothing to set on Windows. -->
+  {#if !platform.isWindows}
+    <Field
+      label="Keep package versions"
+      description="How many old versions of each package stay in the pacman cache. Other package managers clear their whole cache."
+    >
+      {#snippet control()}
+        <Dropdown
+          options={KEEP_OPTIONS}
+          value={settings.keepPackageVersions}
+          label="Keep package versions"
+          onchange={(value) => {
+            settings.set('keepPackageVersions', value);
+            saved();
+          }}
+        />
+      {/snippet}
+    </Field>
+  {/if}
 
   <Field
     label="Ask for administrator rights when needed"

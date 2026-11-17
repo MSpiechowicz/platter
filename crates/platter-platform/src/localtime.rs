@@ -5,6 +5,12 @@
 //! The transitions in the file decide; after the last one (compact files stop early) the POSIX rule in
 //! the file's footer decides, for the usual `Mm.w.d` form (`CET-1CEST,M3.5.0,M10.5.0/3`). Anything that
 //! cannot be read gives UTC.
+//!
+//! On Windows there are no such files: the offset comes from the system's time zone, read through `jiff`
+//! (the zone Windows is set to, with its rules). The TZif reader below is then not used, and still builds
+//! and is tested there.
+
+#![cfg_attr(windows, allow(dead_code))]
 
 use std::path::{Component, Path, PathBuf};
 
@@ -13,6 +19,15 @@ const ZONEINFO: &str = "/usr/share/zoneinfo";
 const MAX_TZIF_BYTES: u64 = 1 << 20;
 
 /// Seconds to add to UTC to get local time at `at` (unix seconds). 0 when unknown.
+#[cfg(windows)]
+pub fn local_offset(at: i64) -> i64 {
+    jiff::Timestamp::from_second(at)
+        .map(|timestamp| i64::from(jiff::tz::TimeZone::system().to_offset(timestamp).seconds()))
+        .unwrap_or(0)
+}
+
+/// Seconds to add to UTC to get local time at `at` (unix seconds). 0 when unknown.
+#[cfg(not(windows))]
 pub fn local_offset(at: i64) -> i64 {
     let from_file = zone_file()
         .and_then(|path| read_capped(&path))
@@ -404,5 +419,31 @@ mod tests {
     fn garbage_is_not_a_zone() {
         assert_eq!(offset_from_tzif(b"not a zone file", SUMMER), None);
         assert_eq!(offset_from_tzif(b"TZif2", SUMMER), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_offset_is_the_systems_zone_and_the_day_it_makes_is_the_local_one() {
+        for at in [SUMMER, WINTER] {
+            let offset = local_offset(at);
+
+            // Every zone in use is within -12 h and +14 h, in whole quarter hours.
+            assert!((-12 * 3600..=14 * 3600).contains(&offset), "{offset}");
+            assert_eq!(offset % 900, 0, "{offset}");
+
+            // The local day and time are what the system's zone says for that moment.
+            let local = jiff::tz::TimeZone::system().to_datetime(jiff::Timestamp::from_second(at).unwrap());
+            assert_eq!(
+                local_timestamp(at),
+                local.strftime("%Y-%m-%dT%H:%M:%S").to_string()
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_time_the_calendar_cannot_hold_falls_back_to_utc() {
+        assert_eq!(local_offset(i64::MAX), 0);
+        assert_eq!(local_offset(i64::MIN), 0);
     }
 }

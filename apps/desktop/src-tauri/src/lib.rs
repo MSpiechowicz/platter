@@ -27,12 +27,13 @@ pub fn is_advisor_runtime(args: impl IntoIterator<Item = std::ffi::OsString>) ->
         && args.next().is_none()
 }
 
-/// The advisor's helper process: serves the model runtime to the app that started it, over the socket it was
-/// handed (see [`platter_ai::runtime::serve`]). Returns the exit code of the process. Nothing of the app
-/// (windows, scans, the web view) is started in it. Without the runtime in this build, or where the helper
-/// cannot be started, it fails (2).
+/// The advisor's helper process: serves the model runtime to the app that started it, over the connection it was
+/// handed (a socket on Unix, the standard input and output pipes on Windows, see
+/// [`platter_ai::runtime::serve`]). Returns the exit code of the process. Nothing of the app (windows, scans,
+/// the web view) is started in it. Without the runtime in this build, or where the helper cannot be started,
+/// it fails (2).
 pub fn advisor_runtime() -> i32 {
-    #[cfg(all(feature = "advisor", unix))]
+    #[cfg(feature = "advisor")]
     {
         let Ok((socket, model)) = platter_platform::advisor_runtime_child() else {
             return 2;
@@ -45,7 +46,7 @@ pub fn advisor_runtime() -> i32 {
             platter_ai::MODEL.bytes,
         )
     }
-    #[cfg(not(all(feature = "advisor", unix)))]
+    #[cfg(not(feature = "advisor"))]
     {
         2
     }
@@ -133,17 +134,35 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Platter")
         .run(|app, event| {
-            // Quitting while a cleanup runs: let it finish the item in progress (a folder is never
-            // left half-deleted by the process ending), then stop. A model download stops too (its
-            // partial file stays for the next start), a labelling job is cancelled and the model is
-            // unloaded.
+            // Quitting while a cleanup runs, a download or a model: see `stop_for_exit`.
             if let tauri::RunEvent::ExitRequested { .. } = event {
-                let state = app.state::<AppState>();
-                state.advisor.cancel_labelling();
-                state.advisor.shutdown();
-                state.cleanups.stop_for_exit(std::time::Duration::from_secs(30));
+                stop_for_exit(app);
             }
         });
+}
+
+/// What quitting does first: a running cleanup finishes the item in progress (a folder is never left
+/// half-deleted by the process ending), a model download stops (its partial file stays for the next
+/// start), a labelling job is cancelled and the model is unloaded.
+pub(crate) fn stop_for_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let state = app.state::<AppState>();
+
+    state.advisor.cancel_labelling();
+    state.advisor.shutdown();
+    state.cleanups.stop_for_exit(std::time::Duration::from_secs(30));
+}
+
+/// What the Windows updater does right before it starts the new setup, which then ends the process without
+/// going through `ExitRequested`. The setup may fail to start, and then the app goes on, so this does
+/// nothing that cannot be undone: the advisor is not shut down (its worker never serves again once it is,
+/// and the helper process ends with the app anyway, see `platter_platform::windows::runtime`), and a
+/// running cleanup is not meant to be here (`restart_app` refuses to run the setup while one runs): one that
+/// started after that check still finishes its item before the process ends.
+pub(crate) fn stop_for_update<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let state = app.state::<AppState>();
+
+    state.advisor.cancel_labelling();
+    state.cleanups.stop_for_exit(std::time::Duration::from_secs(30));
 }
 
 #[cfg(test)]

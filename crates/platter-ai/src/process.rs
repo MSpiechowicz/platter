@@ -1,5 +1,6 @@
 //! The model in a helper process: an [`Engine`] that runs the real runtime in another process and talks to it
-//! over a socket (see [`crate::protocol`]; the helper's side is [`crate::runtime`]).
+//! over a [`Wire`] (a socket on Unix, the helper's standard input and output pipes on Windows; see
+//! [`crate::protocol`]; the helper's side is [`crate::runtime`]).
 //!
 //! The helper exists so that what goes wrong in a graphics driver (a crash, a call that never returns) ends
 //! a helper and not the app. This side starts one helper per loaded model (and a short-lived one to list the
@@ -18,7 +19,8 @@
 //!   raising the cancel flag), but a helper that has been told to cancel and still does not answer within
 //!   [`Limits::cancel_grace`] is killed. So is a helper on a card that keeps showing progress and ignores a
 //!   cancel for that long.
-//! - A helper that does not read what is written to it for [`Limits::write`]: a hang, and it is killed.
+//! - A helper that does not read what is written to it for [`Limits::write`]: a hang, and it is killed. (On a
+//!   socket the system ends the write; on pipes a watchdog thread kills the helper, which ends the write.)
 //!
 //! The helper is not trusted: the cards it lists are cleaned and counted, and what it writes while nobody
 //! asks is held back by a queue of a few messages (the helper then waits on its write) and is never stored
@@ -30,7 +32,10 @@
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::net::Shutdown;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, ExitStatus};
@@ -47,7 +52,7 @@ use crate::engine::{
 };
 use crate::protocol::{
     CARD_TEXT_CHARS, ErrorKind, LineReader, MAX_ERROR_CHARS, PROTOCOL_VERSION, Reply, Request, clean_text,
-    write_message,
+    encode,
 };
 use crate::verify::VerifiedModel;
 
@@ -106,18 +111,163 @@ pub enum Waited {
     Exited(Option<Exit>),
 }
 
+/// The app's end of the connection to a helper.
+pub trait Wire: Send {
+    /// What the helper says, for the thread that reads it. Taken once.
+    fn reader(&mut self) -> io::Result<Box<dyn Read + Send>>;
+
+    /// A request may take this long to be written (a helper that does not read stalls the write).
+    fn set_write_timeout(&mut self, limit: Duration) -> io::Result<()>;
+
+    /// Writes all of `bytes`. Fails with `TimedOut` or `WouldBlock` when the helper did not take them within
+    /// the write timeout, and with any other kind when the helper is gone.
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()>;
+
+    /// Closes the connection both ways: the helper sees the end of its input, and a call that waits on it ends.
+    fn close(&mut self);
+}
+
 /// What starting a helper gives.
 pub struct Spawned {
     pub process: Box<dyn RuntimeProcess>,
     /// The app's end of the connection to the helper.
-    pub socket: UnixStream,
+    pub wire: Box<dyn Wire>,
     /// What the helper writes to its standard error.
     pub stderr: Box<dyn Read + Send>,
 }
 
+/// A socket as a [`Wire`] (Unix).
+#[cfg(unix)]
+pub struct SocketWire(UnixStream);
+
+#[cfg(unix)]
+impl SocketWire {
+    pub fn new(socket: UnixStream) -> Self {
+        Self(socket)
+    }
+}
+
+#[cfg(unix)]
+impl Wire for SocketWire {
+    fn reader(&mut self) -> io::Result<Box<dyn Read + Send>> {
+        Ok(Box::new(self.0.try_clone()?))
+    }
+
+    fn set_write_timeout(&mut self, limit: Duration) -> io::Result<()> {
+        // The option is the socket's, so it holds for the clone the reader thread has as well.
+        self.0.set_write_timeout(Some(limit))
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        (&self.0).write_all(bytes)?;
+        (&self.0).flush()
+    }
+
+    fn close(&mut self) {
+        let _ = self.0.shutdown(Shutdown::Both);
+    }
+}
+
+/// A pair of pipes as a [`Wire`]: what the helper writes comes out of `reader`, requests go into `writer`.
+///
+/// A pipe has no write timeout, so a write is watched: when it has not finished within the limit the
+/// `stop` that was given ends the helper (kills the process), which closes the helper's end of the pipe and
+/// so ends the write. The write then fails with `TimedOut`. Closing drops the writer, so the helper sees the
+/// end of its input.
+pub struct PipeWire {
+    reader: Option<Box<dyn Read + Send>>,
+    writer: Option<Box<dyn Write + Send>>,
+    limit: Duration,
+    stop: Box<dyn Fn() + Send + Sync>,
+}
+
+impl PipeWire {
+    pub fn new(
+        reader: impl Read + Send + 'static,
+        writer: impl Write + Send + 'static,
+        stop: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            reader: Some(Box::new(reader)),
+            writer: Some(Box::new(writer)),
+            limit: Limits::default().write,
+            stop: Box::new(stop),
+        }
+    }
+}
+
+/// Where a watched write is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Writing {
+    Under,
+    Done,
+    Stopped,
+}
+
+impl Wire for PipeWire {
+    fn reader(&mut self) -> io::Result<Box<dyn Read + Send>> {
+        self.reader
+            .take()
+            .ok_or_else(|| io::Error::other("the reader was taken already"))
+    }
+
+    fn set_write_timeout(&mut self, limit: Duration) -> io::Result<()> {
+        self.limit = limit;
+        Ok(())
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let Some(writer) = self.writer.as_mut() else {
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+        };
+        let (limit, stop) = (self.limit, &self.stop);
+        let state = Mutex::new(Writing::Under);
+        let (finished, waiting) = mpsc::channel::<()>();
+
+        let result = thread::scope(|scope| {
+            // The watchdog: it ends the helper unless the write is over when the limit runs out. It decides
+            // under the lock, so a write that has just finished is never answered with a kill.
+            let state = &state;
+            scope.spawn(move || {
+                if let Err(RecvTimeoutError::Timeout) = waiting.recv_timeout(limit) {
+                    let mut state = state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if *state == Writing::Under {
+                        *state = Writing::Stopped;
+                        stop();
+                    }
+                }
+            });
+
+            let result = writer.write_all(bytes).and_then(|()| writer.flush());
+            {
+                let mut state = state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if *state == Writing::Under {
+                    *state = Writing::Done;
+                }
+            }
+            // Wakes the watchdog, which then ends.
+            drop(finished);
+
+            result
+        });
+
+        let stopped = *state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) == Writing::Stopped;
+        if stopped {
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
+        }
+
+        result
+    }
+
+    fn close(&mut self) {
+        self.writer = None;
+    }
+}
+
 /// Starts helpers. The real one starts a process; tests run the helper's side on a thread.
 pub trait Spawner: Send {
-    /// Starts a helper for `mode`, handing it `model` (the checked file, none for the probe).
+    /// Starts a helper for `mode`. `model` is the checked file to hand over (Unix; none for the probe, and none
+    /// on Windows, where the model goes by path in the `load` request).
     fn spawn(&mut self, model: Option<File>, mode: RuntimeMode) -> io::Result<Spawned>;
 }
 
@@ -137,6 +287,7 @@ impl RealSpawner {
 }
 
 impl Spawner for RealSpawner {
+    #[cfg(unix)]
     fn spawn(&mut self, model: Option<File>, mode: RuntimeMode) -> io::Result<Spawned> {
         let child = platter_platform::spawn_advisor_runtime(&self.program, model, mode)?;
 
@@ -144,7 +295,22 @@ impl Spawner for RealSpawner {
             process: Box::new(RealProcess {
                 child: Some(child.child),
             }),
-            socket: child.socket,
+            wire: Box::new(SocketWire::new(child.socket)),
+            stderr: Box::new(child.stderr),
+        })
+    }
+
+    #[cfg(windows)]
+    fn spawn(&mut self, model: Option<File>, mode: RuntimeMode) -> io::Result<Spawned> {
+        let child = platter_platform::spawn_advisor_runtime(&self.program, model, mode)?;
+
+        // A copy of the child for the watchdog of a write that stalls: killing the helper ends the write.
+        let killer = child.child.clone();
+        Ok(Spawned {
+            process: Box::new(RealProcess {
+                child: Some(child.child),
+            }),
+            wire: Box::new(PipeWire::new(child.stdout, child.stdin, move || killer.kill())),
             stderr: Box::new(child.stderr),
         })
     }
@@ -173,6 +339,25 @@ impl ChildProcess for Child {
 
     fn wait(&mut self) -> io::Result<ExitStatus> {
         Child::wait(self)
+    }
+}
+
+#[cfg(windows)]
+impl ChildProcess for platter_platform::SharedChild {
+    fn id(&self) -> u32 {
+        platter_platform::SharedChild::id(self)
+    }
+
+    fn kill(&mut self) {
+        platter_platform::SharedChild::kill(self);
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        platter_platform::SharedChild::try_wait(self)
+    }
+
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        platter_platform::SharedChild::wait(self)
     }
 }
 
@@ -259,6 +444,13 @@ fn exit_of(exit: platter_platform::Exit) -> Exit {
     match exit {
         platter_platform::Exit::Code(code) => Exit::Code(code),
         platter_platform::Exit::Signal(signal) => Exit::Signal(signal),
+    }
+}
+
+fn platform_exit(exit: Exit) -> platter_platform::Exit {
+    match exit {
+        Exit::Code(code) => platter_platform::Exit::Code(code),
+        Exit::Signal(signal) => platter_platform::Exit::Signal(signal),
     }
 }
 
@@ -397,7 +589,7 @@ impl<S: Spawner> Engine for ProcessEngine<S> {
     ) -> Result<LoadInfo, AiError> {
         self.unload();
 
-        let file = model.share().map_err(|error| {
+        let handover = model.handover().map_err(|error| {
             AiError::Load(format!(
                 "The model file could not be handed to the runtime: {error}"
             ))
@@ -406,7 +598,7 @@ impl<S: Spawner> Engine for ProcessEngine<S> {
             Placement::Cpu => RuntimeMode::Cpu,
             Placement::Gpu { .. } => RuntimeMode::Gpu,
         };
-        let mut helper = self.start(Some(file), mode).map_err(AiError::Load)?;
+        let mut helper = self.start(handover.file, mode).map_err(AiError::Load)?;
 
         let card = match placement {
             Placement::Cpu => None,
@@ -420,6 +612,7 @@ impl<S: Spawner> Engine for ProcessEngine<S> {
             threads,
             placement,
             card,
+            model: handover.path,
         };
         if let Err(failure) = helper.send(&request) {
             self.incident = Some(helper.fail(&failure, "load the model"));
@@ -638,7 +831,7 @@ impl Failure {
 /// A helper, from the app's side.
 struct Helper {
     process: Box<dyn RuntimeProcess>,
-    socket: UnixStream,
+    wire: Box<dyn Wire>,
     events: Receiver<Event>,
     stderr: Arc<StderrTail>,
     stderr_ended: Receiver<()>,
@@ -658,16 +851,15 @@ impl Helper {
     fn new(spawned: Spawned, mode: RuntimeMode, limits: Limits) -> io::Result<Self> {
         let Spawned {
             process,
-            socket,
+            mut wire,
             stderr,
         } = spawned;
 
-        // A helper that does not read must not keep the app in a write for ever. (The option is the
-        // socket's, so it holds for the clone the reader thread has as well.)
-        socket.set_write_timeout(Some(limits.write))?;
+        // A helper that does not read must not keep the app in a write for ever.
+        wire.set_write_timeout(limits.write)?;
 
         let (events, replies) = mpsc::sync_channel(EVENT_QUEUE);
-        let mut lines = LineReader::new(socket.try_clone()?);
+        let mut lines = LineReader::new(wire.reader()?);
         thread::Builder::new()
             .name("platter-runtime-reader".to_owned())
             .spawn(move || {
@@ -696,7 +888,7 @@ impl Helper {
 
         Ok(Self {
             process,
-            socket,
+            wire,
             events: replies,
             stderr: tail,
             stderr_ended,
@@ -708,8 +900,10 @@ impl Helper {
 
     /// Writes a request. A write that fails is a helper that is gone, one that times out a helper that does
     /// not read.
-    fn send(&self, request: &Request) -> Result<(), Failure> {
-        write_message(&self.socket, request).map_err(|error| match error.kind() {
+    fn send(&mut self, request: &Request) -> Result<(), Failure> {
+        let written = encode(request).and_then(|line| self.wire.write_all(&line));
+
+        written.map_err(|error| match error.kind() {
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => Failure::NotRead(self.limits.write),
             _ => Failure::Closed("the helper was gone".to_owned()),
         })
@@ -754,7 +948,7 @@ impl Helper {
     /// Ends the helper (kills it when it still runs) and says what went wrong.
     fn retire(mut self, what: IncidentKind, detail: &str) -> RuntimeIncident {
         self.process.kill();
-        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+        self.wire.close();
 
         let exit = match self.process.wait_for(self.limits.kill) {
             Waited::Exited(exit) => exit,
@@ -776,11 +970,18 @@ impl Helper {
         // The last words come in a moment after the end.
         let _ = self.stderr_ended.recv_timeout(STDERR_SETTLE);
 
+        // A Windows exit code is a number nobody reads (0xC0000005 shows as -1073741819): say what it is.
+        let note = exit.and_then(|exit| platter_platform::exit_text(platform_exit(exit)));
+        let detail = match note {
+            Some(note) => format!("{detail} It ended with {note}."),
+            None => detail.to_owned(),
+        };
+
         RuntimeIncident {
             what,
             exit,
             stderr_tail: self.stderr.text(),
-            detail: clean_text(detail, MAX_ERROR_CHARS),
+            detail: clean_text(&detail, MAX_ERROR_CHARS),
         }
     }
 }
@@ -789,7 +990,7 @@ impl Drop for Helper {
     fn drop(&mut self) {
         // Whatever way a helper is let go of, nothing of it is left running.
         self.process.kill();
-        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+        self.wire.close();
         if !self.abandoned {
             let _ = self.process.wait_for(self.limits.kill);
         }
@@ -942,7 +1143,14 @@ mod tests {
             let _ = self.release.recv_timeout(Duration::from_secs(5));
             self.reaped.store(true, Ordering::SeqCst);
 
-            Ok(std::os::unix::process::ExitStatusExt::from_raw(9))
+            #[cfg(unix)]
+            {
+                Ok(std::os::unix::process::ExitStatusExt::from_raw(9))
+            }
+            #[cfg(windows)]
+            {
+                Ok(std::os::windows::process::ExitStatusExt::from_raw(9))
+            }
         }
     }
 

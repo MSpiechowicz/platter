@@ -1,7 +1,8 @@
 name: Release
 
-# Builds the Linux packages (AppImage, deb, rpm) for a version tag and puts them, with SHA256SUMS, on a
-# draft GitHub release. The draft is published by hand after the packages were tried.
+# Builds the Linux packages (AppImage, deb, rpm) and the Windows setup (NSIS, for the current user) for a
+# version tag and puts them, with SHA256SUMS, on a draft GitHub release. The draft is published by hand after
+# the packages were tried.
 #
 #   git tag v0.1.0 && git push origin v0.1.0
 on:
@@ -94,12 +95,95 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The Windows setup. Like the Linux job it can read the repository only and sees no secret, because the
+  # build scripts of dependencies run here. The default features build the advisor for the processor (Vulkan
+  # is a Linux-only dependency of the desktop crate). The runner has MSVC, cmake and LLVM, which llama.cpp
+  # and its bindings need.
+  windows:
+    name: Windows setup
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      # llama.cpp's bindings (bindgen) need libclang.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The tag must name the version the setup carries (the workspace version in Cargo.toml).
+      - name: Check the tag against the version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::The tag $TAG does not match the version $version in Cargo.toml."
+            exit 1
+          fi
+
+      # See the Linux job: every build of a version is the same one.
+      - name: Refuse GGML variables in the environment
+        run: |
+          if env | grep -qi '^GGML_'; then
+            env | grep -i '^GGML_' | cut -d= -f1
+            echo "::error::GGML_* variables are set. The release must be built without them."
+            exit 1
+          fi
+
+      - name: Check the build tools
+        run: |
+          cmake --version
+          [ -f "$(cygpath -u "$LIBCLANG_PATH")/libclang.dll" ] || { echo "::error::libclang.dll is not in $LIBCLANG_PATH."; exit 1; }
+
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # No cache on purpose: a release is built from a clean target folder. The bundles named in
+      # tauri.conf.json that Windows cannot make are skipped, so this makes the NSIS setup only.
+      - name: Build the setup
+        run: pnpm -C apps/desktop tauri build --ci
+
+      # A red Windows test must not ship a signed setup: nothing below uploads the setup unless the tests pass
+      # (the sign job needs this job). It runs after the build, which made the frontend that the desktop crate
+      # embeds. This job sees no secret, and the tests run the code of the workspace and its dependencies.
+      - name: Test
+        run: cargo test --locked --workspace
+
+      - name: Collect the setup
+        run: |
+          mkdir packages
+          cp target/release/bundle/nsis/*-setup.exe packages/
+          ls -l packages
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-windows
+          path: packages/
+          if-no-files-found: error
+          retention-days: 7
+
   # The signing key is only ever in this job, which builds nothing and runs no dependency's code: only the
-  # Tauri CLI, at the version the lockfile names, signs the AppImage. The app checks every update against the
-  # public key in tauri.conf.json, so only an AppImage signed here is installed.
+  # Tauri CLI, at the version the lockfile names, signs the AppImage and the Windows setup. The app checks
+  # every update against the public key in tauri.conf.json, so only a file signed here is installed.
   sign:
     name: Sign and describe the update
-    needs: linux
+    needs: [linux, windows]
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     permissions:
@@ -122,31 +206,63 @@ jobs:
             exit 1
           fi
 
+      # Each build has a folder of its own: a file of one build can never stand in for one of the other.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: packages
-          path: release
+          path: linux
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages-windows
+          path: windows
+
+      # Before anything is signed: exactly one AppImage (with the deb and the rpm) from the Linux build and
+      # exactly one setup, and nothing else, from the Windows build.
+      - name: Check what the builds made
+        run: |
+          set -- linux/*.AppImage
+          [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::Expected exactly one AppImage from the Linux build."; exit 1; }
+          set -- linux/*.deb
+          [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::Expected exactly one deb from the Linux build."; exit 1; }
+          set -- linux/*.rpm
+          [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::Expected exactly one rpm from the Linux build."; exit 1; }
+          set -- windows/*
+          [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::Expected exactly one file from the Windows build."; exit 1; }
+          case $1 in
+            windows/*-setup.exe) ;;
+            *) echo "::error::The Windows build made $1, not a setup."; exit 1 ;;
+          esac
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
-      - name: Sign the AppImage
+      - name: Sign the AppImage and the setup
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           cli=$(sed -n "s/^  '@tauri-apps\/cli@\([0-9.]*\)':$/\1/p" pnpm-lock.yaml | head -n 1)
           [ -n "$cli" ] || { echo "::error::The Tauri CLI version is not in pnpm-lock.yaml."; exit 1; }
-          for appimage in release/*.AppImage; do
-            npx --yes "@tauri-apps/cli@$cli" signer sign "$appimage"
+          for file in linux/*.AppImage windows/*-setup.exe; do
+            npx --yes "@tauri-apps/cli@$cli" signer sign "$file"
           done
+          ls -l linux windows
+
+      # Only the files that were checked and signed go into the release.
+      - name: Assemble the release
+        run: |
+          mkdir release
+          cp linux/*.AppImage linux/*.AppImage.sig linux/*.deb linux/*.rpm release/
+          cp windows/*-setup.exe windows/*-setup.exe.sig release/
           ls -l release
 
       # The release notes are the message of the annotated tag (git tag -a v0.2.0 -m "..."), one line each.
-      # latest.json is what the app reads: the version, the notes and the signed AppImage. Both platform
-      # keys point at the AppImage, so a deb or rpm install also learns of the update (it is not installed
-      # there, the app shows the release page).
+      # latest.json is what the app reads: the version, the notes and the signed files. Both Linux keys point
+      # at the AppImage, so a deb or rpm install also learns of the update (it is not installed there, the
+      # app shows the release page). Both Windows keys point at the setup: the updater looks for
+      # windows-x86_64-nsis first (the copy the setup installed) and then for windows-x86_64.
       - name: Write latest.json, the notes and SHA256SUMS
         env:
           TAG: ${{ github.ref_name }}
@@ -163,16 +279,24 @@ jobs:
           set -- release/*.AppImage
           [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::Expected exactly one AppImage."; exit 1; }
           appimage=${1#release/}
+          set -- release/*-setup.exe
+          [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::Expected exactly one Windows setup."; exit 1; }
+          setup=${1#release/}
           jq -n \
             --arg version "${TAG#v}" \
             --rawfile notes notes.md \
             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$appimage" \
-            --rawfile signature "release/$appimage.sig" \
-            --argjson size "$(stat -c %s "release/$appimage")" \
+            --arg appimage_url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$appimage" \
+            --rawfile appimage_signature "release/$appimage.sig" \
+            --argjson appimage_size "$(stat -c %s "release/$appimage")" \
+            --arg setup_url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$setup" \
+            --rawfile setup_signature "release/$setup.sig" \
+            --argjson setup_size "$(stat -c %s "release/$setup")" \
             '{version: $version, notes: $notes, pub_date: $date, platforms: {
-                "linux-x86_64-appimage": {url: $url, signature: $signature, size: $size},
-                "linux-x86_64": {url: $url, signature: $signature, size: $size}
+                "linux-x86_64-appimage": {url: $appimage_url, signature: $appimage_signature, size: $appimage_size},
+                "linux-x86_64": {url: $appimage_url, signature: $appimage_signature, size: $appimage_size},
+                "windows-x86_64-nsis": {url: $setup_url, signature: $setup_signature, size: $setup_size},
+                "windows-x86_64": {url: $setup_url, signature: $setup_signature, size: $setup_size}
               }}' > release/latest.json
           cat release/latest.json
 
@@ -190,7 +314,8 @@ jobs:
 
   publish:
     name: Draft release
-    needs: sign
+    # The sign job needs both builds, and nothing is published unless both succeeded and were signed.
+    needs: [linux, windows, sign]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:

@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { platform } from '../../state/platform.svelte';
 import {
   canRestore,
   formatDay,
@@ -92,5 +93,19 @@ describe('thinNote', () => {
 
   it('has no semicolon', () => {
     expect(thinNote(2)).not.toContain(';');
+  });
+});
+
+describe('on Windows', () => {
+  afterEach(() => {
+    platform.os = 'linux';
+  });
+
+  it('names the Recycle Bin where Linux says trash', () => {
+    platform.os = 'windows';
+
+    expect(methodText([{ kind: 'trash' }])).toBe('Recycle Bin');
+    expect(statusText('inTrash')).toBe('in Recycle Bin');
+    expect(statusText('noLongerInTrash')).toBe('no longer in Recycle Bin');
   });
 });

@@ -1,3 +1,4 @@
+import { platform } from '../../state/platform.svelte';
 import type { Slab } from './slabs';
 
 /**
@@ -43,17 +44,18 @@ const points = (...pairs: [number, number][]): string => pairs.map(([x, y]) => `
 
 const clip = (text: string): string => (text.length > MAX_LABEL ? `${text.slice(0, MAX_LABEL - 1)}…` : text);
 
-/** Keeps the end of a path, which is the folder's own name: "…/sam/Downloads". Cut at a "/" when it can be. */
+/** Keeps the end of a path, which is the folder's own name: "…/sam/Downloads". Cut at a separator when it can be. */
 function clipName(text: string): string {
   if (text.length <= MAX_NAME) {
     return text;
   }
 
-  const segments = text.split('/');
+  const separator = platform.separator;
+  const segments = text.split(separator);
   let kept = '';
 
   for (let at = segments.length - 1; at > 0; at--) {
-    const next = `/${segments.slice(at).join('/')}`;
+    const next = `${separator}${segments.slice(at).join(separator)}`;
 
     if (next.length + 1 > MAX_NAME) {
       break;

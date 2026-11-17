@@ -228,5 +228,11 @@ fn rule_dto(rule: &UserRule, home: Option<&Path>) -> UserRuleDto {
     }
 }
 
-#[cfg(test)]
+// The Linux disk model (a `FakeFs` with `/mnt`, `/var/cache/pacman`, `/etc`): the paths and the rules it
+// exercises exist on Unix only.
+#[cfg(all(test, unix))]
 mod tests;
+
+// The same commands on a real folder, on every system.
+#[cfg(test)]
+mod native_tests;

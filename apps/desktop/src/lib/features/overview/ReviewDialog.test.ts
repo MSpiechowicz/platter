@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, within } from '@testing-library/svelte';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CleanupPlanDto, PlanGroupDto } from '../../api/types';
 import { fmt } from '../../state/fmt.svelte';
+import { platform } from '../../state/platform.svelte';
 import ReviewDialog from './ReviewDialog.svelte';
 
 const GB = 1_000_000_000;
@@ -89,5 +90,22 @@ describe('ReviewDialog for what the user marked', () => {
 
     expect(onconfirm).toHaveBeenCalledOnce();
     expect(oncancel).toHaveBeenCalledOnce();
+  });
+});
+
+describe('ReviewDialog on Windows', () => {
+  afterEach(() => {
+    platform.os = 'linux';
+  });
+
+  it('says the Recycle Bin, and lists the paths as they are', async () => {
+    platform.os = 'windows';
+    show(plan([marked(['C:\\Users\\demo\\Downloads'])]));
+
+    const dialog = await screen.findByRole('dialog');
+
+    expect(dialog.textContent).toContain('C:\\Users\\demo\\Downloads');
+    expect(dialog.textContent).toContain('Moved to the Recycle Bin. This can be undone.');
+    expect(dialog.textContent).not.toContain('trash');
   });
 });

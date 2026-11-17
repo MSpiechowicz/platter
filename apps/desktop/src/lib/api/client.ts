@@ -272,9 +272,9 @@ export interface Api {
   checkUpdate(): Promise<UpdateCheck>;
 
   /**
-   * Downloads the update the last `checkUpdate` found, checks its signature and replaces the AppImage. `onProgress`
-   * gets the download, then `installing`. Resolves when it is installed. `invalid` when this copy is not an AppImage
-   * (`canInstall` is false) or no check found an update.
+   * Downloads the update the last `checkUpdate` found, checks its signature and installs it over this copy.
+   * `onProgress` gets the download, then `installing`. Resolves when it is installed. `invalid` when this copy cannot
+   * install itself (`canInstall` is false) or no check found an update.
    */
   installUpdate(onProgress: (progress: UpdateProgress) => void): Promise<void>;
 

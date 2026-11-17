@@ -69,12 +69,12 @@ fn read_capped(path: &Path) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn open_regular(path: &Path) -> io::Result<File> {
     crate::open_nofollow(path)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn open_regular(path: &Path) -> io::Result<File> {
     if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "it is a link"));
@@ -237,8 +237,16 @@ fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Makes a rename or a new name in `dir` durable.
+#[cfg(not(windows))]
 fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
+}
+
+/// Windows cannot open a folder to sync it (and `MoveFileEx` with write-through is not asked for): the
+/// rename is as durable as the filesystem makes it, and the file itself was synced before it.
+#[cfg(windows)]
+fn sync_dir(_dir: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]

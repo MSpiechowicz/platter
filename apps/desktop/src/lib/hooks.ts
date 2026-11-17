@@ -25,6 +25,9 @@ export type HookHistory = 'thin' | 'empty' | 'broken' | 'flat';
 /** Which update the mock finds: one the app installs itself, or one a package manager installs. */
 export type HookUpdate = 'install' | 'package';
 
+/** The system the mock stands for: `windows` has drive volumes, backslash paths and the Recycle Bin. Without the hook it is Linux. */
+export type HookOs = 'windows';
+
 /** The theme to show, as the Theme setting offers it (not saved). */
 export type HookTheme = 'dark' | 'light' | 'system';
 
@@ -47,8 +50,13 @@ export interface TestHooks {
   ready: boolean;
   /** A mock volume list where one filesystem is mounted several times (btrfs subvolumes). */
   mounts: boolean;
-  /** Scan this path instead of the first volume. */
+  /**
+   * Scan this path instead of the first volume. A drive letter alone (`root=C:`) is that drive's root, `C:\`, so no
+   * backslash is needed in the URL. The Windows mock disk (see `os`) is `root=C:`.
+   */
   root: string | null;
+  /** The mock is a Windows machine (`os=windows`): the volumes C:\ and D:\, the Recycle Bin, and a profile at `C:\Users\demo`. */
+  os: HookOs | null;
   /** Open the update tooltip and show a toast, to look at them. */
   overlays: boolean;
   /** Explorer: open in this view (not saved). */
@@ -122,6 +130,7 @@ const NO_HOOKS: TestHooks = {
   ready: false,
   mounts: false,
   root: null,
+  os: null,
   overlays: false,
   ex: null,
   pick: null,
@@ -175,6 +184,7 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
   const gpuProblem = params.get('gpuProblem');
   const history = params.get('history');
   const theme = params.get('theme');
+  const root = params.get('root');
 
   return {
     view: view !== null && VIEWS.includes(view) ? (view as HookView) : null,
@@ -183,7 +193,8 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
     update: params.has('update') ? (params.get('update') === 'package' ? 'package' : 'install') : null,
     ready: params.has('ready'),
     mounts: params.has('mounts'),
-    root: params.get('root'),
+    root: root !== null && /^[A-Za-z]:$/.test(root) ? `${root}\\` : root,
+    os: params.get('os') === 'windows' ? 'windows' : null,
     overlays: params.has('overlays'),
     ex: ex === 'flat' || ex === '3d' ? ex : null,
     pick: wholeNumber(params.get('pick')),

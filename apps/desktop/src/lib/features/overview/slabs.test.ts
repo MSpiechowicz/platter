@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { NodeDto } from '../../api/types';
 import { PALETTE, SLATE } from '../../palette';
+import { platform } from '../../state/platform.svelte';
 import { buildSlabs, dominantChild, joinNames, levelColors, MAX_SLABS, type SlabLevel } from './slabs';
 import { layoutStack, STACK_VIEWBOX } from './stack';
 
@@ -299,5 +300,31 @@ describe('layoutStack', () => {
     });
 
     expect(layoutStack(long, 10 * GB).slabs[0]?.inside.length).toBeLessThanOrEqual(30);
+  });
+});
+
+describe('a Windows scan', () => {
+  afterEach(() => {
+    platform.os = 'linux';
+  });
+
+  it('names a slab by its path with backslashes, and cuts the long ones at the start so the folder name stays', () => {
+    platform.os = 'windows';
+
+    const levels: SlabLevel[] = [
+      { path: '', children: [node(1, 'Users', 700)] },
+      { path: '\\Users', parent: 1, children: [node(2, 'demo', 700)] },
+      { path: '\\Users\\demo', parent: 2, children: [node(3, 'Downloads', 90), node(4, 'Photos-2019', 400)] },
+    ];
+    const slabs = buildSlabs({ levels, insideOf: none, total: 1000 * GB, free: 100 * GB });
+
+    expect(slabs.map((slab) => slab.name)).toContain('\\Users\\demo\\Photos-2019');
+
+    const placed = layoutStack(slabs, 1000 * GB).slabs.find((entry) =>
+      entry.slab.name.endsWith('Photos-2019'),
+    );
+
+    expect(placed?.name).toBe('…\\demo\\Photos-2019');
+    expect(placed?.name.length).toBeLessThanOrEqual(20);
   });
 });

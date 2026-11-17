@@ -53,6 +53,48 @@ jobs:
       - name: Test
         run: cargo test --locked --workspace
 
+  # The Windows port (P1). Not required yet: `continue-on-error` keeps a red run from blocking merges until the
+  # first green run. Remove it then, and this job is required like `rust`.
+  windows:
+    name: Windows (clippy, test)
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 60
+    env:
+      # llama.cpp's bindings (bindgen) need libclang. The runner has LLVM, cmake and MSVC installed.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Fails at once, with a plain message, where the build would otherwise fail deep inside llama.cpp.
+      - name: Check the build tools
+        run: |
+          cmake --version
+          [ -f "$(cygpath -u "$LIBCLANG_PATH")/libclang.dll" ] || { echo "::error::libclang.dll is not in $LIBCLANG_PATH."; exit 1; }
+
+      # rustup 1.28+ no longer installs the toolchain named in rust-toolchain.toml on first use.
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # Same stub as in `rust`: `platter-desktop` embeds `apps/desktop/dist` at compile time.
+      - name: Create a stub frontend dist
+        run: |
+          mkdir -p apps/desktop/dist
+          echo '<!doctype html><title>Platter CI stub</title>' > apps/desktop/dist/index.html
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --workspace
+
   web:
     name: Web (lint, check, test, build)
     runs-on: ubuntu-22.04

@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::time::Instant;
 
-use platter_cleanup::with_real_keeps;
+use platter_cleanup::{PathStyle, with_real_keeps_for};
 use platter_core::dto::{SuggestionsDto, Verdict};
 use platter_platform::Platform;
 use platter_platform::root::resolve_root;
@@ -32,7 +32,8 @@ pub fn run(args: &SuggestArgs) -> CliResult<()> {
     let platform = Platform::current();
     let env = platform.environment_for(tree.root_path());
     // A folder kept through a link is kept where it really is too, as the plan sees it.
-    let rules = with_real_keeps(
+    let rules = with_real_keeps_for(
+        PathStyle::for_os(env.os),
         RuleSet::builtin().with_user(user),
         env.home.as_deref(),
         &platform.entry_probe,

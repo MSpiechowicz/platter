@@ -514,3 +514,15 @@ fn suggestion_sizes_and_counts_are_clamped_on_the_wire() {
     .unwrap();
     assert_eq!(totals, json!({ "safe": max, "review": max, "keep": max }));
 }
+
+#[test]
+fn the_operating_system_is_a_closed_lowercase_set() {
+    assert_wire(&OsDto::Linux, json!("linux"));
+    assert_wire(&OsDto::Windows, json!("windows"));
+    assert_wire(&OsDto::Macos, json!("macos"));
+
+    assert_eq!(OsDto::from(Os::Windows), OsDto::Windows);
+    assert_eq!(OsDto::from(Os::MacOs), OsDto::Macos);
+    assert_eq!(OsDto::from(Os::Linux), OsDto::Linux);
+    assert_eq!(OsDto::from(Os::Other), OsDto::Linux);
+}

@@ -1,3 +1,4 @@
+import { baseName, joinPath } from '../paths';
 import { layoutFor, type DirSpec, type FileGroup } from './mock-layouts';
 import type { Category, NodeKind, SkipReason } from './types';
 
@@ -163,8 +164,7 @@ const isSkipped = (spec: DirSpec, ctx: Context): boolean =>
   spec.mount === true && (ctx.oneFileSystem || spec.skipped === 'system');
 
 /** The path of a folder below `parent`. */
-const below = (parent: string, name: string): string =>
-  parent.endsWith('/') ? parent + name : `${parent}/${name}`;
+const below = joinPath;
 
 function weightOf(spec: DirSpec, ctx: Context, path: string): number {
   return isSkipped(spec, ctx) || ctx.excluded.has(path) ? 0 : spec.weight;
@@ -285,12 +285,8 @@ function addFiles(parent: Draft, group: FileGroup, bytes: number, ctx: Context):
   });
 }
 
-/** What the real backend calls the root node: the last path component, or `/` for the filesystem root. */
-export function rootName(path: string): string {
-  const trimmed = path.replace(/\/+$/, '');
-
-  return trimmed.slice(trimmed.lastIndexOf('/') + 1) || '/';
-}
+/** What the real backend calls the root node: the last path component, or `/` (`C:\`) for the filesystem root. */
+export const rootName = baseName;
 
 /** Builds a realistic demo tree: ids in breadth-first order, parents before children, children contiguous. */
 export function buildTree(options: TreeOptions): MockTree {
