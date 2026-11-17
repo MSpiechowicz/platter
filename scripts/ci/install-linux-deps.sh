@@ -5,6 +5,10 @@
 # (llama.cpp is built from source and its bindings are generated with bindgen), and the Vulkan headers,
 # SPIR-V headers and glslc for its Vulkan backend (feature gpu-vulkan, on by default). Meant for CI runners;
 # it uses sudo and apt-get.
+#
+# Ubuntu 22.04 (the runner, kept for the AppImage's glibc) has no glslc package, and its Vulkan headers are
+# older than llama.cpp expects. There glslc and the headers come from LunarG's Vulkan SDK, pinned by version
+# and checksum, and VULKAN_SDK points CMake at them. The link library stays the system's (libvulkan-dev).
 set -euo pipefail
 
 packages=(
@@ -13,7 +17,6 @@ packages=(
   cmake
   curl
   file
-  glslc
   libayatana-appindicator3-dev
   libclang-dev
   libgtk-3-dev
@@ -26,7 +29,35 @@ packages=(
   pkg-config
   spirv-headers
   wget
+  xz-utils
 )
 
 sudo apt-get update
 sudo apt-get install --yes --no-install-recommends "${packages[@]}"
+
+# A newer Ubuntu has it as a package.
+sudo apt-get install --yes --no-install-recommends glslc 2>/dev/null || true
+
+if ! command -v glslc >/dev/null 2>&1; then
+  sdk_version=1.4.363.1
+  sdk_sha256=b7867d8ca658563813af666f34b93db87f1b1c7d9d69d97e924c210c7ba33eb8
+  sdk_file=vulkansdk-linux-x86_64-$sdk_version.tar.xz
+  sdk_root=/opt/vulkan-sdk
+  download=${RUNNER_TEMP:-/tmp}/$sdk_file
+
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --output "$download" "https://sdk.lunarg.com/sdk/download/$sdk_version/linux/$sdk_file"
+  echo "$sdk_sha256  $download" | sha256sum --check --strict
+  sudo mkdir -p "$sdk_root"
+  sudo tar -xJf "$download" -C "$sdk_root" --strip-components=2 \
+    "$sdk_version/x86_64/bin/glslc" "$sdk_version/x86_64/include"
+  rm -f "$download"
+
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    echo "VULKAN_SDK=$sdk_root" >>"$GITHUB_ENV"
+    echo "$sdk_root/bin" >>"$GITHUB_PATH"
+  else
+    echo "Set VULKAN_SDK=$sdk_root and add $sdk_root/bin to PATH."
+  fi
+  "$sdk_root/bin/glslc" --version | head -n 1
+fi
