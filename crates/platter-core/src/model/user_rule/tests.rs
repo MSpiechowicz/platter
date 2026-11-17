@@ -6,15 +6,31 @@ fn file_with(rules: &str, next_id: u32) -> Vec<u8> {
     format!(r#"{{"version":1,"next_id":{next_id},"rules":[{rules}]}}"#).into_bytes()
 }
 
+/// A POSIX-looking absolute path as this host writes it: unchanged on Unix, on a drive on Windows.
+fn abs(posix: &str) -> String {
+    if cfg!(windows) && posix.starts_with('/') {
+        format!("C:{}", posix.replace('/', "\\"))
+    } else {
+        posix.to_owned()
+    }
+}
+
+/// What `abs` adds in front of a path that starts with `/`.
+const ABS_PREFIX_BYTES: usize = if cfg!(windows) { 2 } else { 0 };
+
 fn rule(id: u32, folder: &str) -> String {
-    format!(r#"{{"id":{id},"verdict":"keep","folder":"{folder}"}}"#)
+    let folder = serde_json::to_string(&abs(folder)).unwrap();
+
+    format!(r#"{{"id":{id},"verdict":"keep","folder":{folder}}}"#)
 }
 
 #[test]
 fn a_file_that_was_rendered_reads_back_the_same() {
     let mut file = UserRulesFile::default();
-    file.set(Path::new("/home/u/Videos"), UserVerdict::Keep).unwrap();
-    file.set(Path::new("/home/u/tmp"), UserVerdict::Safe).unwrap();
+    file.set(Path::new(&abs("/home/u/Videos")), UserVerdict::Keep)
+        .unwrap();
+    file.set(Path::new(&abs("/home/u/tmp")), UserVerdict::Safe)
+        .unwrap();
 
     let again = parse(&render(&file)).unwrap();
 
@@ -103,7 +119,7 @@ fn the_schema_is_enforced() {
         ),
         (
             "NUL",
-            file_with(&rule(1, "/home/\\u0000x"), 2),
+            file_with(&rule(1, "/home/\u{0}x"), 2),
             RulesFileError::BadFolder(String::new()),
         ),
         (
@@ -145,7 +161,7 @@ fn exactly_the_limits_are_accepted() {
         .map(|id| rule(id, &format!("/f{id}")))
         .collect::<Vec<_>>()
         .join(",");
-    let longest = format!("/{}", "a".repeat(MAX_RULE_PATH_BYTES - 1));
+    let longest = format!("/{}", "a".repeat(MAX_RULE_PATH_BYTES - 1 - ABS_PREFIX_BYTES));
 
     assert_eq!(parse(&file_with(&all, 257)).unwrap().rules.len(), 256);
     parse(&file_with(&rule(1, &longest), 2)).unwrap();
@@ -154,10 +170,10 @@ fn exactly_the_limits_are_accepted() {
 #[test]
 fn setting_a_folder_again_replaces_its_verdict_and_keeps_its_id() {
     let mut file = UserRulesFile::default();
-    let first = file.set(Path::new("/data/a"), UserVerdict::Keep).unwrap();
-    let second = file.set(Path::new("/data/b"), UserVerdict::Keep).unwrap();
+    let first = file.set(Path::new(&abs("/data/a")), UserVerdict::Keep).unwrap();
+    let second = file.set(Path::new(&abs("/data/b")), UserVerdict::Keep).unwrap();
 
-    let again = file.set(Path::new("/data/a"), UserVerdict::Safe).unwrap();
+    let again = file.set(Path::new(&abs("/data/a")), UserVerdict::Safe).unwrap();
 
     assert_eq!(again, first);
     assert_ne!(second, first);
@@ -168,11 +184,11 @@ fn setting_a_folder_again_replaces_its_verdict_and_keeps_its_id() {
 #[test]
 fn ids_of_removed_rules_are_not_reused() {
     let mut file = UserRulesFile::default();
-    let first = file.set(Path::new("/data/a"), UserVerdict::Keep).unwrap();
+    let first = file.set(Path::new(&abs("/data/a")), UserVerdict::Keep).unwrap();
 
     assert!(file.remove(first));
     assert!(!file.remove(first));
-    let next = file.set(Path::new("/data/b"), UserVerdict::Keep).unwrap();
+    let next = file.set(Path::new(&abs("/data/b")), UserVerdict::Keep).unwrap();
 
     assert_ne!(next, first);
 }
@@ -181,16 +197,16 @@ fn ids_of_removed_rules_are_not_reused() {
 fn the_list_is_capped() {
     let mut file = UserRulesFile::default();
     for index in 0..MAX_USER_RULES {
-        file.set(Path::new(&format!("/data/{index}")), UserVerdict::Keep)
+        file.set(Path::new(&abs(&format!("/data/{index}"))), UserVerdict::Keep)
             .unwrap();
     }
 
     assert_eq!(
-        file.set(Path::new("/data/more"), UserVerdict::Keep),
+        file.set(Path::new(&abs("/data/more")), UserVerdict::Keep),
         Err(RulesFileError::TooMany)
     );
     // An existing folder can still change its verdict.
-    file.set(Path::new("/data/0"), UserVerdict::Safe).unwrap();
+    file.set(Path::new(&abs("/data/0")), UserVerdict::Safe).unwrap();
     assert_eq!(file.rules.len(), MAX_USER_RULES);
 }
 
@@ -200,7 +216,7 @@ fn a_folder_that_is_not_acceptable_changes_nothing() {
 
     for folder in ["/", "relative", "/a/../b", "/a/", ""] {
         assert!(
-            file.set(Path::new(folder), UserVerdict::Keep).is_err(),
+            file.set(Path::new(&abs(folder)), UserVerdict::Keep).is_err(),
             "{folder:?}"
         );
     }
@@ -257,7 +273,7 @@ fn a_repeated_key_or_folder_is_refused_not_resolved() {
     let twice = format!("{},{}", rule(1, "/home/u/a"), rule(2, "/home/u/a"));
     assert_eq!(
         parse(&file_with(&twice, 3)),
-        Err(RulesFileError::DuplicateFolder("/home/u/a".to_owned()))
+        Err(RulesFileError::DuplicateFolder(abs("/home/u/a")))
     );
 }
 
@@ -286,7 +302,7 @@ fn a_rule_that_would_make_the_file_too_large_is_refused_and_what_is_kept_reads_b
     let mut accepted = 0;
     let refused = loop {
         let before = file.clone();
-        match file.set(Path::new(&long(accepted)), UserVerdict::Keep) {
+        match file.set(Path::new(&abs(&long(accepted))), UserVerdict::Keep) {
             Ok(_) => accepted += 1,
             Err(error) => {
                 assert_eq!(file, before, "a refused change leaves the file as it was");
@@ -308,7 +324,7 @@ fn compact_file_near_the_cap() -> (UserRulesFile, Vec<u8>) {
     let mut rules = Vec::new();
     let mut id = 1u32;
     loop {
-        let folder = format!("/home/u/{}{id}", "a".repeat(1000));
+        let folder = abs(&format!("/home/u/{}{id}", "a".repeat(1000)));
         rules.push(UserRule {
             id,
             verdict: UserVerdict::Keep,
@@ -358,7 +374,8 @@ fn a_compact_file_near_the_cap_can_be_changed_and_is_written_back_within_the_cap
 #[test]
 fn a_small_file_is_still_rendered_pretty_for_a_person_to_read() {
     let mut file = UserRulesFile::default();
-    file.set(Path::new("/home/u/tmp"), UserVerdict::Safe).unwrap();
+    file.set(Path::new(&abs("/home/u/tmp")), UserVerdict::Safe)
+        .unwrap();
 
     let text = String::from_utf8(render(&file)).unwrap();
 
@@ -376,7 +393,7 @@ fn a_change_is_refused_only_when_even_the_compact_file_would_not_fit() {
     let refused = loop {
         let before = file.clone();
         let folder = format!("/home/u/{}z{index}", "b".repeat(1000));
-        match file.set(Path::new(&folder), UserVerdict::Keep) {
+        match file.set(Path::new(&abs(&folder)), UserVerdict::Keep) {
             Ok(_) => {
                 assert!(compact(&file) <= MAX_RULES_FILE_BYTES, "accepted means it fits");
                 index += 1;

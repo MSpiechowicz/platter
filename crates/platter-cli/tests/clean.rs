@@ -141,15 +141,21 @@ fn a_dry_run_lists_the_plan_and_changes_nothing() {
     // Nothing is deleted for good on Windows: the build output goes to the Recycle Bin.
     let action = if cfg!(windows) { "move to trash" } else { "delete" };
     assert!(out.contains(&format!("rust-target  {action}")), "{out}");
+    // Built from components: `join("code/p/target")` would mix `/` into a Windows path.
+    let target: PathBuf = ["code", "p", "target"]
+        .iter()
+        .fold(home.clone(), |path, part| path.join(part));
+    assert!(out.contains(&target.display().to_string()), "{out}");
+    let kept = home.join("Documents").join("q").join("target");
     assert!(
-        out.contains(&home.join("code/p/target").display().to_string()),
-        "{out}"
-    );
-    assert!(
-        !out.contains("Documents/q/target"),
+        !out.contains(&kept.display().to_string()),
         "a kept folder is never planned: {out}"
     );
-    assert!(!out.contains("code/link"), "a link is never followed: {out}");
+    let link = home.join("code").join("link");
+    assert!(
+        !out.contains(&link.display().to_string()),
+        "a link is never followed: {out}"
+    );
     assert_eq!(listing(&home), before);
 }
 

@@ -18,23 +18,39 @@
 //! the bin afterwards (deleted for good, say) is reported as [`NotRecycled`], never as trashed. So is one
 //! that cannot be looked at after the shell ran (it may be in the bin): neither failed nor restorable.
 //!
-//! The shell is called with `FOF_ALLOWUNDO | FOF_WANTNUKEWARNING | FOF_NO_UI`. An item the Recycle Bin
-//! will not take (too large for it, a drive set to delete at once) is skipped by the shell and reported
-//! by `trash` (the crate's progress sink) as an error, and stays where it is: the CI tests in
-//! `tests/windows_cleanup.rs` set the volume's bin to delete immediately, and to a tiny size, and check
-//! that the item is still there. Platter does not read those settings first (no safe API for them
-//! without a registry crate, which the project does not have).
+//! The shell is called with `FOF_ALLOWUNDO | FOF_WANTNUKEWARNING | FOF_NO_UI`. For an item the Recycle Bin
+//! will not take (too large for it, a drive set to delete at once) it raises a "delete for good?" question
+//! that has no window to be answered in, and waits. So the shell is never given such an item: before every
+//! move the bin's settings are read (`bin_guard`, rules and defaults in `bin_text`) and an item the bin
+//! would not keep is refused, untouched, with the reason (a child of `trash_children` is left and said so).
+//! A setting that cannot be read is a refusal too. The shell call is also under a time limit
+//! ([`SHELL_LIMIT`], `time_limit`) as a backstop: when it passes, the outcome is [`NotRecycled`] with a
+//! text that says the item may be waiting on a Windows prompt or in the bin, never a success, and no
+//! further call is made while that one has not come back.
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::LazyLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use platter_core::ports::{ChildTrashed, NotRecycled, TrashedChild, TrashedChildren};
 use platter_core::{EntryKind, EntryRemover, ExpectedEntry, RemoveMode, Removed};
 
+use super::bin_guard;
 use super::identity::identity_of_path;
 use super::probe::{Hold, Walk, is_plain_name, is_short_enough, join, parse, timed, walk};
 use super::recycle::{self, Wanted};
+use super::time_limit::{Ended, Limiter};
+
+/// How long the shell may take to move one item to the Recycle Bin. A move within a volume is a rename, so
+/// this is far more than it needs: when it passes, the shell is waiting for something.
+const SHELL_LIMIT: Duration = Duration::from_secs(120);
+/// What each child of a batch adds to [`SHELL_LIMIT`], and the most a batch may take in all.
+const SHELL_LIMIT_PER_CHILD: Duration = Duration::from_secs(1);
+const SHELL_LIMIT_MOST: Duration = Duration::from_secs(600);
+
+/// The calls to the shell that were given up on and have not come back (see `time_limit`).
+static SHELL: LazyLock<Limiter> = LazyLock::new(Limiter::new);
 
 /// [`EntryRemover`] on the Recycle Bin.
 #[derive(Debug, Clone, Copy, Default)]
@@ -60,7 +76,13 @@ impl EntryRemover for WindowsEntryRemover {
 
         let looked = held_walk(path, Hold::Ancestors)?;
         check(&looked, expected)?;
-        recycle::ensure_recyclable(&parts[0])?;
+        let volume_total = recycle::ensure_recyclable(&parts[0])?;
+
+        // The shell is only asked when the bin is known to take it: see `bin_guard`.
+        let rules = bin_guard::rules_for(&parts[0], volume_total)?;
+        let length = looked.identities.last().map_or(0, |identity| identity.size);
+        bin_guard::takes(&rules, &original, expected.is_dir, length)
+            .map_err(|why| bin_guard::refused(&why))?;
 
         let wanted = wanted(expected);
         // The folders above stay held until the action is over; the target itself must not be.
@@ -72,7 +94,10 @@ impl EntryRemover for WindowsEntryRemover {
         drop(target);
 
         let since = now_seconds();
-        let moved = trash::delete(&original);
+        let moved = match shell_delete(vec![original.clone()], SHELL_LIMIT)? {
+            Ended::Returned(moved) => moved,
+            Ended::TimedOut => return Err(NotRecycled(timed_out(SHELL_LIMIT)).into_error()),
+        };
 
         // Still there as planned: it was not moved, whatever the shell said. When that cannot be told
         // the shell has already run, so it is not reported as a failure: it may be in the Recycle Bin.
@@ -126,17 +151,51 @@ impl EntryRemover for WindowsEntryRemover {
         // The folder is held, last name too, so it cannot be swapped while its children are acted on.
         let looked = held_walk(path, Hold::All)?;
         check(&looked, expected)?;
-        recycle::ensure_recyclable(&parts[0])?;
+        let volume_total = recycle::ensure_recyclable(&parts[0])?;
         let volume = looked.identities.last().map(|identity| identity.volume_serial);
 
-        let (mut left, eligible, more) = list_children(&folder, volume, limit)?;
+        let (mut left, listed, more) = list_children(&folder, volume, limit)?;
+
+        // A child goes to the shell only when the bin is known to take it (see `bin_guard`): when it is not,
+        // the child is left where it is, and says why. The bin's settings are read once, for all of them.
+        let rules = bin_guard::rules_for(&parts[0], volume_total);
+        let mut eligible = Vec::with_capacity(listed.len());
+        for child in listed {
+            let verdict = match &rules {
+                Ok(rules) => bin_guard::takes(rules, &child.path, child.is_dir, child.size)
+                    .map_err(|why| bin_guard::refusal_text(&why)),
+                Err(error) => Err(error.to_string()),
+            };
+
+            match verdict {
+                Ok(()) => eligible.push(child),
+                Err(why) => left.push(child.reported(ChildTrashed::Left(why))),
+            }
+        }
 
         let since = now_seconds();
-        let paths: Vec<&Path> = eligible.iter().map(|child| child.path.as_path()).collect();
+        let paths: Vec<PathBuf> = eligible.iter().map(|child| child.path.clone()).collect();
+        let wait = SHELL_LIMIT
+            .saturating_add(
+                SHELL_LIMIT_PER_CHILD.saturating_mul(u32::try_from(paths.len()).unwrap_or(u32::MAX)),
+            )
+            .min(SHELL_LIMIT_MOST);
         let moved = if paths.is_empty() {
-            Ok(())
+            Ended::Returned(Ok(()))
         } else {
-            trash::delete_all(&paths)
+            shell_delete(paths, wait)?
+        };
+        let moved = match moved {
+            Ended::Returned(moved) => moved,
+            Ended::TimedOut => {
+                // What the shell did, if anything, is not known: none of them is offered for restoring.
+                let mut children = left;
+                for child in &eligible {
+                    children.push(child.reported(ChildTrashed::NotRecycled(timed_out(wait))));
+                }
+
+                return Ok(TrashedChildren { children, more });
+            }
         };
 
         // Each child is looked at again: still there as it was, or gone.
@@ -213,6 +272,22 @@ impl EntryRemover for WindowsEntryRemover {
     fn free_bytes(&self, path: &Path) -> io::Result<u64> {
         crate::free_space(path)
     }
+}
+
+/// Asks the shell to move `paths` to the Recycle Bin, for at most `limit`. An error means the shell was not
+/// asked (an earlier request is still waiting).
+fn shell_delete(paths: Vec<PathBuf>, limit: Duration) -> io::Result<Ended> {
+    SHELL.run(limit, move || {
+        trash::delete_all(&paths).map_err(|error| error.to_string())
+    })
+}
+
+/// What is reported when the shell did not come back in `limit`.
+fn timed_out(limit: Duration) -> String {
+    format!(
+        "the Recycle Bin did not answer in {} s, so it is not known what happened: it may be waiting on a Windows prompt or still moving it, look in the Recycle Bin before cleaning again",
+        limit.as_secs()
+    )
 }
 
 /// One direct child that may be moved.

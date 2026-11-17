@@ -206,9 +206,15 @@ fn a_hostile_argument_is_not_echoed_raw_in_the_usage_error() {
     }
 
     let output = cli(&["scan", "--x\u{9b}2Jy\u{7f}z\\u{1b}"]);
+    // The backslash is doubled on Unix only: on Windows it is the path separator and prints as it is.
+    let quoted = if cfg!(windows) {
+        "'--x\\u{9b}2Jyz\\u{1b}'"
+    } else {
+        "'--x\\u{9b}2Jyz\\\\u{1b}'"
+    };
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("'--x\\u{9b}2Jyz\\\\u{1b}'"),
-        "what clap quotes is shown with visible escapes and a doubled backslash"
+        String::from_utf8_lossy(&output.stderr).contains(quoted),
+        "what clap quotes is shown with visible escapes and the host's backslash form"
     );
 }
 

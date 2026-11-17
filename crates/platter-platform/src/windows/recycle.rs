@@ -7,10 +7,12 @@
 //! those on trust: an item is only ever named by opening its `id` and comparing the file's identity (volume
 //! serial and file index, which a move within a volume keeps) with what was planned.
 //!
-//! `trash::delete` moves with `FOF_ALLOWUNDO` and `FOF_WANTNUKEWARNING` without a user interface, so an
-//! item the Recycle Bin cannot take (too large for it, a drive without one) is refused by the shell and
-//! reported as an error, not deleted. Should the shell delete one anyway, the item is not found here and
-//! the caller reports it as gone but not recycled.
+//! `trash::delete` moves with `FOF_ALLOWUNDO` and `FOF_WANTNUKEWARNING` without a user interface. For an
+//! item the bin will not take (too large for it, a drive set to delete at once) the shell raises a
+//! question that nobody sees and waits for it, so that is never left to the shell: `bin_guard` reads the
+//! bin's settings first and refuses such an item, and the shell call itself has a time limit
+//! (`time_limit`). Should the shell delete one anyway, the item is not found here and the caller reports
+//! it as gone but not recycled.
 //!
 //! `restore_all` refuses an item whose old path exists (`RestoreCollision`), but that check and the move
 //! that follows it are two steps of the shell, and the move (`MoveItem` with `FOF_NO_UI`) has no
@@ -50,8 +52,9 @@ impl Wanted {
 
 /// Refuses a volume the Recycle Bin is not known to work on: only a fixed drive with NTFS or ReFS.
 /// Anything else (removable, network, FAT, a drive `sysinfo` does not list) is `Unsupported`, so the
-/// shell is never asked to "recycle" where it would delete for good.
-pub(super) fn ensure_recyclable(drive_root: &str) -> io::Result<()> {
+/// shell is never asked to "recycle" where it would delete for good. The answer is the volume's total size
+/// in bytes, which the default size of the bin is a share of.
+pub(super) fn ensure_recyclable(drive_root: &str) -> io::Result<u64> {
     let refuse = || {
         io::Error::new(
             io::ErrorKind::Unsupported,
@@ -71,7 +74,7 @@ pub(super) fn ensure_recyclable(drive_root: &str) -> io::Result<()> {
         return Err(refuse());
     }
 
-    Ok(())
+    Ok(disk.total_space())
 }
 
 /// Every item in the Recycle Bin. It can be a long list: ask once for a whole run.

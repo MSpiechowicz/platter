@@ -22,15 +22,22 @@ pub fn bytes(value: u64) -> String {
 /// Makes untrusted text (file names, paths, volume labels) safe to print on a terminal: control
 /// characters (C0, DEL, C1) and Unicode bidirectional controls are replaced by a visible `\u{..}`
 /// escape. Otherwise a file named `\x1b[2J` could clear the screen, an OSC sequence could rewrite the
-/// window title or clipboard, and a bidi override could make a name read differently than it is. A
-/// literal backslash is written `\\`, so a name that merely contains the text `\u{1b}` cannot be
-/// mistaken for one that contains the escape character: the output reads back unambiguously.
+/// window title or clipboard, and a bidi override could make a name read differently than it is.
+/// On Unix a literal backslash is written `\\`, so a name that merely contains the text `\u{1b}` cannot
+/// be mistaken for one that contains the escape character: the output reads back unambiguously. On
+/// Windows the backslash is the path separator and cannot be part of a name, so it is printed as it is
+/// and `C:\Users\me` stays readable and copyable.
 /// Used for every human-readable line; `--json` goes through [`json_safe`].
 pub fn display(text: &str) -> String {
+    escape(text, cfg!(not(windows)))
+}
+
+/// [`display`] with the backslash handling chosen by the caller.
+fn escape(text: &str, double_backslash: bool) -> String {
     let mut safe = String::with_capacity(text.len());
 
     for ch in text.chars() {
-        if ch == '\\' {
+        if ch == '\\' && double_backslash {
             safe.push_str("\\\\");
         } else if ch.is_control() || is_bidi_control(ch) {
             safe.push_str(&format!("\\u{{{:x}}}", u32::from(ch)));
@@ -133,21 +140,36 @@ mod tests {
     }
 
     #[test]
-    fn display_writes_a_literal_backslash_twice_so_the_output_is_unambiguous() {
-        assert_eq!(display("C:\\dir\\file"), "C:\\\\dir\\\\file");
+    fn a_literal_backslash_is_written_twice_so_the_output_is_unambiguous() {
+        assert_eq!(escape("C:\\dir\\file", true), "C:\\\\dir\\\\file");
 
         // The text `\u{1b}` and the escape character used to print the same.
-        let literal = display("\\u{1b}");
-        let escape = display("\u{1b}");
+        let literal = escape("\\u{1b}", true);
+        let escaped = escape("\u{1b}", true);
         assert_eq!(literal, "\\\\u{1b}");
-        assert_eq!(escape, "\\u{1b}");
-        assert_ne!(literal, escape);
+        assert_eq!(escaped, "\\u{1b}");
+        assert_ne!(literal, escaped);
 
         assert_eq!(
-            display("\\\x1b"),
+            escape("\\\x1b", true),
             "\\\\\\u{1b}",
             "a backslash before an escape character"
         );
+    }
+
+    #[test]
+    fn a_windows_path_keeps_its_single_backslashes_while_controls_stay_escaped() {
+        assert_eq!(
+            escape("C:\\Users\\me\\a\x1b[2Jb", false),
+            "C:\\Users\\me\\a\\u{1b}[2Jb"
+        );
+    }
+
+    #[test]
+    fn display_follows_the_host_for_the_backslash() {
+        let expected = if cfg!(windows) { "C:\\dir" } else { "C:\\\\dir" };
+
+        assert_eq!(display("C:\\dir"), expected);
     }
 
     #[test]

@@ -113,6 +113,8 @@ jobs:
 
       - name: Test
         if: matrix.check == 'test'
+        # A test that waits on Windows (a hidden prompt of the shell) fails the step instead of the whole job's hour.
+        timeout-minutes: 25
         run: cargo test --locked --workspace --no-fail-fast
 
       # install.ps1 against a release folder on disk, without running the setup: a matching setup passes, a

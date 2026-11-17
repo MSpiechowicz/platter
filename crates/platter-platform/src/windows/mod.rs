@@ -10,6 +10,9 @@
 //! | [`probe`] | W2 | [`WindowsEntryProbe`]: looks at a path component by component |
 //! | [`remove`] | W2 | [`WindowsEntryRemover`]: moves a target to the Recycle Bin, identity checked |
 //! | [`recycle`] | W2 | finding and restoring items in the Recycle Bin |
+//! | `bin_guard` | W2 | reads the bin's settings with `reg.exe` and `mountvol.exe`: does it take this item? |
+//! | [`bin_text`] | W2 | the rules and defaults for that, and the parsers of the tools' output (no system calls) |
+//! | [`time_limit`] | W2 | the shell's move to the bin under a time limit |
 //! | [`tools`] | W2 | [`WindowsToolRunner`]: the tools that own a cache, elevated through UAC |
 //! | [`runtime`] | W3 | the advisor's helper process: pipes, Job Object, exit codes |
 //! | [`pinned`] | W3 | opening the model file so that what was checked is what is loaded |
@@ -17,6 +20,8 @@
 //! Paths on Windows are `std::path::Path`s of the form `X:\a\b` (never `\\?\`, see `dunce`). Safe wrapper
 //! crates only: `unsafe` is forbidden in this workspace.
 
+mod bin_guard;
+pub mod bin_text;
 pub mod exclusions;
 pub mod identity;
 pub mod pinned;
@@ -25,6 +30,7 @@ pub mod reader;
 pub mod recycle;
 pub mod remove;
 pub mod runtime;
+pub mod time_limit;
 pub mod tools;
 pub mod volumes;
 

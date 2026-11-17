@@ -6,7 +6,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use platter_cleanup::{CleanupOptions, Disk, TargetOutcome, execute, plan_cleanup, plan_marked, undo};
+use platter_cleanup::{
+    CleanupOptions, Disk, Refusal, TargetOutcome, execute, plan_cleanup, plan_marked, undo,
+};
 use platter_core::{CancelToken, Environment, Os, ScanConfig, Tree, scan};
 use platter_platform::Platform;
 use platter_platform::root::resolve_root;
@@ -116,10 +118,12 @@ fn the_places_windows_keeps_for_itself_are_never_planned_even_when_marked_by_han
 
     assert!(plan.groups().is_empty(), "{:?}", plan.groups());
     assert_eq!(plan.refused.len(), 2);
+    // Which refusal is reported depends on which check sees the node first: the rule's own `keep` label
+    // (Kept) or the protected places (Protected). Either keeps it out of the plan, so both are right.
     assert!(
         plan.refused
             .iter()
-            .all(|refused| refused.reason.to_string().contains("protected")),
+            .all(|refused| matches!(refused.reason, Refusal::Kept | Refusal::Protected(_))),
         "{:?}",
         plan.refused
     );
