@@ -39,10 +39,10 @@ use platter_ai::{
 use platter_ai::{ProcessEngine, RealSpawner};
 use platter_cleanup::{CandidateLimits, Protected, label_candidates, with_real_keeps};
 use platter_core::dto::{ApiErrorCode, ScanId, SuggestionDto, SuggestionSource, SuggestionsDto, Verdict};
-use platter_core::find_folders as search_folders;
 use platter_core::{
     EntryProbe, Environment, ModelLabel, ModelVerdict, NodeId, NodeKind, Tree, UserRule, UserVerdict,
 };
+use platter_core::{find_entries_until as search_entries_until, find_folders as search_folders};
 use platter_platform::Platform;
 use platter_platform::paths::node_path;
 use platter_rules::{Explainer, RuleSet, scan_is_kept};
@@ -61,7 +61,7 @@ use crate::user_rules;
 
 /// The largest integer a JavaScript number holds exactly; sizes are clamped to it on the wire.
 const MAX_SAFE: u64 = 9_007_199_254_740_991;
-/// Matches `find_folders` may return (the contract: 1 to 20).
+/// Matches `find_folders` and `find_entries` may return (the contract: 1 to 20).
 const MAX_FOUND: u32 = 20;
 /// How long `label_folders` waits to hear that the worker took the job (a refusal is immediate).
 const TAKEN_WITHIN: Duration = Duration::from_millis(250);
@@ -470,7 +470,7 @@ impl DialogSlot {
 
         if lock(&gate.declined).is_some_and(|at| at.elapsed() < gate.pause) {
             return Err(CommandError::invalid(
-                "the download was just declined; wait a moment",
+                "the download was just declined, so wait a moment",
             ));
         }
 
@@ -921,7 +921,7 @@ impl AdvisorService {
     pub fn check_can_ask(&self) -> CommandResult<()> {
         if self.is_labelling() {
             return Err(CommandError::invalid(
-                "folders are being labelled; ask again when that is done",
+                "folders are being labelled, so ask again when that is done",
             ));
         }
 
@@ -952,7 +952,7 @@ impl AdvisorService {
         if self.is_labelling() {
             self.asking.store(false, Ordering::SeqCst);
             return Err(CommandError::invalid(
-                "folders are being labelled; ask again when that is done",
+                "folders are being labelled, so ask again when that is done",
             ));
         }
 
@@ -1017,7 +1017,7 @@ fn gigabytes(bytes: u64) -> String {
 
 /// The refusal while the model is used by something else.
 fn busy() -> CommandError {
-    CommandError::invalid("the model is busy; wait for it to finish")
+    CommandError::invalid("the model is busy, so wait for it to finish")
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1214,6 +1214,17 @@ pub struct FolderMatchDto {
     pub node: NodeId,
     pub path: String,
     pub allocated: u64,
+}
+
+/// A folder or a file of a scan whose name (or path) fits what the user typed. `kind` is `dir` or `file`
+/// (the wire names of [`NodeKind`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryMatchDto {
+    pub node: NodeId,
+    pub path: String,
+    pub allocated: u64,
+    pub kind: NodeKind,
 }
 
 fn clamp(value: u64) -> u64 {
@@ -1540,6 +1551,18 @@ pub async fn find_folders(
     find(&state, scan, query, limit).await
 }
 
+/// Folders and files of a scan whose name (or exact path) matches what the user typed, for the Ask card's
+/// autocomplete.
+#[tauri::command]
+pub async fn find_entries(
+    state: State<'_, AppState>,
+    scan: ScanId,
+    query: String,
+    limit: u32,
+) -> CommandResult<Vec<EntryMatchDto>> {
+    find_entries_in(&state, scan, query, limit).await
+}
+
 /// Asks the user, in the backend's dialog, then starts the download. The web view's own consent screen
 /// is not enough: a compromised page could call the command without it, so every start is confirmed
 /// here. Where no download can start there is nothing to ask and the refusal is the answer (`invalid`);
@@ -1579,7 +1602,7 @@ pub async fn label_scan(state: &AppState, scan: ScanId) -> CommandResult<()> {
     let tree = state.scans.tree(scan)?;
     if state.scans.is_outdated(scan) {
         return Err(CommandError::invalid(
-            "the disk changed since this scan; rescan first",
+            "the disk changed since this scan, so rescan first",
         ));
     }
     // With rules that cannot be read nothing says which folders the user keeps, so no folder is sent to
@@ -1800,6 +1823,52 @@ pub async fn find(
                 node: found.node,
                 path: found.path,
                 allocated: clamp(found.allocated),
+            })
+            .collect())
+    })
+    .await?
+}
+
+/// [`find_entries`] for the state itself. The call takes the next number of the state's searches, and its
+/// walk stops as soon as a newer call has taken a higher one: the answer of a call that was typed over is
+/// dropped by the web view anyway, so it is an empty list.
+pub async fn find_entries_in(
+    state: &AppState,
+    scan: ScanId,
+    query: String,
+    limit: u32,
+) -> CommandResult<Vec<EntryMatchDto>> {
+    let number = state.entry_searches.fetch_add(1, Ordering::SeqCst) + 1;
+
+    find_entries_numbered(state, scan, query, limit, number).await
+}
+
+/// [`find_entries_in`] as the search that took `number`.
+async fn find_entries_numbered(
+    state: &AppState,
+    scan: ScanId,
+    query: String,
+    limit: u32,
+    number: u64,
+) -> CommandResult<Vec<EntryMatchDto>> {
+    let tree = state.scans.tree(scan)?;
+    let platform = Arc::clone(&state.platform);
+    let searches = Arc::clone(&state.entry_searches);
+    let limit = limit.clamp(1, MAX_FOUND) as usize;
+
+    // A walk over every entry of the tree.
+    tauri::async_runtime::spawn_blocking(move || {
+        let env = platform.environment_for(tree.root_path());
+        let superseded = || searches.load(Ordering::SeqCst) != number;
+        let found = search_entries_until(&tree, env.home.as_deref(), &query, limit, superseded)?;
+
+        Ok(found
+            .into_iter()
+            .map(|found| EntryMatchDto {
+                node: found.node,
+                path: found.path,
+                allocated: clamp(found.allocated),
+                kind: found.kind,
             })
             .collect())
     })

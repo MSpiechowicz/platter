@@ -1,45 +1,50 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiRequestError, type Api } from '../../api/client';
-import type { AdvisorAnswerDto, ScanAnswerDto } from '../../api/types';
-import { AdvisorStore } from '../../state/advisor.svelte';
+import type { AdvisorAnswerDto, EntryMatchDto, ScanAnswerDto } from '../../api/types';
+import { AdvisorStore, FIND_LIMIT } from '../../state/advisor.svelte';
 import { LOADING_DELAY_MS } from '../../state/delayed.svelte';
 import { SettingsStore } from '../../state/settings.svelte';
 import { ui } from '../../state/ui.svelte';
 import AskCard from './AskCard.svelte';
+import { SEARCH_DELAY_MS } from './FolderPicker.svelte';
 import { scanAnswer, scanRow, statusOf } from './fixtures';
 
 /** The name of the chip that `scanAnswer()` has in its text: the folder and Platter's verdict on it. */
 const VIDEOS_CHIP = '/home/demo/Videos, kept';
 
 const EMPTY_LINE =
-  'Ask anything about what was scanned. The local model only reads your question; Platter answers from the scan and its rules.';
+  'Ask anything about what was scanned. The local model only reads your question. Platter answers from the scan and its rules.';
 
 /** What Platter says about one folder: its own words, from a rule. */
 const folderAnswer = (over: Partial<AdvisorAnswerDto> = {}): AdvisorAnswerDto => ({
   node: 11,
   path: '/home/demo/Videos',
   verdict: 'keep',
-  reason: 'Your own videos. Left alone on purpose; nothing inside is suggested for cleanup.',
+  reason: 'Your own videos. Left alone on purpose. Nothing inside is suggested for cleanup.',
   source: 'rule',
   detail: 'Rule: Videos. 12 GB. 5% of it (600 MB) is older than a year.',
   ...over,
 });
 
-function setup(askScan: Api['askScan'], status = statusOf('loaded')) {
+function setup(
+  askScan: Api['askScan'],
+  status = statusOf('loaded'),
+  findEntries: Api['findEntries'] = vi.fn().mockResolvedValue([]),
+) {
   const askAdvisor = vi.fn().mockResolvedValue(folderAnswer());
   const settings = new SettingsStore(null);
-  const store = new AdvisorStore({ askScan, askAdvisor } as unknown as Api, settings);
+  const store = new AdvisorStore({ askScan, askAdvisor, findEntries } as unknown as Api, settings);
 
   settings.set('advisorEnabled', true);
   store.status = status;
 
   const view = render(AskCard, { props: { scan: 1, store } });
 
-  return { ...view, store, settings, askAdvisor };
+  return { ...view, store, settings, askAdvisor, findEntries };
 }
 
-const input = (): HTMLInputElement => screen.getByRole('textbox') as HTMLInputElement;
+const input = (): HTMLInputElement => screen.getByRole('combobox') as HTMLInputElement;
 const send = (): HTMLButtonElement => screen.getByRole('button', { name: 'Ask' }) as HTMLButtonElement;
 
 async function ask(text: string): Promise<void> {
@@ -257,7 +262,7 @@ describe('AskCard: asking a free question', () => {
         {
           source: 'unruled',
           verdict: 'review',
-          reason: 'Platter has no rule for it; deleting it is your call.',
+          reason: 'Platter has no rule for it. Deleting it is your call.',
           detail: '315 MB.',
         },
         'No rule',
@@ -267,7 +272,7 @@ describe('AskCard: asking a free question', () => {
           source: 'model',
           verdict: 'review',
           reason:
-            'Platter has no rule for it; deleting it is your call. The local model marked it for review.',
+            'Platter has no rule for it. Deleting it is your call. The local model marked it for review.',
           detail: '315 MB.',
         },
         'Local model',
@@ -685,14 +690,16 @@ describe('AskCard: a question asked back', () => {
     const askScan = vi
       .fn<Api['askScan']>()
       .mockResolvedValueOnce(asked())
-      .mockRejectedValueOnce(new ApiRequestError('invalid', 'that choice is no longer available; ask again'));
+      .mockRejectedValueOnce(
+        new ApiRequestError('invalid', 'that choice is no longer available, so ask again'),
+      );
 
     setup(askScan);
     await ask(QUESTION);
     await fireEvent.click(await screen.findByRole('button', { name: '~/work/backup' }));
 
     expect((await screen.findByRole('alert')).textContent).toContain(
-      'that choice is no longer available; ask again',
+      'that choice is no longer available, so ask again',
     );
     expect(screen.getByText('You picked: ~/work/backup')).toBeTruthy();
   });
@@ -926,5 +933,437 @@ describe('AskCard: the log scrolls and the question box stays', () => {
     await screen.findByRole('button', { name: VIDEOS_CHIP });
 
     await waitFor(() => expect(scroll.top()).toBe(QUESTION_TOP));
+  });
+});
+
+const DOWNLOADS: EntryMatchDto = { node: 4, path: '~/Pobrane', allocated: 96_000_000_000, kind: 'dir' };
+const DOCUMENTS: EntryMatchDto = { node: 5, path: '~/Dokumenty', allocated: 4_000_000_000, kind: 'dir' };
+const OLD_ISO: EntryMatchDto = { node: 6, path: '~/Pobrane/old.iso', allocated: 4_200_000_000, kind: 'file' };
+
+/** Types at the end of the field, as the keys do, and waits out the pause after the last key. */
+async function typeIn(text: string, settle = true): Promise<void> {
+  input().value = text;
+  await fireEvent.input(input());
+
+  if (settle) {
+    await vi.advanceTimersByTimeAsync(SEARCH_DELAY_MS);
+  }
+}
+
+const options = (): HTMLElement[] => screen.queryAllByRole('option');
+const active = (): string | undefined =>
+  options()
+    .find((option) => option.getAttribute('aria-selected') === 'true')
+    ?.querySelector('.p')?.textContent ?? undefined;
+
+describe('AskCard: completing the word under the caret', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    ui.go('advisor');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('asks 150 ms after the last key, once, for the word typed', async () => {
+    const { findEntries } = setup(vi.fn(), statusOf('loaded'), vi.fn().mockResolvedValue([DOWNLOADS]));
+
+    await typeIn('~/Po', false);
+    await vi.advanceTimersByTimeAsync(100);
+    await typeIn('~/Pob', false);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(findEntries).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(findEntries).toHaveBeenCalledTimes(1);
+    expect(findEntries).toHaveBeenCalledWith(1, '~/Pob', FIND_LIMIT);
+  });
+
+  it('makes no call for a word of 2 characters', async () => {
+    const { findEntries } = setup(vi.fn(), statusOf('loaded'), vi.fn().mockResolvedValue([DOWNLOADS]));
+
+    await typeIn('ab');
+    await typeIn('what is ab?');
+
+    expect(findEntries).not.toHaveBeenCalled();
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it('lists each match above the field with its path (a slash after a folder), its size and what it is', async () => {
+    setup(vi.fn(), statusOf('loaded'), vi.fn().mockResolvedValue([DOWNLOADS, OLD_ISO]));
+
+    await typeIn('~/Pob');
+
+    expect(input().getAttribute('aria-expanded')).toBe('true');
+    expect(input().getAttribute('aria-controls')).toBe(screen.getByRole('listbox').id);
+    expect(input().getAttribute('aria-autocomplete')).toBe('list');
+    expect(options().map((option) => option.getAttribute('aria-label'))).toEqual([
+      'Folder ~/Pobrane/, 96 GB',
+      'File ~/Pobrane/old.iso, 4.2 GB',
+    ]);
+    expect(options()[0]?.textContent).toContain('~/Pobrane/');
+    expect(options()[0]?.textContent).toContain('96 GB');
+    expect(options()[1]?.textContent).toContain('~/Pobrane/old.iso');
+    expect(input().getAttribute('aria-activedescendant')).toBe(options()[0]?.id);
+  });
+
+  it('moves the active option with the arrow keys and stops at both ends', async () => {
+    setup(vi.fn(), statusOf('loaded'), vi.fn().mockResolvedValue([DOWNLOADS, DOCUMENTS]));
+
+    await typeIn('~/');
+
+    expect(active()).toBe('~/Pobrane/');
+
+    await fireEvent.keyDown(input(), { key: 'ArrowDown' });
+    expect(active()).toBe('~/Dokumenty/');
+    expect(input().getAttribute('aria-activedescendant')).toBe(options()[1]?.id);
+
+    await fireEvent.keyDown(input(), { key: 'ArrowDown' });
+    expect(active()).toBe('~/Dokumenty/');
+
+    await fireEvent.keyDown(input(), { key: 'ArrowUp' });
+    await fireEvent.keyDown(input(), { key: 'ArrowUp' });
+    expect(active()).toBe('~/Pobrane/');
+  });
+
+  it('accepts the active option with Tab, keeps the caret after the slash and asks for the next level', async () => {
+    const findEntries = vi.fn().mockResolvedValueOnce([DOWNLOADS, DOCUMENTS]).mockResolvedValue([OLD_ISO]);
+
+    setup(vi.fn(), statusOf('loaded'), findEntries);
+
+    await typeIn('~/Pob');
+
+    const kept = await fireEvent.keyDown(input(), { key: 'Tab' });
+
+    expect(kept).toBe(false);
+    expect(input().value).toBe('~/Pobrane/');
+    expect(input().selectionStart).toBe(10);
+
+    await vi.advanceTimersByTimeAsync(SEARCH_DELAY_MS);
+
+    expect(findEntries).toHaveBeenLastCalledWith(1, '~/Pobrane/', FIND_LIMIT);
+    expect(options()).toHaveLength(1);
+    expect(options()[0]?.textContent).toContain('~/Pobrane/old.iso');
+  });
+
+  it('takes a file with a click, adds a space and closes the list', async () => {
+    const { findEntries } = setup(vi.fn(), statusOf('loaded'), vi.fn().mockResolvedValue([OLD_ISO]));
+
+    await typeIn('is old.iso big');
+    await typeIn('is old.iso');
+    await fireEvent.click(screen.getByRole('option'));
+    await vi.advanceTimersByTimeAsync(SEARCH_DELAY_MS);
+
+    expect(input().value).toBe('is ~/Pobrane/old.iso ');
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(findEntries).toHaveBeenCalledTimes(2);
+  });
+
+  it('takes Enter with the list open as a pick, not as the question', async () => {
+    const askScan = vi.fn().mockResolvedValue(scanAnswer());
+
+    setup(askScan, statusOf('loaded'), vi.fn().mockResolvedValue([DOWNLOADS]));
+
+    await typeIn('size of ~/Pob');
+
+    const submitted = await fireEvent.keyDown(input(), { key: 'Enter' });
+
+    expect(submitted).toBe(false);
+    expect(input().value).toBe('size of ~/Pobrane/');
+    expect(askScan).not.toHaveBeenCalled();
+  });
+
+  it('closes the list with Escape and leaves the text', async () => {
+    setup(vi.fn(), statusOf('loaded'), vi.fn().mockResolvedValue([DOWNLOADS]));
+
+    await typeIn('~/Pob');
+    expect(screen.getByRole('listbox')).toBeTruthy();
+
+    await fireEvent.keyDown(input(), { key: 'Escape' });
+
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(input().getAttribute('aria-expanded')).toBe('false');
+    expect(input().value).toBe('~/Pob');
+  });
+
+  it('leaves the arrow keys to the caret while the list is closed', async () => {
+    setup(vi.fn(), statusOf('loaded'), vi.fn().mockResolvedValue([DOWNLOADS, DOCUMENTS]));
+
+    await typeIn('size of ~/Pob');
+    await fireEvent.keyDown(input(), { key: 'Escape' });
+
+    expect(await fireEvent.keyDown(input(), { key: 'ArrowDown' })).toBe(true);
+    expect(await fireEvent.keyDown(input(), { key: 'ArrowUp' })).toBe(true);
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(input().getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('drops the search on its way when the caret goes to another word, so its result never opens', async () => {
+    let answer: (found: EntryMatchDto[]) => void = () => undefined;
+    const findEntries = vi.fn(
+      () =>
+        new Promise<EntryMatchDto[]>((resolve) => {
+          answer = resolve;
+        }),
+    );
+
+    setup(vi.fn(), statusOf('loaded'), findEntries);
+
+    // The caret is in `~/Pob`, and the search for it is on its way.
+    input().value = 'size of ~/Pob big?';
+    input().setSelectionRange(13, 13);
+    await fireEvent.input(input());
+    await vi.advanceTimersByTimeAsync(SEARCH_DELAY_MS);
+
+    expect(findEntries).toHaveBeenCalledTimes(1);
+
+    // A key within the same word keeps it.
+    input().setSelectionRange(12, 12);
+    await fireEvent.keyUp(input(), { key: 'ArrowLeft' });
+
+    // A click on another word does not.
+    input().setSelectionRange(17, 17);
+    await fireEvent.click(input());
+    answer([DOWNLOADS]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(input().getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('does not offer a name the question would read as another entry', async () => {
+    const crafted: EntryMatchDto = { node: 9, path: '~/Pobrane "draft" v2.txt', allocated: 1, kind: 'file' };
+    const findEntries = vi.fn(async () => [crafted, DOWNLOADS]);
+
+    setup(vi.fn(), statusOf('loaded'), findEntries);
+
+    input().value = 'size of ~/Pob';
+    input().setSelectionRange(13, 13);
+    await fireEvent.input(input());
+    await vi.advanceTimersByTimeAsync(SEARCH_DELAY_MS);
+
+    expect(options()).toHaveLength(1);
+    expect(options()[0].textContent).toContain('~/Pobrane/');
+  });
+
+  it('drops a result when the caret left its word by a key no handler sees', async () => {
+    let answer: (found: EntryMatchDto[]) => void = () => undefined;
+    const findEntries = vi.fn(
+      () =>
+        new Promise<EntryMatchDto[]>((resolve) => {
+          answer = resolve;
+        }),
+    );
+
+    setup(vi.fn(), statusOf('loaded'), findEntries);
+
+    input().value = 'size of ~/Pob big?';
+    input().setSelectionRange(13, 13);
+    await fireEvent.input(input());
+    await vi.advanceTimersByTimeAsync(SEARCH_DELAY_MS);
+
+    expect(findEntries).toHaveBeenCalledTimes(1);
+
+    // ArrowUp in a one-line field puts the caret at the start, with no event the card listens to.
+    input().setSelectionRange(0, 0);
+    answer([DOWNLOADS]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(input().getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('shows the result of the word the caret stayed in', async () => {
+    let answer: (found: EntryMatchDto[]) => void = () => undefined;
+    const findEntries = vi.fn(
+      () =>
+        new Promise<EntryMatchDto[]>((resolve) => {
+          answer = resolve;
+        }),
+    );
+
+    setup(vi.fn(), statusOf('loaded'), findEntries);
+
+    input().value = 'size of ~/Pob big?';
+    input().setSelectionRange(13, 13);
+    await fireEvent.input(input());
+    await vi.advanceTimersByTimeAsync(SEARCH_DELAY_MS);
+
+    input().setSelectionRange(11, 11);
+    await fireEvent.keyUp(input(), { key: 'ArrowLeft' });
+    answer([DOWNLOADS]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(options()).toHaveLength(1);
+  });
+
+  it('drops the search that still waits for its pause when the caret goes to another word', async () => {
+    const { findEntries } = setup(vi.fn(), statusOf('loaded'), vi.fn().mockResolvedValue([DOWNLOADS]));
+
+    input().value = 'size of ~/Pob big?';
+    input().setSelectionRange(13, 13);
+    await fireEvent.input(input());
+    input().setSelectionRange(2, 2);
+    await fireEvent.keyUp(input(), { key: 'ArrowLeft' });
+    await vi.advanceTimersByTimeAsync(SEARCH_DELAY_MS);
+
+    expect(findEntries).not.toHaveBeenCalled();
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it('completes a folder with white space inside its quotes, then a file in it, and asks it as one path', async () => {
+    const SPACED: EntryMatchDto = { node: 7, path: '~/My Files', allocated: 5_000_000, kind: 'dir' };
+    const INNER: EntryMatchDto = { node: 8, path: '~/My Files/a b.txt', allocated: 3_000_000, kind: 'file' };
+    const askScan = vi.fn().mockResolvedValue(scanAnswer());
+    const findEntries = vi.fn().mockResolvedValueOnce([SPACED]).mockResolvedValue([INNER]);
+
+    setup(askScan, statusOf('loaded'), findEntries);
+
+    await typeIn('how big is ~/My');
+    await fireEvent.keyDown(input(), { key: 'Tab' });
+
+    expect(input().value).toBe('how big is "~/My Files/"');
+    expect(input().selectionStart).toBe(23);
+
+    await vi.advanceTimersByTimeAsync(SEARCH_DELAY_MS);
+
+    expect(findEntries).toHaveBeenLastCalledWith(1, '~/My Files/', FIND_LIMIT);
+
+    await fireEvent.keyDown(input(), { key: 'Tab' });
+
+    expect(input().value).toBe('how big is "~/My Files/a b.txt" ');
+    expect(input().selectionStart).toBe(32);
+
+    await fireEvent.submit(input().form as HTMLFormElement);
+
+    expect(askScan).toHaveBeenCalledWith(1, 'how big is "~/My Files/a b.txt"', expect.any(String));
+  });
+
+  it('asks the question with Enter when the list is closed', async () => {
+    const askScan = vi.fn().mockResolvedValue(scanAnswer());
+
+    setup(askScan, statusOf('loaded'), vi.fn().mockResolvedValue([DOWNLOADS]));
+
+    await typeIn('size of ~/Pob');
+    await fireEvent.keyDown(input(), { key: 'Escape' });
+
+    // Enter is not taken, so the browser submits the form.
+    const goes = await fireEvent.keyDown(input(), { key: 'Enter' });
+
+    expect(goes).toBe(true);
+
+    await fireEvent.submit(input().form as HTMLFormElement);
+
+    expect(askScan).toHaveBeenCalledWith(1, 'size of ~/Pob', expect.any(String));
+  });
+
+  it('lets Enter go on while the list is that of the word before the last key', async () => {
+    setup(vi.fn(), statusOf('loaded'), vi.fn().mockResolvedValue([DOWNLOADS]));
+
+    await typeIn('~/Pob');
+    await typeIn('~/Pobr', false);
+
+    expect(await fireEvent.keyDown(input(), { key: 'Enter' })).toBe(true);
+    expect(input().value).toBe('~/Pobr');
+  });
+
+  it('ignores an answer that comes after a later one', async () => {
+    const answers: ((found: EntryMatchDto[]) => void)[] = [];
+    const findEntries = vi.fn(
+      () =>
+        new Promise<EntryMatchDto[]>((resolve) => {
+          answers.push(resolve);
+        }),
+    );
+
+    setup(vi.fn(), statusOf('loaded'), findEntries);
+
+    await typeIn('~/Po');
+    await typeIn('~/Pob');
+
+    expect(findEntries).toHaveBeenCalledTimes(2);
+
+    answers[1]?.([DOWNLOADS]);
+    await vi.advanceTimersByTimeAsync(0);
+    answers[0]?.([DOCUMENTS, OLD_ISO]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(options().map((option) => option.querySelector('.p')?.textContent)).toEqual(['~/Pobrane/']);
+  });
+
+  it('ignores an answer that comes after the question was sent', async () => {
+    let answer: (found: EntryMatchDto[]) => void = () => undefined;
+    const findEntries = vi.fn(
+      () =>
+        new Promise<EntryMatchDto[]>((resolve) => {
+          answer = resolve;
+        }),
+    );
+
+    setup(vi.fn().mockResolvedValue(scanAnswer()), statusOf('loaded'), findEntries);
+
+    await typeIn('size of ~/Pob');
+    await fireEvent.click(send());
+    answer([DOWNLOADS]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it('makes no call and shows no list while the field is disabled', async () => {
+    const { findEntries } = setup(vi.fn(), statusOf('notDownloaded'), vi.fn().mockResolvedValue([DOWNLOADS]));
+
+    await typeIn('~/Pob');
+
+    expect(input().disabled).toBe(true);
+    expect(findEntries).not.toHaveBeenCalled();
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it('closes the list when the field becomes disabled', async () => {
+    const { store } = setup(vi.fn(), statusOf('loaded'), vi.fn().mockResolvedValue([DOWNLOADS]));
+
+    await typeIn('~/Pob');
+    expect(screen.getByRole('listbox')).toBeTruthy();
+
+    store.status = statusOf('loaded', { labelling: { scan: 1, done: 2, total: 9 } });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(input().disabled).toBe(true);
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it('closes the list when the field loses the focus, and when the scan is another one', async () => {
+    const { rerender, findEntries } = setup(
+      vi.fn(),
+      statusOf('loaded'),
+      vi.fn().mockResolvedValue([DOWNLOADS]),
+    );
+
+    await typeIn('~/Pob');
+    expect(screen.getByRole('listbox')).toBeTruthy();
+
+    await fireEvent.blur(input());
+    expect(screen.queryByRole('listbox')).toBeNull();
+
+    await typeIn('~/Pobr');
+    expect(screen.getByRole('listbox')).toBeTruthy();
+
+    await rerender({ scan: 2 });
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(input().value).toBe('');
+    expect(findEntries).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves the field without a list when the search fails', async () => {
+    setup(vi.fn(), statusOf('loaded'), vi.fn().mockRejectedValue(new ApiRequestError('io', 'failed')));
+
+    await typeIn('~/Pob');
+
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

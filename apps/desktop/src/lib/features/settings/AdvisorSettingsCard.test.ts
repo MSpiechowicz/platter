@@ -157,7 +157,7 @@ describe('AdvisorSettingsCard', () => {
 
     expect(
       screen.getByText(
-        'Faster when a graphics card with enough memory is there; Platter falls back to the processor.',
+        'Faster when a graphics card with enough memory is there. Otherwise Platter uses the processor.',
       ),
     ).toBeTruthy();
     expect(gpuToggle().checked).toBe(true);
@@ -191,12 +191,12 @@ describe('AdvisorSettingsCard', () => {
     show(
       statusOf('loaded', {
         device: { kind: 'cpu' },
-        problem: 'The graphics card could not run the model; it runs on the processor.',
+        problem: 'The graphics card could not run the model, so it runs on the processor.',
       }),
     );
 
     expect(screen.getByRole('alert').textContent).toContain(
-      'The graphics card could not run the model; it runs on the processor.',
+      'The graphics card could not run the model, so it runs on the processor.',
     );
   });
 

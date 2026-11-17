@@ -23,7 +23,7 @@ pub fn open_nofollow(path: &Path) -> io::Result<File> {
         .map_err(|error| match error.raw_os_error() {
             Some(code) if code == Errno::LOOP.raw_os_error() => io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("{} is a link; Platter does not follow it", path.display()),
+                format!("{} is a link and Platter does not follow it", path.display()),
             ),
             _ => error,
         })?;

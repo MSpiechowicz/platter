@@ -351,6 +351,8 @@ export interface ScanRowDto {
   verdict?: Verdict;
   source?: 'guard' | 'rule' | 'user' | 'model';
   note?: string;
+  /** The row is a file, not a folder. */
+  file?: true;
 }
 
 /**
@@ -391,7 +393,7 @@ export interface ScanAnswerDto {
     intent: ScanIntent;
     kind: ScanKind;
     limit: number;
-    scope?: { node: NodeId; path: string };
+    scope?: { node: NodeId; path: string; file?: true };
     scopeText?: string;
   };
   /** Text only; names in it are the folders' own and may hold any character. Every path of the scan is in “ ” quotes. */
@@ -413,6 +415,14 @@ export interface FolderMatchDto {
   node: NodeId;
   path: string;
   allocated: number;
+}
+
+/** A folder or a regular file of a finished scan that a search found, for the autocomplete of the Ask card. */
+export interface EntryMatchDto {
+  node: NodeId;
+  path: string;
+  allocated: number;
+  kind: 'dir' | 'file';
 }
 
 /** What the user says about a folder: always keep it, or it is safe to clean (the cleanup moves it to the trash). */

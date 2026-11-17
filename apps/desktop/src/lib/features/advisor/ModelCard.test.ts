@@ -77,12 +77,12 @@ describe('ModelCard', () => {
       statusOf('loaded', {
         ramBytes: 2 * GIB,
         device: { kind: 'cpu' },
-        problem: 'The graphics card could not run the model; it runs on the processor.',
+        problem: 'The graphics card could not run the model, so it runs on the processor.',
       }),
     );
 
     expect(screen.getByRole('alert').textContent).toContain(
-      'The graphics card could not run the model; it runs on the processor.',
+      'The graphics card could not run the model, so it runs on the processor.',
     );
     expect(screen.getByText('CPU')).toBeTruthy();
   });

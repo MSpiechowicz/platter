@@ -46,6 +46,7 @@ function lazyApi(load: () => Promise<Api>): Api {
     askAdvisor: async (scan, node, units) => (await impl()).askAdvisor(scan, node, units),
     askScan: async (scan, question, units, pick) => (await impl()).askScan(scan, question, units, pick),
     findFolders: async (scan, query, limit) => (await impl()).findFolders(scan, query, limit),
+    findEntries: async (scan, query, limit) => (await impl()).findEntries(scan, query, limit),
     listUserRules: async () => (await impl()).listUserRules(),
     addUserRule: async (scan, node, verdict) => (await impl()).addUserRule(scan, node, verdict),
     removeUserRule: async (id) => (await impl()).removeUserRule(id),
@@ -81,7 +82,7 @@ function selectApi(): Api {
   }
 
   if (insideTauri) {
-    console.warn('Running inside Tauri but src/lib/api/tauri.ts is missing; using the mock API.');
+    console.warn('Running inside Tauri but src/lib/api/tauri.ts is missing, so using the mock API.');
   }
 
   return createMockApi({

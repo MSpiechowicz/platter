@@ -6,6 +6,7 @@ import { setMockAdvisorState, type MockAdvisorState } from '../../api/mock-advis
 import { advisor } from '../../state/advisor.svelte';
 import { rules } from '../../state/rules.svelte';
 import { scan, type ReadyScan } from '../../state/scan.svelte';
+import { LOADING_DELAY_MS, LOADING_MIN_VISIBLE_MS } from '../../state/delayed.svelte';
 import { settings } from '../../state/settings.svelte';
 import AdvisorPage from './AdvisorPage.svelte';
 
@@ -31,12 +32,109 @@ async function openWith(state: MockAdvisorState, withScan = false): Promise<void
   }
 
   render(AdvisorPage, { props: { ready } });
+
+  // The page first reads its state behind one spinner, then shows the cards together.
+  await waitFor(() => expect(document.querySelector('.waiting')).toBeNull());
 }
 
 const card = (name: string): HTMLElement => screen.getByRole('region', { name: new RegExp(`^${name}`) });
 
 /** The state pill of the header. */
 const pill = (): string => document.querySelector('.pill')?.textContent?.trim() ?? '';
+
+describe('the first read of the Advisor view', () => {
+  beforeEach(() => {
+    scan.reset();
+    advisor.labels = undefined;
+  });
+
+  it('shows one spinner in the middle until the state is read, then all the cards at once', async () => {
+    settings.set('advisorEnabled', true);
+    await advisor.configure();
+    setMockAdvisorState('loaded');
+    await advisor.watch();
+
+    let finish: () => void = () => undefined;
+    const read = vi.spyOn(rules, 'load').mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+
+    render(AdvisorPage, { props: { ready: undefined } });
+
+    // The rules are still being read: one waiting card, none of the cards yet.
+    expect(document.querySelector('.waiting[aria-busy="true"]')).not.toBeNull();
+    expect(screen.queryByRole('region', { name: /^Model/ })).toBeNull();
+    expect(screen.queryByRole('region', { name: /^Ask about this scan/ })).toBeNull();
+
+    finish();
+
+    await waitFor(() => expect(document.querySelector('.waiting')).toBeNull());
+    expect(card('Model')).toBeTruthy();
+    expect(card('Ask about this scan')).toBeTruthy();
+    expect(card('Needs your input')).toBeTruthy();
+
+    read.mockRestore();
+  });
+
+  it('shows the cards without a status that never comes, after a few seconds', async () => {
+    vi.useFakeTimers();
+
+    try {
+      advisor.status = undefined;
+      render(AdvisorPage, { props: { ready: undefined } });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(document.querySelector('.waiting')).not.toBeNull();
+
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(document.querySelector('.waiting')).toBeNull();
+      expect(card('Ask about this scan')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the spinner a second once it appeared, even when the state comes just after', async () => {
+    settings.set('advisorEnabled', true);
+    await advisor.configure();
+    setMockAdvisorState('loaded');
+    await advisor.watch();
+
+    let finish: () => void = () => undefined;
+    const read = vi.spyOn(rules, 'load').mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+
+    vi.useFakeTimers();
+
+    try {
+      render(AdvisorPage, { props: { ready: undefined } });
+
+      // The read takes longer than 300 ms, so the spinner appears.
+      await vi.advanceTimersByTimeAsync(LOADING_DELAY_MS + 10);
+      expect(screen.getByRole('status')).toBeTruthy();
+
+      // The state comes in just after: the spinner stays out its second, with no card yet.
+      finish();
+      await vi.advanceTimersByTimeAsync(LOADING_MIN_VISIBLE_MS - 200);
+      expect(document.querySelector('.waiting')).not.toBeNull();
+      expect(screen.queryByRole('region', { name: /^Model/ })).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(400);
+      expect(document.querySelector('.waiting')).toBeNull();
+      expect(card('Model')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+      read.mockRestore();
+    }
+  });
+});
 
 describe('the Advisor view without a scan', () => {
   beforeEach(() => {
@@ -89,7 +187,7 @@ describe('the Advisor view without a scan', () => {
     expect(within(card('Ask about this scan')).getByText('Scan a disk or folder first.')).toBeTruthy();
     expect(within(card('Needs your input')).getByText('Scan a disk or folder first.')).toBeTruthy();
     expect(within(card('What to keep')).getByText('Scan a disk or folder first.')).toBeTruthy();
-    expect(within(card('Ask about this scan')).getByRole('textbox')).toHaveProperty('disabled', true);
+    expect(within(card('Ask about this scan')).getByRole('combobox')).toHaveProperty('disabled', true);
     expect(within(card('What to keep')).getByRole('combobox')).toHaveProperty('disabled', true);
   });
 
@@ -264,7 +362,7 @@ describe('the Advisor view with a scan', () => {
     await openWith('loaded', true);
 
     const ask = card('Ask about this scan');
-    const input = within(ask).getByRole('textbox') as HTMLInputElement;
+    const input = within(ask).getByRole('combobox') as HTMLInputElement;
 
     // No example chips: nothing to press before the user types.
     expect(within(ask).queryByRole('button', { name: /^Ask about / })).toBeNull();
@@ -300,7 +398,7 @@ describe('the Advisor view with a scan', () => {
 
     const ask = card('Ask about this scan');
 
-    await fireEvent.input(within(ask).getByRole('textbox'), { target: { value: 'write me a poem' } });
+    await fireEvent.input(within(ask).getByRole('combobox'), { target: { value: 'write me a poem' } });
     await fireEvent.click(within(ask).getByRole('button', { name: 'Ask' }));
 
     expect(
@@ -326,8 +424,9 @@ describe('the Advisor view while a scan runs', () => {
     await advisor.watch();
 
     render(AdvisorPage, { props: { ready: undefined, scanning: true } });
+    await waitFor(() => expect(document.querySelector('.waiting')).toBeNull());
 
-    const text = 'A scan is running; the advisor uses it once it finishes.';
+    const text = 'A scan is running. The advisor uses it once it finishes.';
 
     for (const name of ['How a verdict is made', 'Ask about this scan', 'Needs your input', 'What to keep']) {
       expect(within(card(name)).getByText(text)).toBeTruthy();
@@ -419,7 +518,7 @@ describe('the user rules on the Advisor view', () => {
 
     const ask = card('Ask about this scan');
 
-    await fireEvent.input(within(ask).getByRole('textbox'), { target: { value: 'where is Downloads?' } });
+    await fireEvent.input(within(ask).getByRole('combobox'), { target: { value: 'where is Downloads?' } });
     await fireEvent.click(within(ask).getByRole('button', { name: 'Ask' }));
     await fireEvent.click(
       await within(ask).findByRole('button', { name: /^Ask about .*Downloads$/ }, { timeout: 5000 }),

@@ -929,7 +929,7 @@ describe('askAdvisor: the answer comes from the rules alone', () => {
       path: '/var/tmp',
       verdict: 'review',
       source: 'unruled',
-      reason: 'Platter has no rule for it; deleting it is your call.',
+      reason: 'Platter has no rule for it. Deleting it is your call.',
     });
     expect(answer.detail).toMatch(/^[\d.]+ [KMGT]?B\./);
     expect(answer.detail).not.toMatch(/model/i);
@@ -950,7 +950,7 @@ describe('askAdvisor: the answer comes from the rules alone', () => {
         path: label.path,
         verdict: label.verdict,
         source: 'model',
-        reason: `Platter has no rule for it; deleting it is your call. The local model marked it ${marked}.`,
+        reason: `Platter has no rule for it. Deleting it is your call. The local model marked it ${marked}.`,
       });
       expect(`${answer.reason} ${answer.detail}`).not.toContain(label.reason);
       expect(answer.detail).not.toMatch(/model|label/i);
@@ -1143,5 +1143,143 @@ describe('findFolders', () => {
     expect(await api.findFolders(id, '', 5)).toEqual([]);
     expect(await api.findFolders(id, '   ', 5)).toEqual([]);
     await expectCode(api.findFolders(4242, 'a', 5), 'notFound');
+  });
+});
+
+describe('findEntries', () => {
+  const nameOf = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
+
+  it('lists files as well as folders, saying which each is', async () => {
+    const { api, scan } = setup();
+    const id = await scan;
+    const found = await api.findEntries(id, 'IMG_11', 20);
+
+    expect(found.length).toBeGreaterThan(2);
+    expect(found.every((match) => match.kind === 'file')).toBe(true);
+
+    for (const match of found) {
+      const node = await api.getNode(id, match.node);
+
+      expect(node.kind).toBe('file');
+      expect(match.allocated).toBe(node.allocated);
+    }
+
+    const mixed = await api.findEntries(id, 'Pictures', 20);
+
+    expect(mixed[0]).toMatchObject({ path: '/home/demo/Pictures', kind: 'dir' });
+  });
+
+  it('looks in the whole tree for a name, the exact name first, then names that start with it, then names that hold it', async () => {
+    const { api, scan } = setup();
+    const id = await scan;
+    const found = await api.findEntries(id, 'Cache', 20);
+    const names = found.map((match) => nameOf(match.path).toLowerCase());
+    const tier = (name: string): number => (name === 'cache' ? 0 : name.startsWith('cache') ? 1 : 2);
+
+    expect(found.length).toBeGreaterThan(2);
+    expect(names.map(tier)).toEqual([...names.map(tier)].sort((a, b) => a - b));
+
+    // Largest first within a tier.
+    for (const wanted of [0, 1, 2]) {
+      const sizes = found
+        .filter((_, at) => tier(names[at] as string) === wanted)
+        .map((match) => match.allocated);
+
+      expect(sizes).toEqual([...sizes].sort((a, b) => b - a));
+    }
+  });
+
+  it('lists the children of the folder before the last slash, whose name fits the rest', async () => {
+    const { api, scan } = setup();
+    const id = await scan;
+    const all = await api.findEntries(id, '~/Projekty/', 20);
+    const some = await api.findEntries(id, '~/Projekty/pl', 20);
+
+    expect(all.length).toBeGreaterThan(2);
+    expect(all.every((match) => match.path.startsWith('/home/demo/Projekty/'))).toBe(true);
+    expect(all.every((match) => !match.path.slice('/home/demo/Projekty/'.length).includes('/'))).toBe(true);
+    // An empty rest lists every child, largest first.
+    expect(all.map((match) => match.allocated)).toEqual(
+      [...all.map((match) => match.allocated)].sort((a, b) => b - a),
+    );
+    // Names that start with the rest come before names that only hold it.
+    expect(some.map((match) => match.path).slice(0, 2)).toEqual([
+      '/home/demo/Projekty/platter',
+      '/home/demo/Projekty/rust-playground',
+    ]);
+    expect(some.every((match) => nameOf(match.path).toLowerCase().includes('pl'))).toBe(true);
+
+    // A bare `~` is `~/`, and a path may be written in full.
+    expect((await api.findEntries(id, '~', 3))[0]?.path).toBe('/home/demo/Projekty');
+    expect((await api.findEntries(id, '/home/demo/Projekty/plat', 3)).map((match) => match.path)).toEqual([
+      '/home/demo/Projekty/platter',
+    ]);
+  });
+
+  it('lists the files inside a folder one level at a time', async () => {
+    const { api, scan } = setup();
+    const id = await scan;
+    const [first] = await api.findEntries(id, '~/Pictures/2021/IMG_11', 1);
+
+    expect(first?.kind).toBe('file');
+    expect(first?.path.startsWith('/home/demo/Pictures/2021/IMG_11')).toBe(true);
+
+    // The text before the last slash must be a folder: a file has no children.
+    expect(await api.findEntries(id, `${first?.path}/x`, 5)).toEqual([]);
+    expect(await api.findEntries(id, '~/Nothing/', 5)).toEqual([]);
+    expect(await api.findEntries(id, '~/Projekty/../', 5)).toEqual([]);
+  });
+
+  it('reads a query that only starts with ~ as a name, not a path', async () => {
+    const { api, scan } = setup();
+    const id = await scan;
+
+    expect(await api.findEntries(id, '~foo', 5)).toEqual([]);
+    expect(await api.findEntries(id, 'Projekty', 5)).not.toEqual([]);
+  });
+
+  it('never lists a link, a mount point or the scan root', async () => {
+    const { api, scan } = setup({ state: 'disk' }, '/home/demo');
+    const id = await scan;
+
+    for (const text of ['demo', 'o', '.', 'a', '~', '~/']) {
+      for (const match of await api.findEntries(id, text, 20)) {
+        const node = await api.getNode(id, match.node);
+
+        expect(['dir', 'file'], `${text} ${match.path}`).toContain(node.kind);
+        expect(match.node, text).not.toBe(0);
+      }
+    }
+
+    const whole = setup();
+    const full = await whole.scan;
+
+    expect(await whole.api.findEntries(full, '/proc', 5)).toEqual([]);
+    expect((await whole.api.findEntries(full, '/', 50)).map((match) => nameOf(match.path))).not.toContain(
+      'proc',
+    );
+  });
+
+  it('clamps the limit to 1..20 and refuses a text of more than 1024 bytes', async () => {
+    const { api, scan } = setup();
+    const id = await scan;
+
+    expect(await api.findEntries(id, 'a', 0)).toHaveLength(1);
+    expect(await api.findEntries(id, 'a', -5)).toHaveLength(1);
+    expect(await api.findEntries(id, 'a', 3)).toHaveLength(3);
+    expect((await api.findEntries(id, 'a', 1000)).length).toBe(20);
+
+    await expectCode(api.findEntries(id, 'a'.repeat(1025), 5), 'invalid');
+    await expectCode(api.findEntries(id, 'ł'.repeat(513), 5), 'invalid');
+    expect(await api.findEntries(id, 'a'.repeat(1024), 5)).toEqual([]);
+  });
+
+  it('finds nothing for a blank text, and rejects an unknown scan', async () => {
+    const { api, scan } = setup();
+    const id = await scan;
+
+    expect(await api.findEntries(id, '', 5)).toEqual([]);
+    expect(await api.findEntries(id, '   ', 5)).toEqual([]);
+    await expectCode(api.findEntries(4242, 'a', 5), 'notFound');
   });
 });

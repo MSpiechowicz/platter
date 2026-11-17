@@ -440,7 +440,7 @@ fn a_download_starts_with_a_ticket_only_while_the_state_is_the_one_it_was_read_i
     assert_eq!(
         rig.handle.download_if(ticket),
         Err(WorkerError::Refused(
-            "The model's state changed; try again.".to_owned()
+            "The model's state changed. Try again.".to_owned()
         ))
     );
     assert_eq!(rig.handle.status().state, ModelState::NotDownloaded);

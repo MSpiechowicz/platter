@@ -12,7 +12,7 @@ import type { Sketch } from './mock-sketch';
  * reader that stands in for the model, or (the bare names) by the folder names of the tree alone.
  */
 
-const STALE = 'that choice is no longer available; ask again';
+const STALE = 'that choice is no longer available, so ask again';
 
 /** Both Docker places, a Trash, an npm cache and a project: what "docker" must be told apart from. */
 function dockerDisk(): Sketch {
@@ -77,7 +77,7 @@ describe('a tool is the tool and nothing else', () => {
   });
 
   it('says where the rest of a tool is when its fixed place lies outside a home scan', () => {
-    const note = '“/var/lib/docker” (Docker data) is outside this scan; scan / to include it.';
+    const note = '“/var/lib/docker” (Docker data) is outside this scan. Scan / to include it.';
 
     // A home scan holds the Docker Desktop disk, and Docker's own folder is outside it.
     for (const question of ['how big is my docker data?', 'can i safely delete the docker images']) {
@@ -100,7 +100,7 @@ describe('a tool is the tool and nothing else', () => {
     // A tool not found at all says where it lives instead, not this note.
     const nothing = askSketch({ ...seeded(), root: '/home/u' }, 'how big is my docker data?').answer;
 
-    expect(nothing.startsWith('No folder called “docker” is in this scan')).toBe(true);
+    expect(nothing.startsWith('No file or folder called “docker” is in this scan')).toBe(true);
     expect(nothing).not.toContain('is outside this scan');
   });
 
@@ -130,7 +130,7 @@ describe('a tool is the tool and nothing else', () => {
       expect(answer.rows).toEqual([]);
       expect(
         answer.answer.startsWith(
-          'No folder called “docker” is in this scan (“Docker data” lives in /var/lib/docker;',
+          'No file or folder called “docker” is in this scan (“Docker data” lives in /var/lib/docker,',
         ),
       ).toBe(true);
       expect(answer.answer).not.toContain('cache');
@@ -199,9 +199,9 @@ describe('personal folders go through the user’s own', () => {
     const english = askSketch(polishHome(), 'can I delete my Downloads?');
     const own = askSketch(polishHome(), 'czy mogę usunąć Pobrane');
 
-    expect(english.notes).toContain('There is no “~/Downloads”; your downloads folder is “~/Pobrane”.');
+    expect(english.notes).toContain('There is no “~/Downloads”. Your downloads folder is “~/Pobrane”.');
     expect(english.answer).toBe(
-      '“~/Pobrane” holds 735 MB in 2 files. Platter has no rule for it; deleting it is your call. There is no “~/Downloads”; your downloads folder is “~/Pobrane”.',
+      '“~/Pobrane” holds 735 MB in 2 files. Platter has no rule for it. Deleting it is your call. There is no “~/Downloads”. Your downloads folder is “~/Pobrane”.',
     );
     expect(own.notes.some((note) => note.includes('There is no'))).toBe(false);
   });
@@ -216,7 +216,7 @@ describe('personal folders go through the user’s own', () => {
 
     expect(answer.rows).toEqual([]);
     expect(answer.answer).toBe(
-      'No folder called “Downloads” is in this scan (your downloads folder is “~/Pobrane”).',
+      'No file or folder called “Downloads” is in this scan (your downloads folder is “~/Pobrane”).',
     );
   });
 
@@ -242,7 +242,7 @@ describe('personal folders go through the user’s own', () => {
 
     expect(answer.understood.scope?.path).toBe('~/Documents');
     expect(answer.answer).toBe(
-      '“~/Documents” holds 4.1 KB in 1 file. Platter has no rule for it; deleting it is your call. Your documents folder is “~/Dokumenty”.',
+      '“~/Documents” holds 4.1 KB in 1 file. Platter has no rule for it. Deleting it is your call. Your documents folder is “~/Dokumenty”.',
     );
   });
 });
@@ -391,7 +391,7 @@ describe('a folder with nothing to clean', () => {
     sketch.files['/home/u/Notes/n.txt'] = 4 * MIB;
 
     expect(askSketch(sketch, 'is ~/Notes safe to delete?').answer).toBe(
-      '“~/Notes” holds 4.2 MB in 1 file. Platter has no rule for it; deleting it is your call.',
+      '“~/Notes” holds 4.2 MB in 1 file. Platter has no rule for it. Deleting it is your call.',
     );
   });
 
@@ -405,7 +405,7 @@ describe('a folder with nothing to clean', () => {
     const answer = askSketch(sketch, 'can I delete ~/.local/share/Steam/steamapps?');
 
     expect(answer.answer).toContain(
-      'Platter keeps part of it, such as “Steam library” (2.1 GB); deleting the rest is your call.',
+      'Platter keeps part of it, such as “Steam library” (2.1 GB). Deleting the rest is your call.',
     );
     expect(answer.answer).not.toContain('Nothing to clean');
   });
@@ -465,7 +465,7 @@ describe('the sentences', () => {
   it('gives a Polish question and a wish to clean everything one short note each', () => {
     const count = (notes: string[], note: string): number => notes.filter((one) => one === note).length;
     const english = 'Answers are in English.';
-    const notFromHere = 'Platter does not delete anything from here; use Cleanup to choose.';
+    const notFromHere = 'Platter does not delete anything from here. Use Cleanup to choose.';
 
     const polish = askSketch(seeded(), 'co mogę usunąć?');
 
@@ -504,6 +504,6 @@ describe('the sentences', () => {
     const answer = askSketch(manyCaches(), 'where is node_modules?');
 
     expect(answer.rows).toEqual([]);
-    expect(answer.answer).toBe('No folder called “node_modules” is in this scan.');
+    expect(answer.answer).toBe('No file or folder called “node_modules” is in this scan.');
   });
 });

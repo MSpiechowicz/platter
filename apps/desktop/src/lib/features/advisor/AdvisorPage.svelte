@@ -2,8 +2,11 @@
   import { untrack } from 'svelte';
   import PageHeader from '../../components/layout/PageHeader.svelte';
   import Button from '../../components/ui/Button.svelte';
+  import Card from '../../components/ui/Card.svelte';
+  import Loading from '../../components/ui/Loading.svelte';
   import Pill from '../../components/ui/Pill.svelte';
   import { advisor } from '../../state/advisor.svelte';
+  import { delayed } from '../../state/delayed.svelte';
   import { fmt } from '../../state/fmt.svelte';
   import { rules } from '../../state/rules.svelte';
   import type { ReadyScan } from '../../state/scan.svelte';
@@ -23,6 +26,9 @@
   }
 
   let { ready, scanning = false }: Props = $props();
+
+  /** How long the first read waits for the model's status before the cards are shown without it. */
+  const STATUS_WAIT_MS = 5000;
 
   const status = $derived(advisor.status);
   const action = $derived(primaryAction(status, advisor.enabled, fmt.size));
@@ -62,13 +68,46 @@
   });
 
   // The rules file is read again whenever the page opens: the backend notices an edit by hand at once.
+  let rulesRead = $state(false);
+
   $effect(() => {
-    void rules.load();
+    void rules.load().then(() => {
+      rulesRead = true;
+    });
   });
 
   const labels = $derived(ready ? advisor.labelsOf(ready.scanId) : undefined);
   // A request of this page that a newer one replaced has not settled anything: the store says when the latest ends.
   const loadingLabels = $derived(ready !== undefined && (!settled || advisor.labelsLoading));
+
+  /**
+   * The page opens with one spinner in the middle, like the Overview, until the model's status, the rules and the
+   * labels of the scan are all in. The cards are then shown together. Once shown they stay, and a card that reads
+   * something again later shows its own spinner. A spinner that appeared stays at least a second (`delayed`), so the
+   * cards wait for it too.
+   */
+  let opened = $state(false);
+
+  // A status that never comes (the channel and the one-off read both failed) does not keep the page shut: the cards
+  // can show a missing status, as they did before this spinner.
+  let statusGivenUp = $state(false);
+
+  $effect(() => {
+    const timer = setTimeout(() => (statusGivenUp = true), STATUS_WAIT_MS);
+
+    return () => clearTimeout(timer);
+  });
+
+  const firstReadDone = $derived(
+    (status !== undefined || statusGivenUp) && rulesRead && (ready === undefined || settled),
+  );
+  const firstWait = delayed(() => !opened && !firstReadDone);
+
+  $effect(() => {
+    if (firstReadDone && !firstWait.value) {
+      opened = true;
+    }
+  });
 
   function press(): void {
     if (action?.kind === 'download') {
@@ -125,7 +164,11 @@
     </div>
   </PageHeader>
 
-  {#if welcome && status}
+  {#if !opened}
+    <Card class="waiting" aria-busy="true">
+      <Loading when={!firstReadDone || firstWait.value} label="Reading the advisor…" />
+    </Card>
+  {:else if welcome && status}
     <AdvisorWelcome {status} store={advisor} />
   {:else}
     <div class="grid">
@@ -167,6 +210,11 @@
     display: flex;
     flex-direction: column;
     min-height: calc(100vh - 40px);
+  }
+
+  /* The first read of the page: one card with the spinner in its middle, as the Overview has. */
+  .advisor-page :global(.waiting) {
+    min-height: 420px;
   }
 
   @media (max-width: 900px) {

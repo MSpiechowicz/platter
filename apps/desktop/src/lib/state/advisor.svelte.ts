@@ -5,6 +5,7 @@ import type {
   AdvisorLabelsDto,
   AdvisorStatusDto,
   ChoiceDto,
+  EntryMatchDto,
   FolderMatchDto,
   GpuProblemChoice,
   GpuProblemDto,
@@ -500,6 +501,11 @@ export class AdvisorStore {
   /** Folders of a scan whose name or path matches the text. Rejects as the API does. */
   async find(scan: ScanId, query: string): Promise<FolderMatchDto[]> {
     return this.#api.findFolders(scan, query, FIND_LIMIT);
+  }
+
+  /** Folders and files of a scan for the word being typed in the question box. Rejects as the API does. */
+  async findEntries(scan: ScanId, query: string): Promise<EntryMatchDto[]> {
+    return this.#api.findEntries(scan, query, FIND_LIMIT);
   }
 
   async #switch(run: () => Promise<AdvisorStatusDto>): Promise<void> {

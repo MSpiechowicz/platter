@@ -85,7 +85,7 @@ pub async fn start_pinned(
         && resolved.identity != Some(identity)
     {
         return Err(CommandError::invalid(
-            "the folder changed since it was chosen; choose it again",
+            "the folder changed since it was chosen, so choose it again",
         ));
     }
     let root = resolved.path;

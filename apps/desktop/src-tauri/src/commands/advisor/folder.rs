@@ -4,7 +4,7 @@
 //!
 //! The order is the one of [`super::question`]'s rows: the guard, then a rule that covers the folder (the
 //! built-in table or the user's own), then a label made earlier in this scan. A folder none of them decides
-//! gets "Platter has no rule for it; deleting it is your call." and, when the model labelled it, which way it
+//! gets "Platter has no rule for it. Deleting it is your call." and, when the model labelled it, which way it
 //! marked it. Every answer ends with the folder's size and, where it can be worked out, how much of it is
 //! older than a year.
 
@@ -24,7 +24,7 @@ use crate::state::LabelSet;
 /// What the log calls the question of the row "Ask".
 const QUESTION: &str = "ask about folder";
 
-const NO_RULE: &str = "Platter has no rule for it; deleting it is your call.";
+const NO_RULE: &str = "Platter has no rule for it. Deleting it is your call.";
 const MARKED_FOR_REVIEW: &str = "The local model marked it for review.";
 const MARKED_TO_KEEP: &str = "The local model marked it to keep.";
 const LEFT_ALONE: &str = "Left alone by Platter.";

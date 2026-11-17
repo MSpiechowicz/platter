@@ -6,8 +6,9 @@
 
 use platter_ai::answer::{NAMED_ROWS, SHEET_ROWS};
 use platter_ai::{
-    By, FactRow, FactSheet, FactTotal, Intent, Kind, OFFTOPIC_TEXT, OUTDATED_NOTE, Place, ScanQuestion,
-    Segment, TotalKind, Units, format_size, ground, interpret_prompt, render, template, template_segments,
+    By, FactRow, FactSheet, FactTotal, FileFact, Intent, Kind, OFFTOPIC_TEXT, OUTDATED_NOTE, Place,
+    ScanQuestion, Segment, TotalKind, Units, format_size, ground, interpret_prompt, render, template,
+    template_segments,
 };
 use platter_core::dto::Verdict;
 use serde::Deserialize;
@@ -236,12 +237,12 @@ fn a_question_that_found_nothing_says_so_for_what_it_asked() {
 #[test]
 fn a_note_that_says_why_there_is_nothing_is_not_said_twice() {
     let mut sheet = sheet(Intent::Find);
-    sheet.notes = vec!["No folder called 'node_modules' is in this scan".to_owned()];
+    sheet.notes = vec!["No file or folder called 'node_modules' is in this scan".to_owned()];
     sheet.context_paths = vec!["node_modules".to_owned()];
 
     assert_eq!(
         template(&sheet),
-        "No folder called “node_modules” is in this scan.",
+        "No file or folder called “node_modules” is in this scan.",
         "the user's own words stay in quotes, with no chip"
     );
 
@@ -303,13 +304,13 @@ fn a_total_of_files_that_are_not_rows_is_still_said() {
     let mut sheet = sheet(Intent::Cleanable);
     sheet.totals = vec![verdict_total(Verdict::Review, 700 * 1_000_000, 2)];
     sheet.notes = vec![
-        "2 matching files are counted in the totals but not listed; only folders are listed.".to_owned(),
+        "2 matching files are counted in the totals but not listed. Only folders are listed.".to_owned(),
     ];
 
     assert_eq!(
         template(&sheet),
-        "For you to review: 700 MB in 2 items. 2 matching files are counted in the totals but not listed; \
-         only folders are listed."
+        "For you to review: 700 MB in 2 items. 2 matching files are counted in the totals but not listed. \
+         Only folders are listed."
     );
 }
 
@@ -863,11 +864,11 @@ fn a_folder_with_nothing_to_clean_says_what_it_holds_and_the_note_says_where_pla
     sheet.scope = "~/Documents".to_owned();
     sheet.scope_size = Some(4_100);
     sheet.files = Some(1);
-    sheet.notes = vec!["Platter has no rule for it; deleting it is your call.".to_owned()];
+    sheet.notes = vec!["Platter has no rule for it. Deleting it is your call.".to_owned()];
 
     assert_eq!(
         template(&sheet),
-        "“~/Documents” holds 4.1 KB in 1 file. Platter has no rule for it; deleting it is your call."
+        "“~/Documents” holds 4.1 KB in 1 file. Platter has no rule for it. Deleting it is your call."
     );
 }
 
@@ -970,4 +971,222 @@ fn when_only_some_of_the_folders_could_not_be_read_the_answer_names_them() {
          “/var/lib/docker” is left alone by Platter. Platter could not read “/var/lib/docker”, so its size is \
          unknown."
     );
+}
+
+// ---- the answer: a file --------------------------------------------------------------------------
+
+const FILE_PATH: &str = "~/Downloads/old.iso";
+
+fn of_a_file(row: FactRow, age_days: Option<u64>) -> FactSheet {
+    let mut sheet = sheet(Intent::Explain);
+    sheet.file = Some(FileFact { age_days });
+    sheet.rows = vec![row];
+
+    sheet
+}
+
+fn file_row(verdict: Option<Verdict>, by: Option<By>, note: Option<&str>, why: Option<&str>) -> FactRow {
+    FactRow {
+        why: why.map(str::to_owned),
+        ..row(FILE_PATH, 4_200_000_000, verdict, by, note)
+    }
+}
+
+#[test]
+fn a_file_covered_by_a_safe_rule_is_safe_to_clean() {
+    let sheet = of_a_file(
+        file_row(
+            Some(Verdict::Safe),
+            Some(By::Rule),
+            Some("Old downloads"),
+            Some("Old files."),
+        ),
+        Some(400),
+    );
+
+    assert_eq!(
+        template(&sheet),
+        "“~/Downloads/old.iso” is a file of 4.2 GB, last changed 1 year ago. It is safe to clean (“Old \
+         downloads”)."
+    );
+}
+
+#[test]
+fn a_file_covered_by_a_review_rule_says_what_the_rule_says() {
+    let sheet = of_a_file(
+        file_row(
+            Some(Verdict::Review),
+            Some(By::Rule),
+            Some("Disk images"),
+            Some("Disk images are often kept on purpose."),
+        ),
+        Some(400),
+    );
+
+    assert_eq!(
+        template(&sheet),
+        "“~/Downloads/old.iso” is a file of 4.2 GB, last changed 1 year ago. It needs your review (“Disk \
+         images”). Disk images are often kept on purpose."
+    );
+}
+
+#[test]
+fn a_file_the_user_keeps_is_kept() {
+    let sheet = of_a_file(
+        file_row(
+            Some(Verdict::Keep),
+            Some(By::User),
+            Some("Documents"),
+            Some("You keep it."),
+        ),
+        Some(400),
+    );
+
+    assert_eq!(
+        template(&sheet),
+        "“~/Downloads/old.iso” is a file of 4.2 GB, last changed 1 year ago. It is kept (“Documents”)."
+    );
+}
+
+#[test]
+fn a_file_in_a_protected_place_is_left_alone_with_the_guards_words() {
+    let sheet = of_a_file(
+        file_row(
+            Some(Verdict::Keep),
+            Some(By::Guard),
+            Some("Left alone by the safety guard."),
+            Some("This is a protected place, or inside one (/etc). Platter does not clean it."),
+        ),
+        Some(400),
+    );
+
+    assert_eq!(
+        template(&sheet),
+        "“~/Downloads/old.iso” is a file of 4.2 GB, last changed 1 year ago. Platter leaves it alone. This \
+         is a protected place, or inside one (/etc). Platter does not clean it."
+    );
+}
+
+#[test]
+fn a_file_the_model_labelled_says_how() {
+    let labelled = |verdict| {
+        of_a_file(
+            file_row(
+                Some(verdict),
+                Some(By::Model),
+                Some("Labelled by the local model"),
+                None,
+            ),
+            Some(400),
+        )
+    };
+
+    assert_eq!(
+        template(&labelled(Verdict::Review)),
+        "“~/Downloads/old.iso” is a file of 4.2 GB, last changed 1 year ago. The local model marked it for \
+         review."
+    );
+    assert_eq!(
+        template(&labelled(Verdict::Keep)),
+        "“~/Downloads/old.iso” is a file of 4.2 GB, last changed 1 year ago. The local model marked it to \
+         keep."
+    );
+}
+
+#[test]
+fn a_file_no_rule_covers_is_the_users_call() {
+    let sheet = of_a_file(file_row(None, None, None, None), Some(400));
+
+    assert_eq!(
+        template(&sheet),
+        "“~/Downloads/old.iso” is a file of 4.2 GB, last changed 1 year ago. No rule covers it, so deleting \
+         it is your call."
+    );
+}
+
+#[test]
+fn the_age_of_a_file_is_told_in_days_months_and_years() {
+    let age = |days| {
+        let text = template(&of_a_file(file_row(None, None, None, None), days));
+        let first = text.split(". ").next().unwrap().to_owned();
+
+        first
+            .strip_prefix("“~/Downloads/old.iso” is a file of 4.2 GB")
+            .unwrap()
+            .to_owned()
+    };
+
+    assert_eq!(age(None), "");
+    assert_eq!(age(Some(0)), ", last changed today");
+    assert_eq!(age(Some(1)), ", last changed 1 day ago");
+    assert_eq!(age(Some(2)), ", last changed 2 days ago");
+    assert_eq!(age(Some(30)), ", last changed 30 days ago");
+    assert_eq!(age(Some(31)), ", last changed 1 month ago");
+    assert_eq!(age(Some(59)), ", last changed 1 month ago");
+    assert_eq!(age(Some(60)), ", last changed 2 months ago");
+    assert_eq!(age(Some(364)), ", last changed 12 months ago");
+    assert_eq!(age(Some(365)), ", last changed 1 year ago");
+    assert_eq!(age(Some(729)), ", last changed 1 year ago");
+    assert_eq!(age(Some(730)), ", last changed 2 years ago");
+}
+
+#[test]
+fn a_file_is_answered_the_same_for_every_intent_but_the_offtopic_one() {
+    let expected = template(&of_a_file(file_row(None, None, None, None), Some(400)));
+
+    for intent in [
+        Intent::Largest,
+        Intent::Cleanable,
+        Intent::Labelled,
+        Intent::Explain,
+        Intent::Find,
+    ] {
+        let mut sheet = of_a_file(file_row(None, None, None, None), Some(400));
+        sheet.intent = intent;
+
+        assert_eq!(template(&sheet), expected, "{intent:?}");
+    }
+}
+
+#[test]
+fn the_answer_about_a_file_binds_its_path_to_the_row_and_holds_no_semicolon() {
+    let sources = [
+        file_row(None, None, None, None),
+        file_row(Some(Verdict::Safe), Some(By::Rule), Some("Old downloads"), None),
+        file_row(
+            Some(Verdict::Review),
+            Some(By::User),
+            Some("Disk images"),
+            Some("Check it."),
+        ),
+        file_row(Some(Verdict::Keep), Some(By::Rule), Some("Documents"), None),
+        file_row(
+            Some(Verdict::Keep),
+            Some(By::Guard),
+            Some("Left alone."),
+            Some("Protected."),
+        ),
+        file_row(
+            Some(Verdict::Review),
+            Some(By::Model),
+            Some("Labelled by the local model"),
+            None,
+        ),
+    ];
+
+    for row in sources {
+        for age in [None, Some(0), Some(1), Some(12), Some(100), Some(800)] {
+            let sheet = of_a_file(row.clone(), age);
+            let segments = template_segments(&sheet);
+
+            assert!(!render(&segments).contains(';'), "{}", render(&segments));
+            assert!(
+                segments.iter().any(|segment| matches!(
+                    segment,
+                    Segment::Path { path, place: Place::Row(0) } if path == FILE_PATH
+                )),
+                "{segments:?}"
+            );
+        }
+    }
 }

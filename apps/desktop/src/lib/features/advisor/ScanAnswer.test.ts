@@ -295,3 +295,25 @@ describe('ScanAnswer: a question asked back', () => {
     expect(screen.queryByRole('list', { name: 'Which one do you mean?' })).toBeNull();
   });
 });
+
+describe('ScanAnswer: rows of files', () => {
+  const rows = [
+    { node: 1, path: '~/Downloads', allocated: 96_000_000_000 },
+    { node: 2, path: '~/Downloads/old.iso', allocated: 4_200_000_000, file: true as const },
+  ];
+
+  it('shows no Ask on a file row, and keeps its Open and the Ask of a folder row', async () => {
+    const onopen = vi.fn();
+    const onask = vi.fn();
+
+    render(ScanAnswer, { props: { answer: scanAnswer({ rows, more: 0 }), onopen, onask } });
+
+    expect(screen.queryByRole('button', { name: 'Ask about ~/Downloads/old.iso' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Ask about ~/Downloads' })).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Open ~/Downloads/old.iso in the Explorer' }));
+
+    expect(onopen).toHaveBeenCalledWith(2);
+    expect(screen.getByText('4.2 GB')).toBeTruthy();
+  });
+});

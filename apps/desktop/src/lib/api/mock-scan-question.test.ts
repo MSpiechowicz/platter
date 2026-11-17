@@ -33,7 +33,7 @@ const SWITCHED_OFF = {
   logQuestions: true,
   useGpu: true,
 } as const;
-const BUSY = 'the model is busy; wait for it to finish';
+const BUSY = 'the model is busy, so wait for it to finish';
 
 function setup(
   advisor: MockAdvisorOptions = { state: 'loaded' },
@@ -498,7 +498,9 @@ describe('askScan: one question per intent', () => {
 
     expect(answer.understood.intent).toBe('find');
     expect(answer.rows).toEqual([]);
-    expect(answer.answer).toBe('No folder called \u201Cnothing-like-this-anywhere\u201D is in this scan.');
+    expect(answer.answer).toBe(
+      'No file or folder called \u201Cnothing-like-this-anywhere\u201D is in this scan.',
+    );
   });
 
   it('finds folders by name, largest first, each with the verdict of the rule that covers it', async () => {
@@ -633,11 +635,11 @@ describe('askScan: scopes the scan does not hold', () => {
     expect(answer.more).toBe(0);
     expect(answer.understood.scope).toBeUndefined();
     expect(answer.understood.scopeText).toBe(text);
-    expect(answer.notes).toContain(`No folder called “${text}” is in this scan`);
+    expect(answer.notes).toContain(`No file or folder called “${text}” is in this scan`);
     // The user's own words are a context path: the answer sets them in quotes, as text, with no folder behind them,
     // and the answer is that note.
     // What the model has not labelled is said first, and the note that the folder is missing after it.
-    const missing = `No folder called “${text}” is in this scan.`;
+    const missing = `No file or folder called “${text}” is in this scan.`;
 
     expect(answer.answer).toBe(
       question.includes('label') ? `The model has not labelled any folder in this scan. ${missing}` : missing,
@@ -815,13 +817,13 @@ describe('askScan: the direct first sentence', () => {
     });
     const elsewhere = await ask(small.api, small.timers, smallId, 'can i delete the docker images');
     const hint =
-      '“Docker data” lives in /var/lib/docker; scan a folder that holds it; “Docker Desktop virtual machine” lives in ~/.docker/desktop/vms; scan your home folder';
+      '“Docker data” lives in /var/lib/docker, so scan a folder that holds it. “Docker Desktop virtual machine” lives in ~/.docker/desktop/vms, so scan your home folder';
 
     expect(elsewhere.rows).toEqual([]);
     // The text of the scope is the question's; the answer calls it by the word that named the rule.
     expect(elsewhere.understood).toMatchObject({ intent: 'cleanable', scopeText: 'docker' });
-    expect(elsewhere.notes).toEqual([`No folder called “docker” is in this scan (${hint})`]);
-    expect(elsewhere.answer).toBe(`No folder called “docker” is in this scan (${hint}).`);
+    expect(elsewhere.notes).toEqual([`No file or folder called “docker” is in this scan (${hint})`]);
+    expect(elsewhere.answer).toBe(`No file or folder called “docker” is in this scan (${hint}).`);
   });
 });
 
@@ -971,8 +973,8 @@ describe('askScan: the text, as the backend template writes it', () => {
       `Matches for “node_modules”: ${first}, ${rest.slice(0, -1).join(', ')} and ${rest.at(-1)}.`,
     );
     expect(found.notes).toEqual([]);
-    expect(none.answer).toBe('No folder called “nothing-xyz” is in this scan.');
-    expect(none.notes).toEqual(['No folder called “nothing-xyz” is in this scan']);
+    expect(none.answer).toBe('No file or folder called “nothing-xyz” is in this scan.');
+    expect(none.notes).toEqual(['No file or folder called “nothing-xyz” is in this scan']);
     expect(none.understood.scopeText).toBe('nothing-xyz');
   });
 
@@ -1009,7 +1011,7 @@ describe('askScan: the text, as the backend template writes it', () => {
     );
     // A folder with nothing to clean says what it holds and where Platter stands on it.
     expect((await ask(api, timers, id, 'what can I clean in /usr')).answer).toMatch(
-      /^“\/usr” holds [\d.]+ [KMGT]?B in \d+ files\. Platter has no rule for it; deleting it is your call\.$/,
+      /^“\/usr” holds [\d.]+ [KMGT]?B in \d+ files\. Platter has no rule for it\. Deleting it is your call\.$/,
     );
   });
 });
@@ -1200,7 +1202,9 @@ describe('askScan: a folder with quotes in its name and a path of 200 characters
     units: 'GB',
     lookup: {
       exact: (path) => (path === '/srv' ? nodeAt(tree, '/srv') : null),
+      entry: () => null,
       search: () => [],
+      searchEntries: () => [],
     },
     guard: () => null,
     summary: () => {
@@ -1298,10 +1302,14 @@ describe('askScan: an outdated scan', () => {
     const atlantis = await ask(api, timers, id, 'biggest folders in Atlantis');
     const nothing = await ask(api, timers, id, 'where is the folder called nothing-xyz?');
 
-    expect(atlantis.notes).toEqual([OUTDATED_NOTE, 'No folder called “Atlantis” is in this scan']);
-    expect(atlantis.answer).toBe(`No folder called \u201CAtlantis\u201D is in this scan. ${OUTDATED_NOTE}`);
-    expect(nothing.notes).toEqual([OUTDATED_NOTE, 'No folder called “nothing-xyz” is in this scan']);
-    expect(nothing.answer).toBe(`No folder called \u201Cnothing-xyz\u201D is in this scan. ${OUTDATED_NOTE}`);
+    expect(atlantis.notes).toEqual([OUTDATED_NOTE, 'No file or folder called “Atlantis” is in this scan']);
+    expect(atlantis.answer).toBe(
+      `No file or folder called \u201CAtlantis\u201D is in this scan. ${OUTDATED_NOTE}`,
+    );
+    expect(nothing.notes).toEqual([OUTDATED_NOTE, 'No file or folder called “nothing-xyz” is in this scan']);
+    expect(nothing.answer).toBe(
+      `No file or folder called \u201Cnothing-xyz\u201D is in this scan. ${OUTDATED_NOTE}`,
+    );
   });
 });
 
@@ -1375,6 +1383,8 @@ describe("askScan: the backend's natural questions, on an owner's disk", () => {
             .filter((node) => node.kind === 'dir' && node.name === text)
             .sort((a, b) => b.allocated - a.allocated)
             .slice(0, limit),
+        entry: () => null,
+        searchEntries: () => [],
       },
       guard: (node) => {
         if (node.parent < 0) {
@@ -1461,7 +1471,7 @@ describe("askScan: the backend's natural questions, on an owner's disk", () => {
     expect(answer.rows).toEqual([]);
     expect(answer.understood.scopeText).toBe('docker');
     expect(answer.answer).toBe(
-      'No folder called “docker” is in this scan (“Docker data” lives in /var/lib/docker; scan a folder that holds it; “Docker Desktop virtual machine” lives in ~/.docker/desktop/vms; scan your home folder).',
+      'No file or folder called “docker” is in this scan (“Docker data” lives in /var/lib/docker, so scan a folder that holds it. “Docker Desktop virtual machine” lives in ~/.docker/desktop/vms, so scan your home folder).',
     );
     expect(chips(answer)).toEqual([]);
   });
@@ -1543,7 +1553,7 @@ describe("askScan: the backend's natural questions, on an owner's disk", () => {
     expect(absent.rows).toEqual([]);
     expect(
       absent.answer.startsWith(
-        'No folder called “docker” is in this scan (“Docker data” lives in /var/lib/docker;',
+        'No file or folder called “docker” is in this scan (“Docker data” lives in /var/lib/docker,',
       ),
     ).toBe(true);
   });
@@ -1576,7 +1586,7 @@ describe("askScan: the backend's natural questions, on an owner's disk", () => {
 });
 
 describe('askScan: questions the words settle, and questions asked back', () => {
-  const STALE = 'that choice is no longer available; ask again';
+  const STALE = 'that choice is no longer available, so ask again';
   const ASKED_BACK = 'can I delete the src folder?';
 
   it('answers a question the words settle at once, with no wait and no model job', async () => {

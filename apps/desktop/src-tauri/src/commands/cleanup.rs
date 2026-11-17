@@ -174,7 +174,8 @@ impl CleanupRegistry {
         rules_generation: u64,
         current: impl Fn(u64) -> bool,
     ) -> CommandResult<PlanId> {
-        let changed = || CommandError::invalid("your rules changed while the plan was made; make a new plan");
+        let changed =
+            || CommandError::invalid("your rules changed while the plan was made, so make a new plan");
         if !current(rules_generation) {
             return Err(changed());
         }
@@ -238,7 +239,7 @@ impl CleanupRegistry {
         // Checked before the plan is taken: a request right after a refusal leaves the plan usable.
         if inner.declined.is_some_and(|at| at.elapsed() < DECLINE_PAUSE) {
             return Err(CommandError::invalid(
-                "a cleanup was just declined; wait a moment",
+                "a cleanup was just declined, so wait a moment",
             ));
         }
         let stored = inner
@@ -246,7 +247,7 @@ impl CleanupRegistry {
             .remove(&id)
             .ok_or_else(|| CommandError::not_found(format!("plan {id} does not exist or was used")))?;
         if stored.made.elapsed() >= PLAN_LIFETIME {
-            return Err(CommandError::invalid("the plan has expired; make a new one"));
+            return Err(CommandError::invalid("the plan has expired, so make a new one"));
         }
 
         inner.last_cleanup += 1;
@@ -524,7 +525,7 @@ pub async fn undo_run(state: &AppState, cleanup: CleanupId) -> CommandResult<Vec
     // Not while a cleanup runs: it could be emptying the trash that is being restored from.
     if state.cleanups.is_running() {
         return Err(CommandError::invalid(
-            "a cleanup is running; undo when it has finished",
+            "a cleanup is running, so undo when it has finished",
         ));
     }
     let results = state.cleanups.take_done(cleanup)?;
@@ -586,7 +587,7 @@ pub async fn plan(state: &AppState, scan: ScanId, suggestions: Vec<String>) -> C
     }
     if state.scans.is_outdated(scan) {
         return Err(CommandError::invalid(
-            "the disk changed since this scan; rescan first",
+            "the disk changed since this scan, so rescan first",
         ));
     }
 
@@ -600,7 +601,7 @@ pub async fn plan(state: &AppState, scan: ScanId, suggestions: Vec<String>) -> C
     };
     let Some(_planning) = Planning::begin(&state.cleanups) else {
         return Err(CommandError::invalid(
-            "a plan is being made; try again in a moment",
+            "a plan is being made, so try again in a moment",
         ));
     };
     let platform = Arc::clone(&state.platform);
@@ -693,7 +694,7 @@ pub async fn plan_marked_nodes(
     }
     if state.scans.is_outdated(scan) {
         return Err(CommandError::invalid(
-            "the disk changed since this scan; rescan first",
+            "the disk changed since this scan, so rescan first",
         ));
     }
 
@@ -703,7 +704,7 @@ pub async fn plan_marked_nodes(
     }
     let Some(_planning) = Planning::begin(&state.cleanups) else {
         return Err(CommandError::invalid(
-            "a plan is being made; try again in a moment",
+            "a plan is being made, so try again in a moment",
         ));
     };
     let platform = Arc::clone(&state.platform);
@@ -809,18 +810,18 @@ pub async fn start(state: &AppState, plan_id: PlanId, emit: Emit) -> CommandResu
 /// The plan is still young enough, and its scan still exists and still describes the disk.
 fn still_current(state: &AppState, reservation: &Reservation) -> CommandResult<()> {
     if reservation.made.elapsed() >= PLAN_LIFETIME {
-        return Err(CommandError::invalid("the plan has expired; make a new one"));
+        return Err(CommandError::invalid("the plan has expired, so make a new one"));
     }
     if state.scans.is_outdated(reservation.scan) || state.scans.tree(reservation.scan).is_err() {
         return Err(CommandError::invalid(
-            "the disk changed since this plan was made; rescan first",
+            "the disk changed since this plan was made, so rescan first",
         ));
     }
     // A plan stored before the user's rules changed is dropped with the change; this catches one that was
     // already taken (waiting for its confirmation) and a rules file that was edited or broke by hand.
     if state.user_rules.generation() != reservation.rules_generation {
         return Err(CommandError::invalid(
-            "your rules changed since this plan was made; make a new plan",
+            "your rules changed since this plan was made, so make a new plan",
         ));
     }
     Ok(())

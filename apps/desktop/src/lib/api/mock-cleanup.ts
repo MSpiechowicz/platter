@@ -579,7 +579,7 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
       }
 
       if (outdated.has(scan)) {
-        return fail('invalid', 'the disk changed since this scan; rescan first');
+        return fail('invalid', 'the disk changed since this scan, so rescan first');
       }
 
       const tree = host.treeOf(scan);
@@ -608,7 +608,7 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
       }
 
       if (outdated.has(scan)) {
-        return fail('invalid', 'the disk changed since this scan; rescan first');
+        return fail('invalid', 'the disk changed since this scan, so rescan first');
       }
 
       const tree = host.treeOf(scan);
@@ -637,11 +637,11 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
       plans.delete(plan);
 
       if (Date.now() - stored.made >= PLAN_LIFETIME_MS) {
-        return fail('invalid', 'the plan has expired; make a new one');
+        return fail('invalid', 'the plan has expired, so make a new one');
       }
 
       if (outdated.has(stored.scan)) {
-        return fail('invalid', 'the disk changed since this plan was made; rescan first');
+        return fail('invalid', 'the disk changed since this plan was made, so rescan first');
       }
 
       if (stored.groups.length === 0) {
@@ -652,7 +652,7 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
       try {
         host.treeOf(stored.scan);
       } catch {
-        return fail('invalid', 'the disk changed since this plan was made; rescan first');
+        return fail('invalid', 'the disk changed since this plan was made, so rescan first');
       }
 
       const cleanup = ++lastCleanup;

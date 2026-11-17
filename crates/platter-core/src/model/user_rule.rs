@@ -41,7 +41,7 @@ pub enum RulesFileError {
     TooLarge,
     #[error("The rules file is not valid: {0}")]
     Syntax(String),
-    #[error("The rules file has version {0}; this Platter reads only version {RULES_FILE_VERSION}.")]
+    #[error("The rules file has version {0}. This Platter reads only version {RULES_FILE_VERSION}.")]
     Version(u64),
     #[error("The rules file lists more than {MAX_USER_RULES} rules.")]
     TooMany,
@@ -53,7 +53,7 @@ pub enum RulesFileError {
     DuplicateFolder(String),
     #[error("A folder in the rules file is not acceptable: {0}")]
     BadFolder(String),
-    #[error("The rules file would be larger than {} KiB; remove a rule first.", MAX_RULES_FILE_BYTES / 1024)]
+    #[error("The rules file would be larger than {} KiB. Remove a rule first.", MAX_RULES_FILE_BYTES / 1024)]
     WouldBeTooLarge,
     #[error("All rule numbers are used.")]
     OutOfIds,

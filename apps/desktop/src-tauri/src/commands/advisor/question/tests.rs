@@ -14,6 +14,7 @@ use super::*;
 
 mod behaviour;
 mod eval;
+mod files;
 mod flow;
 mod logging;
 mod real;
@@ -204,6 +205,7 @@ fn a_scope_is_resolved_in_the_tree_only_as_a_path_or_as_a_name() {
     let lens = Lens::new(&review, &[]);
     let folder = |text: &str| match lens.resolve_scope(text) {
         Scope::Folder { path, .. } => path,
+        Scope::File { path, .. } => format!("<file {path}>"),
         Scope::Whole => "<whole>".to_owned(),
         Scope::Rules { title, .. } => format!("<rules {title}>"),
         Scope::Missing { .. } => "<missing>".to_owned(),
@@ -248,8 +250,8 @@ fn a_scope_is_resolved_in_the_tree_only_as_a_path_or_as_a_name() {
     assert_eq!(folder("Nope"), "<missing>");
     assert_eq!(
         folder("~/Projekty/app/src/main.rs"),
-        "<missing>",
-        "a file is no scope: only folders match"
+        "<file ~/Projekty/app/src/main.rs>",
+        "a path to a file is that file"
     );
     assert_eq!(folder("~/../.."), "<missing>");
 }
@@ -272,7 +274,7 @@ fn a_scope_that_is_not_in_the_scan_gives_no_rows_and_a_note_for_every_intent_tha
             assert!(
                 collected
                     .notes
-                    .contains(&format!("No folder called “{scope}” is in this scan")),
+                    .contains(&format!("No file or folder called “{scope}” is in this scan")),
                 "{intent:?} {scope}: {:?}",
                 collected.notes
             );
@@ -295,7 +297,10 @@ fn the_scope_the_user_typed_is_repeated_in_the_answer_in_quotes_and_is_no_folder
 
     assert_eq!(missing.sheet.context_paths, ["~/Nope"]);
     let segments = template_segments(&missing.sheet);
-    assert_eq!(render(&segments), "No folder called “~/Nope” is in this scan.");
+    assert_eq!(
+        render(&segments),
+        "No file or folder called “~/Nope” is in this scan."
+    );
     assert!(
         segments
             .iter()
@@ -314,7 +319,8 @@ fn a_found_scope_is_understood_with_its_node_and_display_path() {
         collected.understood.scope,
         Some(ScopeDto {
             node: path_in(&setup.tree, "/home/u/Projekty"),
-            path: "~/Projekty".to_owned()
+            path: "~/Projekty".to_owned(),
+            file: false,
         })
     );
     assert_eq!(collected.understood.scope_text, None);
@@ -1249,7 +1255,7 @@ fn find_with_no_match_or_no_name_says_so() {
     assert!(none.rows.is_empty());
     assert!(
         none.notes
-            .contains(&"No folder called “nothing-like-this” is in this scan".to_owned()),
+            .contains(&"No file or folder called “nothing-like-this” is in this scan".to_owned()),
         "{:?}",
         none.notes
     );
@@ -1364,7 +1370,7 @@ fn every_intent_says_when_the_scan_is_outdated_and_otherwise_does_not() {
 
         assert_eq!(
             outdated.notes.first().map(String::as_str),
-            Some("This scan is from before a cleanup; rescan for current figures."),
+            Some("This scan is from before a cleanup. Rescan for current figures."),
             "{intent:?}"
         );
         assert!(
@@ -1652,8 +1658,8 @@ fn docker_that_is_not_in_the_scan_says_where_docker_keeps_its_data() {
     );
     assert_eq!(
         text,
-        "No folder called “docker” is in this scan (“Docker data” lives in /var/lib/docker; scan a \
-         folder that holds it; “Docker Desktop virtual machine” lives in ~/.docker/desktop/vms; scan your \
+        "No file or folder called “docker” is in this scan (“Docker data” lives in /var/lib/docker, so scan a \
+         folder that holds it. “Docker Desktop virtual machine” lives in ~/.docker/desktop/vms, so scan your \
          home folder)."
     );
     assert!(chips(&segments).is_empty());
@@ -1830,7 +1836,7 @@ fn the_folders_of_a_rule_are_one_scope_for_every_intent_that_looks_inside() {
     assert!(
         collected
             .meta
-            .contains(&"2 folders match “node_modules”; the largest is explained.".to_owned()),
+            .contains(&"2 folders match “node_modules”. The largest is explained.".to_owned()),
         "{:?}",
         collected.meta
     );
@@ -1883,7 +1889,7 @@ fn find_prefers_the_place_a_rule_knows_to_every_folder_with_the_name() {
     assert!(collected.rows.is_empty());
     assert!(
         text.starts_with(
-            "No folder called “docker” is in this scan (“Docker data” lives in /var/lib/docker;"
+            "No file or folder called “docker” is in this scan (“Docker data” lives in /var/lib/docker,"
         ),
         "{text}"
     );

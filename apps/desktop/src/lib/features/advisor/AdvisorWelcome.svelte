@@ -174,7 +174,7 @@
 
       <p class="priv">
         The download is Platter's only network call. Your files never leave this machine. Verdicts always come
-        from Platter's rules and safety guard; the model only reads your question.
+        from Platter's rules and safety guard. The model only reads your question.
       </p>
     </div>
   </div>

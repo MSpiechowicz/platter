@@ -189,7 +189,7 @@ pub(super) fn check(parent: &OwnedFd, name: &CStr, expected: &ExpectedEntry) -> 
 /// while descending, for error messages.
 fn empty(dir: &OwnedFd, this: &Stat, path: &mut Vec<u8>, depth: usize, removed: &mut Removed) {
     if depth >= MAX_DEPTH {
-        removed.note(path.clone(), "too deeply nested; left as it is".to_owned());
+        removed.note(path.clone(), "too deeply nested, so left as it is".to_owned());
         return;
     }
 

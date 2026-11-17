@@ -69,9 +69,9 @@ const LABELLED_BY_MODEL = 'Labelled by the local model';
 /** What to do about it, when the model has labelled nothing (the answer itself says that nothing is labelled). */
 const NO_LABELS_NOTE = 'Use “Label folders” in the Advisor view.';
 const ENGLISH_NOTE = 'Answers are in English.';
-const NOT_FROM_HERE_NOTE = 'Platter does not delete anything from here; use Cleanup to choose.';
+const NOT_FROM_HERE_NOTE = 'Platter does not delete anything from here. Use Cleanup to choose.';
 /** What a `pick` that matches no choice is refused with. */
-export const STALE_CHOICE = 'that choice is no longer available; ask again';
+export const STALE_CHOICE = 'that choice is no longer available, so ask again';
 const FAMILY_BUILD_LABEL = 'All build output and dependency folders';
 
 /** The rules each kind stands for (the ids of the mock's rule table, the same ids as the backend's). */
@@ -109,11 +109,19 @@ const MAX_FOUND = 20;
 const MAX_CHOICES = 4;
 /** A folder counts as a peer of the largest one of the same name when it is at least a quarter of it. */
 const PEER_SHARE = 4;
+const SECONDS_PER_DAY = 86_400;
 
-/** Finds folders of the tree: an exact path (`~/...` or `/...`), and a search by name (`find_folders`). */
+/**
+ * Finds folders of the tree: an exact path (`~/...` or `/...`), and a search by name (`find_folders`). The `entry`
+ * and `searchEntries` also hold the regular files (`find_entries`).
+ */
 export interface FolderLookup {
   exact(path: string): MockNode | null;
+  /** The folder or the regular file an exact path names. */
+  entry(path: string): MockNode | null;
   search(text: string, limit: number): MockNode[];
+  /** Folders and files by name, the exact name first, then names that start with the text, then names that hold it. */
+  searchEntries(text: string, limit: number): MockNode[];
 }
 
 export interface ScanQuestionContext {
@@ -168,6 +176,8 @@ type Scope =
   /** No scope: the whole scan. */
   | { at: 'whole' }
   | { at: 'folder'; node: MockNode }
+  /** A regular file: one row, whatever the intent. */
+  | { at: 'file'; node: MockNode }
   /** The folders that the rules named by the scope text matched in this scan (more than one), largest first. */
   | { at: 'rules'; title: string; nodes: MockNode[] }
   /** A scope text that is no folder of this scan. `absent` says what the rules call it and where they look for it, when a rule knows it. */
@@ -241,13 +251,13 @@ const total = (label: string, bytes: number, count: number): FactTotal => ({
 /** A text of the user's disk or of the user's words, set apart in “ ” quotes. */
 const quoted = (text: string): string => `“${text}”`;
 
-/** `No folder called “x” is in this scan`, and where the rules look for what `x` names, when they know. */
+/** `No file or folder called “x” is in this scan`, and where the rules look for what `x` names, when they know. */
 const notInScan = (text: string, absent?: Absent): string => {
   const called = absent?.named ?? text;
 
   return absent === undefined
-    ? `No folder called ${quoted(called)} is in this scan`
-    : `No folder called ${quoted(called)} is in this scan (${absent.hint})`;
+    ? `No file or folder called ${quoted(called)} is in this scan`
+    : `No file or folder called ${quoted(called)} is in this scan (${absent.hint})`;
 };
 
 const clip = (note: string): string => Array.from(note).slice(0, NOTE_CHARS).join('');
@@ -264,12 +274,19 @@ const capitalised = (text: string): string => `${text.charAt(0).toUpperCase()}${
 /** `downloads`, `documents`: the role as it is said in a sentence. */
 const roleWord = (role: Role): string => role.toLowerCase();
 
-/** The lower-case names of the folders of the tree: what the keyword reader (the model's stand-in) can take for a name. */
+/**
+ * The lower-case names of the folders of the tree, and of the files whose name holds a dot that does not start it
+ * (`old.iso`): what the keyword reader (the model's stand-in) can take for a name.
+ */
 export function folderNamesOf(tree: MockTree): Set<string> {
   const names = new Set<string>();
 
   for (const node of tree.nodes) {
-    if (node.kind === 'dir' && node.parent >= 0) {
+    if (node.parent < 0) {
+      continue;
+    }
+
+    if (node.kind === 'dir' || (node.kind === 'file' && node.name.indexOf('.') > 0)) {
       names.add(node.name.toLowerCase());
     }
   }
@@ -321,6 +338,7 @@ function answerReading(
       path: display(node),
       allocated: node.allocated,
       unreadable: node.unreadable === true,
+      ...(node.kind === 'file' ? { file: true as const } : {}),
     };
     const detail = context.guard(node);
 
@@ -494,7 +512,7 @@ function answerReading(
 
     if (folders.length === 0) {
       return places.length > 0
-        ? { found: false, absent: { named: namedWords(text, named), hint: places.slice(0, 2).join('; ') } }
+        ? { found: false, absent: { named: namedWords(text, named), hint: places.slice(0, 2).join('. ') } }
         : null;
     }
 
@@ -522,7 +540,7 @@ function answerReading(
     return named.flatMap((rule) =>
       rule.place?.startsWith('/') &&
       !(scanned === '/' || rule.place === scanned || rule.place.startsWith(`${scanned}/`))
-        ? [`${quoted(rule.place)} (${rule.title}) is outside this scan; scan / to include it.`]
+        ? [`${quoted(rule.place)} (${rule.title}) is outside this scan. Scan / to include it.`]
         : [],
     );
   };
@@ -590,6 +608,12 @@ function answerReading(
     const role = roleOfPath(text);
 
     if (!hit) {
+      const file = lookup.entry(text);
+
+      if (file?.kind === 'file') {
+        return { scope: { at: 'file', node: file }, notes: [] };
+      }
+
       return {
         scope: missing(
           text,
@@ -611,7 +635,7 @@ function answerReading(
 
   /**
    * The user's folder of a role. `typed` is the name the user used: an English name for a folder that has another name
-   * here is said (`There is no “~/Downloads”; your downloads folder is “~/Pobrane”.`).
+   * here is said (`There is no “~/Downloads”. Your downloads folder is “~/Pobrane”.`).
    */
   const resolveRole = (role: Role, typed: string): Outcome => {
     const absent = (hint?: string): Outcome => ({
@@ -634,7 +658,7 @@ function answerReading(
     const sameName = baseName(display(found)).toLowerCase() === role.toLowerCase();
     const notes =
       typed.toLowerCase() === role.toLowerCase() && !sameName
-        ? [`There is no ${quoted(`~/${role}`)}; your ${roleWord(role)} folder is ${quoted(display(found))}.`]
+        ? [`There is no ${quoted(`~/${role}`)}. Your ${roleWord(role)} folder is ${quoted(display(found))}.`]
         : [];
 
     return { scope: { at: 'folder', node: found }, notes };
@@ -712,6 +736,33 @@ function answerReading(
     return peers.length < 2 ? [largest] : peers;
   };
 
+  /**
+   * The files with exactly this name (case ignored): the file at `~/<name>` when there is one, else the files called
+   * that anywhere, largest first. The largest alone when the others are a quarter of it or less, else every one of
+   * similar standing.
+   */
+  const filesNamed = (text: string): MockNode[] => {
+    const home = lookup.entry(`~/${text}`);
+
+    if (home && home.kind === 'file' && display(home) === `~/${text}`) {
+      return [home];
+    }
+
+    const lowered = text.toLowerCase();
+    const files = tree.nodes
+      .filter((node) => node.parent >= 0 && node.kind === 'file' && node.name.toLowerCase() === lowered)
+      .sort(bySize);
+    const [largest] = files;
+
+    if (!largest) {
+      return [];
+    }
+
+    const peers = files.filter((node) => node.allocated * PEER_SHARE >= largest.allocated);
+
+    return peers.length < 2 ? [largest] : peers;
+  };
+
   /** The question asked back for folders that share a name. */
   const whichFolder = (text: string, nodes: readonly MockNode[]): Clarify => ({
     prompt: `I found more than one folder called ${quoted(text)}. Which one do you mean?`,
@@ -722,6 +773,76 @@ function answerReading(
       target: { at: 'folder', node } as const,
     })),
   });
+
+  /** The question asked back for files that share a name, or for a file and a folder that do. */
+  const whichEntry = (text: string, folders: readonly MockNode[], files: readonly MockNode[]): Clarify => {
+    const mixed = folders.length > 0 && files.length > 0;
+    // Folders first, and room left for at least one file when there is one.
+    const shownFolders = folders.slice(0, mixed ? MAX_CHOICES - 1 : MAX_CHOICES);
+    const shownFiles = files.slice(0, MAX_CHOICES - shownFolders.length);
+    const choice = (node: MockNode, kind: 'file' | 'folder'): Choice => ({
+      label: mixed ? `${display(node)} (${kind})` : display(node),
+      path: display(node),
+      node: node.id,
+      target: kind === 'file' ? { at: 'file', node } : { at: 'folder', node },
+    });
+    const what = mixed ? 'file or folder' : 'file';
+
+    return {
+      prompt: `I found more than one ${what} called ${quoted(text)}. Which one do you mean?`,
+      choices: [
+        ...shownFolders.map((node) => choice(node, 'folder')),
+        ...shownFiles.map((node) => choice(node, 'file')),
+      ],
+    };
+  };
+
+  /** The question asked back for several folders, and the folder itself for one. */
+  const ofFolders = (text: string, folders: readonly MockNode[]): Outcome => {
+    const [folder] = folders;
+
+    return folders.length === 1 && folder
+      ? { scope: { at: 'folder', node: folder }, notes: [] }
+      : { ask: whichFolder(text, folders) };
+  };
+
+  /**
+   * What a bare name stands for: the folders with that name and the files with exactly that name. An exact file beats
+   * folders that only start with the name or hold it, a file and a folder both exact are asked back, and several files
+   * follow the rule of the folders. `null` when nothing has the name. The words of a text that is no name are looked
+   * for as folders only, by `foldersOfWords`.
+   */
+  const entriesNamed = (text: string): Outcome | null => {
+    const folders = foldersNamed(text);
+    const files = filesNamed(text);
+    const [folder] = folders;
+    const [file] = files;
+    const folderExact =
+      folder !== undefined && baseName(display(folder)).toLowerCase() === text.toLowerCase();
+
+    if (file && (folderExact || files.length > 1)) {
+      return { ask: whichEntry(text, folderExact ? folders : [], files) };
+    }
+
+    if (file) {
+      return { scope: { at: 'file', node: file }, notes: [] };
+    }
+
+    return folder ? ofFolders(text, folders) : null;
+  };
+
+  /** The first word of a text that is no name that has folders, and those folders. */
+  const foldersOfWords = (text: string): Outcome | null => {
+    for (const word of nameWords(text)) {
+      const folders = foldersNamed(word);
+
+      if (folders.length > 0) {
+        return ofFolders(text, folders);
+      }
+    }
+
+    return null;
+  };
 
   /** A path or a name the model read, as the tree knows it. */
   const resolveText = (given: string): Outcome => {
@@ -752,25 +873,7 @@ function answerReading(
       return { scope: missing(text, rules.absent), notes: [] };
     }
 
-    let byName = foldersNamed(text);
-
-    for (const word of byName.length === 0 ? nameWords(text) : []) {
-      byName = foldersNamed(word);
-
-      if (byName.length > 0) {
-        break;
-      }
-    }
-
-    const [only] = byName;
-
-    if (byName.length === 0) {
-      return { scope: missing(text), notes: [] };
-    }
-
-    return byName.length === 1 && only
-      ? { scope: { at: 'folder', node: only }, notes: [] }
-      : { ask: whichFolder(text, byName) };
+    return entriesNamed(text) ?? foldersOfWords(text) ?? { scope: missing(text), notes: [] };
   };
 
   /**
@@ -837,7 +940,11 @@ function answerReading(
 
   /** The scope as a node: a resolved folder, or the root for the whole scan (a scope of several folders: the largest). */
   const nodeOf = (given: Scope): MockNode =>
-    given.at === 'folder' ? given.node : given.at === 'rules' ? (given.nodes[0] as MockNode) : root;
+    given.at === 'folder' || given.at === 'file'
+      ? given.node
+      : given.at === 'rules'
+        ? (given.nodes[0] as MockNode)
+        : root;
 
   /** The folders the scope covers: the root for the whole scan, none for a scope that is not there. */
   const rootsOf = (given: Scope): MockNode[] => {
@@ -845,6 +952,7 @@ function answerReading(
       case 'whole':
         return [root];
       case 'folder':
+      case 'file':
         return [given.node];
       case 'rules':
         return given.nodes;
@@ -991,7 +1099,7 @@ function answerReading(
     found.files = node.files;
 
     if (rowOf(node).source === 'model') {
-      found.notes.push('The local model labelled it for review; deleting it is your call.');
+      found.notes.push('The local model labelled it for review. Deleting it is your call.');
 
       return;
     }
@@ -1002,7 +1110,7 @@ function answerReading(
       .slice(0, 2);
 
     if (kept.length === 0) {
-      found.notes.push('Platter has no rule for it; deleting it is your call.');
+      found.notes.push('Platter has no rule for it. Deleting it is your call.');
 
       return;
     }
@@ -1010,7 +1118,7 @@ function answerReading(
     const named = kept.map((entry) => `${quoted(entry.title)} (${formatSize(entry.bytes, units)})`);
 
     found.notes.push(
-      `Platter keeps part of it, such as ${named.join(' and ')}; deleting the rest is your call.`,
+      `Platter keeps part of it, such as ${named.join(' and ')}. Deleting the rest is your call.`,
     );
   }
 
@@ -1162,7 +1270,7 @@ function answerReading(
 
     if (skipped > 0) {
       found.notes.push(
-        `${skipped} matching files are counted in the totals but not listed; only folders are listed.`,
+        `${skipped} matching files are counted in the totals but not listed. Only folders are listed.`,
       );
     }
 
@@ -1281,7 +1389,18 @@ function answerReading(
       return found;
     }
 
-    rowsOf(lookup.search(name, MAX_FOUND), found);
+    // Files too: the mock's `find_entries`.
+    rowsOf(lookup.searchEntries(name, MAX_FOUND), found);
+
+    return found;
+  }
+
+  /** The one file a question is about, with its standing, whatever the intent. */
+  function fileFound(node: MockNode): Found {
+    const found = nothingFound();
+
+    found.rows.push(rowOf(node));
+    found.subject = true;
 
     return found;
   }
@@ -1325,6 +1444,10 @@ function answerReading(
 
   // ---- The answer ----
 
+  /** How long before the scan a file changed, in whole days, and nothing for a file with no modification time. */
+  const fileAge = (node: MockNode): { ageDays?: number } =>
+    node.mtime > 0 ? { ageDays: Math.max(0, Math.floor((tree.now - node.mtime) / SECONDS_PER_DAY)) } : {};
+
   const notes: string[] = [];
 
   if (context.outdated) {
@@ -1340,6 +1463,8 @@ function answerReading(
 
   if (intent === 'offtopic' || scope.at === 'missing') {
     found = nothingFound();
+  } else if (scope.at === 'file') {
+    found = fileFound(scope.node);
   } else if (intent === 'find') {
     found = reading.subject.kind === 'name' ? find(reading.subject.text) : findScope(scope);
   } else {
@@ -1393,6 +1518,9 @@ function answerReading(
 
   const shownNotes = notes.slice(0, MAX_NOTES).map(clip);
   const scopeNode = scope.at === 'folder' && intent !== 'find' ? scope.node : null;
+  const fileNode = scope.at === 'file' ? scope.node : null;
+  // A find says what it looked for, never a scope, whatever the typed path was.
+  const scopedFile = intent === 'find' ? null : fileNode;
   const rows: ScanRowDto[] = found.rows.map((row) => ({
     node: row.node,
     path: row.path,
@@ -1400,6 +1528,7 @@ function answerReading(
     ...(row.verdict ? { verdict: row.verdict } : {}),
     ...(row.source ? { source: row.source } : {}),
     ...(row.note ? { note: row.note } : {}),
+    ...(row.file ? { file: true as const } : {}),
   }));
 
   const sheet: FactSheet = {
@@ -1427,6 +1556,7 @@ function answerReading(
     outdated: context.outdated,
     more: found.more,
     contextPaths: [...contextPaths, ...found.contextPaths],
+    ...(fileNode ? { file: fileAge(fileNode) } : {}),
   };
 
   const segments = templateSegments(sheet, units);
@@ -1462,6 +1592,9 @@ function answerReading(
       kind: query.kind,
       limit: query.limit,
       ...(scopeNode ? { scope: { node: scopeNode.id, path: display(scopeNode) } } : {}),
+      ...(scopedFile
+        ? { scope: { node: scopedFile.id, path: display(scopedFile), file: true as const } }
+        : {}),
       ...(intent === 'find'
         ? query.scope !== ''
           ? { scopeText: query.scope }

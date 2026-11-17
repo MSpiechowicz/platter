@@ -378,6 +378,16 @@ function hiddenToken(raw: string): string | null {
     : null;
 }
 
+/**
+ * A word that looks like a file name: a dot inside it, not at the start, then 1 to 5 letters or digits at its end. A
+ * word with a slash in it is a path, not a name.
+ */
+function fileNameToken(raw: string): boolean {
+  const token = trimmed(raw);
+
+  return !token.includes('/') && /^.+\.[\p{L}\p{N}]{1,5}$/u.test(token);
+}
+
 /** A word that is a path (`~/Projekty`, `/var`, `~`). */
 function pathToken(raw: string): string | null {
   const token = trimmed(raw);
@@ -505,14 +515,48 @@ export interface Signals {
   tokens: string[];
 }
 
+/**
+ * The first quoted text of the question that is a path (`"~/My Files/a.txt"`): the path without the quotes, and the
+ * question without the quoted text. A path is `~`, or starts with `~/`, or is `/` and more. A quote opens only at the
+ * start of the question or after white space (`5" wide` opens nothing), and closes at the next `"`. The quotes pair up
+ * from the left, and a quote that is never closed quotes nothing.
+ */
+export function quotedPath(question: string): { path: string; rest: string } | null {
+  let from = 0;
+
+  for (;;) {
+    let open = question.indexOf('"', from);
+
+    while (open > 0 && !/\s/u.test(question[open - 1] as string)) {
+      open = question.indexOf('"', open + 1);
+    }
+
+    const close = open === -1 ? -1 : question.indexOf('"', open + 1);
+
+    if (close === -1) {
+      return null;
+    }
+
+    const text = question.slice(open + 1, close).trim();
+
+    if (text === '~' || text.startsWith('~/') || (text.startsWith('/') && text.length > 1)) {
+      return { path: text, rest: `${question.slice(0, open)} ${question.slice(close + 1)}` };
+    }
+
+    from = close + 1;
+  }
+}
+
 /** Reads what the words of `question` say by themselves. */
 export function signals(question: string): Signals {
-  const rawWords = question.split(/\s+/u).filter((word) => word !== '');
+  // A quoted path is one path, whatever white space is in it, and is no words of the question.
+  const quoted = quotedPath(question);
+  const rawWords = Array.from((quoted?.rest ?? question).matchAll(/\S+/gu), (match) => match[0]);
   // A typed path is a path, not words: `/var/cache` is no word about caches.
   const spoken = rawWords.filter((word) => pathToken(word) === null && hiddenToken(word) === null);
   const tokens = wordsOfQuestion(spoken.join(' '));
 
-  const typedPath = rawWords.map(pathToken).find((token) => token !== null) ?? null;
+  const typedPath = quoted?.path ?? rawWords.map(pathToken).find((token) => token !== null) ?? null;
   const path = typedPath ?? (homeWord(tokens) ? '~' : null);
   const hidden = rawWords.map(hiddenToken).find((token) => token !== null) ?? null;
   const intent = intentOf(tokens);
@@ -572,6 +616,7 @@ export function signals(question: string): Signals {
   const aboutDisk =
     path !== null ||
     hidden !== null ||
+    rawWords.some(fileNameToken) ||
     media !== null ||
     roles.length > 0 ||
     hasStem(tokens, DISK_STEMS) ||

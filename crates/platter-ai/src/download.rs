@@ -158,7 +158,7 @@ pub fn download(
 ) -> Result<(), DownloadError> {
     if !helpers.settle() {
         return Err(DownloadError::Refused(
-            "The previous download is still closing; try again in a moment.".to_owned(),
+            "The previous download is still closing. Try again in a moment.".to_owned(),
         ));
     }
     platter_platform::create_private_dir(dir).map_err(io_error)?;
@@ -510,7 +510,7 @@ fn range_matches(response: &FetchResponse, from: Option<u64>, total: u64) -> boo
 fn refuse_link(path: &Path) -> Result<(), DownloadError> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => Err(DownloadError::Refused(format!(
-            "{} is a link; Platter does not follow it.",
+            "{} is a link and Platter does not follow it.",
             path.display()
         ))),
         Ok(_) | Err(_) => Ok(()),

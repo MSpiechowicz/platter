@@ -2,12 +2,13 @@
 //!
 //! The subject is looked up in the tree and nowhere else, in this order:
 //!
-//! 1. A typed path is that exact folder.
+//! 1. A typed path is that exact folder, or else that exact file.
 //! 2. A tool the rules know (`docker`) is the folders its rules matched in this scan; where the rules have
 //!    one place that the scan does not hold, the answer says where it is.
 //! 3. A personal folder by its role (`Downloads`, `Pobrane`) is the user's real one (XDG user-dirs): a folder
 //!    with the same name somewhere else is never "your Downloads".
-//! 4. A bare name is `~/<name>`, else the folders with that name.
+//! 4. A bare name is `~/<name>`, else the folders with that name. A file counts only by its exact name, and
+//!    an exact file beats folders that only start with the name or hold it.
 //!
 //! A subject is never guessed. When two unrelated tools, or two folders of a similar standing, fit the
 //! words, the question is asked back ([`Clarify`]); a later `ask_scan` with the id of a choice resolves the
@@ -17,15 +18,17 @@
 use std::path::{Path, PathBuf};
 
 use platter_ai::WellKnown;
-use platter_core::query::{FolderMatch, MAX_FOLDER_MATCHES, find_folders};
-use platter_core::{NodeId, UserDir};
+use platter_core::query::{
+    FolderMatch, MAX_ENTRY_MATCHES, MAX_FOLDER_MATCHES, entry_at, find_files_named, find_folders,
+};
+use platter_core::{NodeId, NodeKind, UserDir};
 
 use super::reading::Subject;
 use super::{Absent, ByRule, Lens, Scope, Tool, name_words, quoted};
 use crate::error::{CommandError, CommandResult};
 
 /// What a `pick` that matches no choice is refused with.
-pub(super) const STALE_CHOICE: &str = "that choice is no longer available; ask again";
+pub(super) const STALE_CHOICE: &str = "that choice is no longer available, so ask again";
 
 /// Most choices of one question asked back.
 const MAX_CHOICES: usize = 4;
@@ -52,6 +55,14 @@ pub(super) struct Clarify {
 enum Outcome {
     Scope(Scope, Vec<String>),
     Ask(Clarify),
+}
+
+/// The folders a bare name fits: of the best tier only.
+#[derive(Default)]
+struct Named {
+    nodes: Vec<NodeId>,
+    /// The name is the folder's whole name (or `~/<name>`), not only the start of it or a part of it.
+    exact: bool,
 }
 
 /// Where a question's subject is.
@@ -175,10 +186,17 @@ impl Lens<'_> {
             }
         }
 
-        let mut by_name = self.folders_named(text);
+        let files = self.files_named(text);
+        let by_name = self.folders_named(text);
+        if !files.is_empty() {
+            return self.of_files(text, &files, &by_name);
+        }
+
+        let mut by_name = by_name.nodes;
         if by_name.is_empty() {
+            // The words of a text that is no name are looked for as folders only.
             for word in name_words(text) {
-                by_name = self.folders_named(&word);
+                by_name = self.folders_named(&word).nodes;
                 if !by_name.is_empty() {
                     break;
                 }
@@ -198,7 +216,7 @@ impl Lens<'_> {
         }
     }
 
-    /// A path the user typed: that folder exactly.
+    /// A path the user typed: that folder exactly, or else that file.
     fn resolve_path(&self, text: &str) -> Outcome {
         // With a slash in it the query is only looked up as a path, so what comes back is exactly that
         // folder; the bare `~` is also found by name, so its path is compared.
@@ -218,17 +236,25 @@ impl Lens<'_> {
 
                 Outcome::Scope(self.folder(found.node), notes)
             }
-            None => Outcome::Scope(
-                Scope::Missing {
-                    text: text.to_owned(),
-                    absent: role.map(|(role, real)| Absent {
-                        named: text.to_owned(),
-                        hint: format!("your {} folder is {}", role_word(role), quoted(&real)),
-                    }),
-                },
-                Vec::new(),
-            ),
+            None => match self.file_at(text) {
+                Some(node) => Outcome::Scope(self.file_scope(node), Vec::new()),
+                None => Outcome::Scope(
+                    Scope::Missing {
+                        text: text.to_owned(),
+                        absent: role.map(|(role, real)| Absent {
+                            named: text.to_owned(),
+                            hint: format!("your {} folder is {}", role_word(role), quoted(&real)),
+                        }),
+                    },
+                    Vec::new(),
+                ),
+            },
         }
+    }
+
+    /// The file at exactly this path, when the scan holds one.
+    fn file_at(&self, path: &str) -> Option<NodeId> {
+        entry_at(self.tree, self.review.home(), path).filter(|&node| self.tree.kind(node) == NodeKind::File)
     }
 
     /// For `~/Documents`: the role of that name and where the user's own folder of it is.
@@ -275,7 +301,7 @@ impl Lens<'_> {
     }
 
     /// The user's folder of a role. `typed` is the name the user used, when known: an English name for a
-    /// folder that has another name here is said (`There is no “~/Downloads”; your downloads folder is
+    /// folder that has another name here is said (`There is no “~/Downloads”. Your downloads folder is
     /// “~/Pobrane”.`).
     fn resolve_role(&self, role: WellKnown, typed: Option<&str>) -> Outcome {
         let english = role.english();
@@ -308,7 +334,7 @@ impl Lens<'_> {
         let said_in_english = typed.is_none_or(|typed| typed.eq_ignore_ascii_case(english));
         if said_in_english && !base_name(&found.path).eq_ignore_ascii_case(english) {
             notes.push(format!(
-                "There is no {}; your {} folder is {}.",
+                "There is no {}. Your {} folder is {}.",
                 quoted(&format!("~/{english}")),
                 role_word(role),
                 quoted(&found.path)
@@ -399,10 +425,13 @@ impl Lens<'_> {
     /// (or, failing that, starting with it or holding it), largest first. Folders inside another of them are
     /// not separate; of the rest, the largest alone when the others are much smaller (a quarter or less of
     /// it), else every one of similar standing.
-    fn folders_named(&self, text: &str) -> Vec<NodeId> {
+    fn folders_named(&self, text: &str) -> Named {
         let exact = format!("~/{text}");
         if let Some(found) = self.look(&exact).filter(|found| found.path == exact) {
-            return vec![found.node];
+            return Named {
+                nodes: vec![found.node],
+                exact: true,
+            };
         }
 
         let found = find_folders(self.tree, self.review.home(), text, MAX_FOLDER_MATCHES).unwrap_or_default();
@@ -419,14 +448,40 @@ impl Lens<'_> {
             }
         };
         let Some(best) = found.iter().map(tier).min() else {
-            return Vec::new();
+            return Named::default();
         };
 
-        let mut nodes: Vec<NodeId> = found
+        let nodes: Vec<NodeId> = found
             .iter()
             .filter(|found| tier(found) == best)
             .map(|found| found.node)
             .collect();
+
+        Named {
+            nodes: self.of_similar_standing(nodes),
+            exact: best == 0,
+        }
+    }
+
+    /// The files with exactly this name (case ignored), for a subject that is a bare name: `~/<name>`, else
+    /// the files called that anywhere in the scan. Of several, the largest alone when the others are much
+    /// smaller, else every one of similar standing.
+    fn files_named(&self, text: &str) -> Vec<NodeId> {
+        if let Some(node) = self.file_at(&format!("~/{text}")) {
+            return vec![node];
+        }
+
+        // Files only, so any number of folders of the same name cannot push a small file out.
+        let found =
+            find_files_named(self.tree, self.review.home(), text, MAX_ENTRY_MATCHES).unwrap_or_default();
+        let nodes: Vec<NodeId> = found.iter().map(|found| found.node).collect();
+
+        self.of_similar_standing(nodes)
+    }
+
+    /// Of entries of one name, largest first and with the ones inside another left out: the largest alone
+    /// when the others are a quarter of it or less, else every one of a similar size.
+    fn of_similar_standing(&self, mut nodes: Vec<NodeId>) -> Vec<NodeId> {
         self.by_size(&mut nodes);
         let outer: Vec<NodeId> = nodes
             .iter()
@@ -450,6 +505,17 @@ impl Lens<'_> {
         if peers.len() < 2 { vec![largest] } else { peers }
     }
 
+    /// A bare name that is the exact name of files. One file, with no folder of that exact name, is the
+    /// scope. A file and a folder both called that, or several files of a similar size, are asked back.
+    fn of_files(&self, text: &str, files: &[NodeId], folders: &Named) -> Outcome {
+        let folders: &[NodeId] = if folders.exact { &folders.nodes } else { &[] };
+
+        match (files, folders) {
+            ([node], []) => Outcome::Scope(self.file_scope(*node), Vec::new()),
+            _ => Outcome::Ask(self.which_entry(text, folders, files)),
+        }
+    }
+
     /// The question asked back for folders that share a name.
     fn which_folder(&self, text: &str, nodes: &[NodeId]) -> Clarify {
         let choices = nodes
@@ -470,6 +536,57 @@ impl Lens<'_> {
         Clarify {
             prompt: format!(
                 "I found more than one folder called {}. Which one do you mean?",
+                quoted(text)
+            ),
+            choices,
+        }
+    }
+
+    /// The question asked back for files, or for files and folders, that share a name: the folders first,
+    /// then the files, at most [`MAX_CHOICES`] and at least one of each kind that there is. A choice says
+    /// what it is when the kinds are mixed.
+    fn which_entry(&self, text: &str, folders: &[NodeId], files: &[NodeId]) -> Clarify {
+        let mixed = !folders.is_empty();
+        let folders = &folders[..folders.len().min(MAX_CHOICES - 1)];
+        let files = &files[..files.len().min(MAX_CHOICES - folders.len())];
+
+        let choice = |node: NodeId, is_file: bool| {
+            let path = self.review.display(node);
+            let label = match (mixed, is_file) {
+                (false, _) => path.clone(),
+                (true, true) => format!("{path} (file)"),
+                (true, false) => format!("{path} (folder)"),
+            };
+            let target = if is_file {
+                Scope::File {
+                    node,
+                    path: path.clone(),
+                }
+            } else {
+                Scope::Folder {
+                    node,
+                    path: path.clone(),
+                }
+            };
+
+            Choice {
+                label,
+                path: Some(path),
+                node: Some(node),
+                target,
+            }
+        };
+        let choices = folders
+            .iter()
+            .map(|&node| choice(node, false))
+            .chain(files.iter().map(|&node| choice(node, true)))
+            .collect();
+
+        let what = if mixed { "file or folder" } else { "file" };
+
+        Clarify {
+            prompt: format!(
+                "I found more than one {what} called {}. Which one do you mean?",
                 quoted(text)
             ),
             choices,

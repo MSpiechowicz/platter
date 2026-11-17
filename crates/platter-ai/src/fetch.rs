@@ -52,7 +52,7 @@ pub trait Fetch: Send + Sync {
 
 /// What is said when a SOCKS proxy is set: the client is built without SOCKS, and would connect directly
 /// (and look the name up itself) instead of through it.
-const SOCKS_REFUSED: &str = "A SOCKS proxy is set (ALL_PROXY/HTTPS_PROXY); Platter cannot download through it. Use an HTTP proxy or unset it.";
+const SOCKS_REFUSED: &str = "A SOCKS proxy is set (ALL_PROXY/HTTPS_PROXY), and Platter cannot download through it. Use an HTTP proxy or unset it.";
 
 /// The variables the client reads a proxy from, highest priority first.
 const PROXY_VARIABLES: [&str; 6] = [
@@ -90,7 +90,7 @@ pub fn unreadable_proxy_variable(get: impl Fn(&str) -> Option<OsString>) -> Opti
 /// What is said when a proxy variable is set that cannot be read: connecting directly instead would
 /// bypass the proxy the user asked for.
 fn proxy_unreadable(variable: &str) -> String {
-    format!("A proxy is set ({variable}) that Platter cannot read; fix it or unset it.")
+    format!("A proxy is set ({variable}) that Platter cannot read. Fix it or unset it.")
 }
 
 /// [`Fetch`] on `ureq`: TLS by `rustls` with the `ring` provider, given to the client itself (nothing is

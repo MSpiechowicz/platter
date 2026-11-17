@@ -21,11 +21,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use platter_ai::{
-    By, FactRow, FactSheet, FactTotal, Intent, Kind, MediaKind, OUTDATED_NOTE, Place, ScanQuestion, Segment,
-    TotalKind, Units, WellKnown, clean_question, format_size, render, template_segments,
+    By, FactRow, FactSheet, FactTotal, FileFact, Intent, Kind, MediaKind, OUTDATED_NOTE, Place, ScanQuestion,
+    Segment, TotalKind, Units, WellKnown, clean_question, format_size, render, template_segments,
 };
 use platter_core::dto::{AgeBucket, ScanId, Verdict, VerdictTotals};
-use platter_core::query::{MAX_FOLDER_MATCHES, find_folders, summary};
+use platter_core::query::{MAX_ENTRY_MATCHES, find_entries, find_folders, summary};
 use platter_core::{Category, ModelLabel, ModelVerdict, NodeId, NodeKind, Os, Tree};
 use platter_rules::{Matcher, Rule, RuleMatches, RuleSet, matches, scan_is_kept};
 use serde::{Deserialize, Serialize};
@@ -72,6 +72,8 @@ const MEDIA: [Category; 3] = [Category::Video, Category::Image, Category::Audio]
 
 /// Most rows an answer shows (a question's limit is at most this).
 const MAX_ROWS: usize = 10;
+/// Seconds in a day, for the age of a file.
+const SECONDS_PER_DAY: u64 = 86_400;
 /// Most notes an answer carries.
 const MAX_NOTES: usize = 6;
 /// Longest note, in characters.
@@ -82,7 +84,7 @@ const LABELLED_BY_MODEL: &str = "Labelled by the local model";
 /// What to do about it, when the model has labelled nothing (the answer itself says that nothing is labelled).
 const NO_LABELS_NOTE: &str = "Use “Label folders” in the Advisor view.";
 const ENGLISH_NOTE: &str = "Answers are in English.";
-const NOT_FROM_HERE_NOTE: &str = "Platter does not delete anything from here; use Cleanup to choose.";
+const NOT_FROM_HERE_NOTE: &str = "Platter does not delete anything from here. Use Cleanup to choose.";
 
 // ---- Wire types ----
 
@@ -173,12 +175,15 @@ impl From<RowSourceDto> for By {
     }
 }
 
-/// The folder the question's scope was resolved to.
+/// The folder (or file) the question's scope was resolved to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScopeDto {
     pub node: NodeId,
     pub path: String,
+    /// The scope is a file. Left out for a folder, so an answer about a folder reads as it always did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub file: bool,
 }
 
 /// What the backend made of the question.
@@ -196,7 +201,7 @@ pub struct UnderstoodDto {
     pub scope_text: Option<String>,
 }
 
-/// One folder of the answer, computed by the backend.
+/// One folder (or file) of the answer, computed by the backend.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanRowDto {
@@ -209,6 +214,9 @@ pub struct ScanRowDto {
     pub source: Option<RowSourceDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The row is a file, not a folder. Left out for a folder.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub file: bool,
 }
 
 /// A piece of the answer's text. A path of the scan (a row or the scope) comes as its own segment, with
@@ -562,13 +570,18 @@ enum Scope {
         node: NodeId,
         path: String,
     },
+    /// One file, named by its path or by its exact name. Answered by one row, whatever the intent.
+    File {
+        node: NodeId,
+        path: String,
+    },
     /// The folders that the rules named by the scope text matched in this scan (more than one), largest
     /// first, and what to call them.
     Rules {
         title: String,
         nodes: Vec<NodeId>,
     },
-    /// A scope text that is no folder of this scan. `absent` says what the rules call it and where they look
+    /// A scope text that is no file or folder of this scan. `absent` says what the rules call it and where they look
     /// for it, when a rule knows it.
     Missing {
         text: String,
@@ -584,7 +597,7 @@ struct Absent {
     hint: String,
 }
 
-/// A folder of the answer before it is shown.
+/// A folder or file of the answer before it is shown.
 struct Row {
     node: NodeId,
     verdict: Option<Verdict>,
@@ -670,7 +683,7 @@ fn collect(
         && intent == Intent::Explain
     {
         meta.push(format!(
-            "{} folders match {}; the largest is explained.",
+            "{} folders match {}. The largest is explained.",
             nodes.len(),
             quoted(title)
         ));
@@ -680,6 +693,7 @@ fn collect(
     let mut found = match (&scope, intent) {
         (_, Intent::Offtopic) => Found::default(),
         (Scope::Missing { .. }, _) => Found::default(),
+        (Scope::File { node, .. }, _) => lens.file(*node),
         (_, Intent::Find) => match &asked.subject {
             Subject::Name(name) => lens.find(name, query.limit),
             Subject::None => Found::default(),
@@ -736,6 +750,15 @@ fn collect(
             Some(ScopeDto {
                 node: *node,
                 path: path.clone(),
+                file: false,
+            }),
+            None,
+        ),
+        (Scope::File { node, path }, _) => (
+            Some(ScopeDto {
+                node: *node,
+                path: path.clone(),
+                file: true,
             }),
             None,
         ),
@@ -760,6 +783,7 @@ fn collect(
             verdict: row.verdict,
             source: row.source,
             note: row.note.clone(),
+            file: lens.tree.kind(row.node) == NodeKind::File,
         })
         .collect();
 
@@ -775,6 +799,9 @@ fn collect(
     }
     if query.kind == Kind::Media {
         sheet.category = asked.media.map(|media| media.as_str().to_owned());
+    }
+    if let Scope::File { node, .. } = &scope {
+        sheet.file = Some(lens.file_fact(*node));
     }
     sheet.scope_size = found.scope_size;
     sheet.files = found.files;
@@ -857,11 +884,14 @@ fn quoted(text: &str) -> String {
     format!("“{text}”")
 }
 
-/// `No folder called “x” is in this scan`, and where the rules look for what `x` names, when they know.
+/// `No file or folder called “x” is in this scan`, and where the rules look for what `x` names, when they know.
 fn not_in_scan(text: &str, hint: Option<&str>) -> String {
     match hint {
-        Some(hint) => format!("No folder called {} is in this scan ({hint})", quoted(text)),
-        None => format!("No folder called {} is in this scan", quoted(text)),
+        Some(hint) => format!(
+            "No file or folder called {} is in this scan ({hint})",
+            quoted(text)
+        ),
+        None => format!("No file or folder called {} is in this scan", quoted(text)),
     }
 }
 
@@ -908,6 +938,14 @@ impl<'a> Lens<'a> {
     /// `node` as the scope: the folder, with its display path.
     fn folder(&self, node: NodeId) -> Scope {
         Scope::Folder {
+            node,
+            path: self.review.display(node),
+        }
+    }
+
+    /// `node` as the scope when it is a file: the file, with its display path.
+    fn file_scope(&self, node: NodeId) -> Scope {
+        Scope::File {
             node,
             path: self.review.display(node),
         }
@@ -989,7 +1027,7 @@ impl<'a> Lens<'a> {
             return (!places.is_empty()).then(|| {
                 ByRule::Absent(Absent {
                     named: named_words(text, named),
-                    hint: places.join("; "),
+                    hint: places.join(". "),
                 })
             });
         }
@@ -1011,7 +1049,7 @@ impl<'a> Lens<'a> {
     }
 
     /// For each of the rules `named` whose one fixed place lies outside the scanned folder: where it is and
-    /// how to include it (`“/var/lib/docker” (Docker data) is outside this scan; scan / to include it.`).
+    /// how to include it (`“/var/lib/docker” (Docker data) is outside this scan. Scan / to include it.`).
     /// Asked only when folders of the tool were found, so the answer does not look complete without it.
     fn outside_notes(&self, named: &[&Rule]) -> Vec<String> {
         let root = self.tree.root_path();
@@ -1020,7 +1058,7 @@ impl<'a> Lens<'a> {
             .iter()
             .filter_map(|rule| match rule.matcher {
                 Matcher::Fixed(path) if !Path::new(path).starts_with(root) => Some(format!(
-                    "{} ({}) is outside this scan; scan / to include it.",
+                    "{} ({}) is outside this scan. Scan / to include it.",
                     quoted(path),
                     rule.title
                 )),
@@ -1086,7 +1124,7 @@ impl<'a> Lens<'a> {
     /// several folders is not handled, the largest of them).
     fn node_of(&self, scope: &Scope) -> NodeId {
         match scope {
-            Scope::Folder { node, .. } => *node,
+            Scope::Folder { node, .. } | Scope::File { node, .. } => *node,
             Scope::Rules { nodes, .. } => nodes[0],
             _ => self.tree.root(),
         }
@@ -1096,7 +1134,7 @@ impl<'a> Lens<'a> {
     fn roots(&self, scope: &Scope) -> Vec<NodeId> {
         match scope {
             Scope::Whole => vec![self.tree.root()],
-            Scope::Folder { node, .. } => vec![*node],
+            Scope::Folder { node, .. } | Scope::File { node, .. } => vec![*node],
             Scope::Rules { nodes, .. } => nodes.clone(),
             Scope::Missing { .. } => Vec::new(),
         }
@@ -1177,6 +1215,24 @@ impl<'a> Lens<'a> {
             why: None,
             unreadable,
         }
+    }
+
+    /// The one row of a file the question named: its standing, whatever the intent.
+    fn file(&self, node: NodeId) -> Found {
+        let mut found = Found::default();
+        self.rows_of(&[node], 1, &mut found);
+
+        found
+    }
+
+    /// What the answer says of a file besides its standing: how long ago it was changed, by the scan's own
+    /// clock. A file with no modification time (0 or less) has no age.
+    fn file_fact(&self, node: NodeId) -> FileFact {
+        let changed = self.tree.mtime(node);
+        let age_days = (changed > 0)
+            .then(|| self.tree.scanned_at().saturating_sub(changed).max(0) as u64 / SECONDS_PER_DAY);
+
+        FileFact { age_days }
     }
 
     /// The title of a rule of this scan's rule set.
@@ -1516,7 +1572,7 @@ impl<'a> Lens<'a> {
         }
         if skipped > 0 {
             found.notes.push(format!(
-                "{skipped} matching files are counted in the totals but not listed; only folders are listed."
+                "{skipped} matching files are counted in the totals but not listed. Only folders are listed."
             ));
         }
 
@@ -1561,7 +1617,7 @@ impl<'a> Lens<'a> {
         if row.source == Some(RowSourceDto::Model) {
             found
                 .notes
-                .push("The local model labelled it for review; deleting it is your call.".to_owned());
+                .push("The local model labelled it for review. Deleting it is your call.".to_owned());
             return;
         }
 
@@ -1584,7 +1640,7 @@ impl<'a> Lens<'a> {
         if kept.is_empty() {
             found
                 .notes
-                .push("Platter has no rule for it; deleting it is your call.".to_owned());
+                .push("Platter has no rule for it. Deleting it is your call.".to_owned());
             return;
         }
 
@@ -1593,7 +1649,7 @@ impl<'a> Lens<'a> {
             .map(|(title, bytes)| format!("{} ({})", quoted(title), format_size(*bytes, self.units)))
             .collect();
         found.notes.push(format!(
-            "Platter keeps part of it, such as {}; deleting the rest is your call.",
+            "Platter keeps part of it, such as {}. Deleting the rest is your call.",
             named.join(" and ")
         ));
     }
@@ -1781,8 +1837,9 @@ impl<'a> Lens<'a> {
         })
     }
 
-    /// Folders with a name, each with its standing: the folders of the rule that has a known place under
-    /// that name (`docker` is `/var/lib/docker`, not every folder called docker), else from `find_folders`.
+    /// Folders and files with a name, each with its standing: the folders of the rule that has a known place
+    /// under that name (`docker` is `/var/lib/docker`, not every folder called docker), else from
+    /// `find_entries`.
     fn find(&self, name: &str, limit: u8) -> Found {
         let mut found = Found::default();
 
@@ -1795,7 +1852,7 @@ impl<'a> Lens<'a> {
         }
 
         let matched =
-            find_folders(self.tree, self.review.home(), name, MAX_FOLDER_MATCHES).unwrap_or_default();
+            find_entries(self.tree, self.review.home(), name, MAX_ENTRY_MATCHES).unwrap_or_default();
         let nodes: Vec<NodeId> = matched.iter().map(|each| each.node).collect();
 
         self.rows_of(&nodes, limit, &mut found);
@@ -1807,7 +1864,9 @@ impl<'a> Lens<'a> {
         let mut found = Found::default();
 
         match scope {
-            Scope::Folder { node, .. } => self.rows_of(&[*node], limit, &mut found),
+            Scope::Folder { node, .. } | Scope::File { node, .. } => {
+                self.rows_of(&[*node], limit, &mut found)
+            }
             Scope::Rules { nodes, .. } => self.rows_of(nodes, limit, &mut found),
             Scope::Whole | Scope::Missing { .. } => {}
         }
@@ -2074,16 +2133,16 @@ fn named_words(text: &str, rules: &[&Rule]) -> String {
     named.join(" ")
 }
 
-/// Where the rule looks, when it has one place: `“Docker data” lives in /var/lib/docker; scan a folder
+/// Where the rule looks, when it has one place: `“Docker data” lives in /var/lib/docker, so scan a folder
 /// that holds it`.
 fn place_hint(rule: &Rule) -> Option<String> {
     match rule.matcher {
         Matcher::Fixed(path) => Some(format!(
-            "“{}” lives in {path}; scan a folder that holds it",
+            "“{}” lives in {path}, so scan a folder that holds it",
             rule.title
         )),
         Matcher::Home(path) => Some(format!(
-            "“{}” lives in ~/{path}; scan your home folder",
+            "“{}” lives in ~/{path}, so scan your home folder",
             rule.title
         )),
         _ => None,

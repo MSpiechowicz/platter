@@ -10,6 +10,7 @@ import type {
   CleanupId,
   CleanupPlanDto,
   ExternalLink,
+  EntryMatchDto,
   FolderMatchDto,
   GpuProblemChoice,
   LodNode,
@@ -197,7 +198,7 @@ export interface Api {
    * than one thing (a name that fits two folders, a word that fits two tools) comes back as `clarify`: the prompt and
    * the choices, no rows. Asking the same question again with `pick` set to the `id` of a choice answers about that
    * choice; the web view sends only the text and that id, never a path. A `pick` that fits no choice (any more) is
-   * `invalid`: "that choice is no longer available; ask again".
+   * `invalid`: "that choice is no longer available, so ask again".
    */
   askScan(scan: ScanId, question: string, units: SizeUnits, pick?: number): Promise<ScanAnswerDto>;
   /**
@@ -208,6 +209,16 @@ export interface Api {
    * any other is matched as typed, spaces included. `limit` is clamped to 1..20. `notFound`: unknown scan.
    */
   findFolders(scan: ScanId, query: string, limit: number): Promise<FolderMatchDto[]>;
+  /**
+   * Looks for folders and files of a finished scan by name, for the autocomplete of the Ask card. It only reads the
+   * scan's tree. A query that is `~` or starts with `~/` or `/` is a path: the text up to its last `/` must be a folder of the
+   * scan (a bare `~` is `~/`) and the result is that folder's children whose name fits the rest, all of them when the
+   * rest is empty. Any other query is a name, looked for in the whole tree. Either way an exact name comes first
+   * (case ignored), then names that start with the text, then names that contain it, largest first within each group.
+   * Only folders and regular files are listed, never a link, and never the scan root. `query` is at most 1024 bytes
+   * (`invalid` otherwise), a blank one finds nothing and `limit` is clamped to 1..20. `notFound`: unknown scan.
+   */
+  findEntries(scan: ScanId, query: string, limit: number): Promise<EntryMatchDto[]>;
 
   /**
    * The user's own rules, in the order they were made. Each of the four rule commands answers with the whole list.

@@ -871,7 +871,7 @@ describe('questions', () => {
 
     const [failed] = store.exchangesOf(scan);
 
-    expect(failed?.error).toBe('that choice is no longer available; ask again');
+    expect(failed?.error).toBe('that choice is no longer available, so ask again');
     expect(failed?.kind === 'scan' && failed.pick).toEqual({ id: 3, label: '~/old/choice' });
   });
 

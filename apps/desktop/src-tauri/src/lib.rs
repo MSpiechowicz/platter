@@ -95,6 +95,7 @@ pub fn run() {
             commands::advisor::answer_gpu_problem,
             commands::advisor::clear_gpu_log,
             commands::advisor::find_folders,
+            commands::advisor::find_entries,
             commands::rules::list_user_rules,
             commands::rules::add_user_rule,
             commands::rules::remove_user_rule,

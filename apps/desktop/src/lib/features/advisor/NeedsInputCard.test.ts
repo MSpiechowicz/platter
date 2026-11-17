@@ -149,7 +149,7 @@ describe('NeedsInputCard', () => {
 
   it('shows the refusal on that row only, as text, and leaves its buttons for another try', async () => {
     const refusal =
-      'this is, holds or lies inside a protected place; Platter never cleans it, so it cannot be marked safe';
+      'this is, holds or lies inside a protected place. Platter never cleans it, so it cannot be marked safe';
     const alert = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
     const confirm = vi.spyOn(window, 'confirm').mockImplementation(() => true);
 
@@ -234,7 +234,7 @@ describe('NeedsInputCard', () => {
       labels: labelsOf({ labels: [label(1, 23)], stopped: 'timeBudget' }),
     });
 
-    expect(screen.getByText('Stopped at the time limit; some folders were not labelled.')).toBeTruthy();
+    expect(screen.getByText('Stopped at the time limit, so some folders were not labelled.')).toBeTruthy();
 
     await fireEvent.click(screen.getByRole('button', { name: 'Label again' }));
 

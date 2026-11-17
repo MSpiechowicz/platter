@@ -98,7 +98,7 @@ fn unchanged_rules(before: &[UserRule], now: Result<Vec<UserRule>, String>) -> C
     match now {
         Err(why) => Err(unusable(&why).into()),
         Ok(now) if now != before => Err(
-            "your rules file changed while the folder was scanned, so nothing is planned; run the command again"
+            "your rules file changed while the folder was scanned, so nothing is planned. Run the command again"
                 .into(),
         ),
         Ok(_) => Ok(()),
@@ -139,7 +139,7 @@ fn render(plan: &CleanupPlan, not_found: &[String], verbose: bool, dry_run: bool
         lines.push(format::table(&["RULE", "ACTION", "ITEMS", "SIZE"], &rows));
         lines.push(String::new());
         lines.push(format!(
-            "{} {} (as scanned; hard links and shared blocks can make the space freed differ).",
+            "{} {} (as scanned, though hard links and shared blocks can make the space freed differ).",
             if dry_run { "Would clean" } else { "Cleaning" },
             format::bytes(plan.allocated)
         ));

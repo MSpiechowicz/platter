@@ -68,7 +68,7 @@ export type PrimaryAction =
 /** What a card about a scan says while there is no finished scan: nothing was scanned, or the scan is still running. */
 export function noScanText(scanning: boolean): string {
   return scanning
-    ? 'A scan is running; the advisor uses it once it finishes.'
+    ? 'A scan is running. The advisor uses it once it finishes.'
     : 'Scan a disk or folder first.';
 }
 
@@ -386,7 +386,7 @@ export function askReadiness(input: {
   }
 
   if (status.labelling) {
-    return no('The model is labelling folders; ask again when it is done.');
+    return no('The model is labelling folders, so ask again when it is done.');
   }
 
   return { ready: true };

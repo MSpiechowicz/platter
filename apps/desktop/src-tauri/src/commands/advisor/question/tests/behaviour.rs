@@ -116,7 +116,7 @@ fn a_tool_that_is_not_in_the_scan_says_only_that_and_where_it_lives() {
         let text = text_of(&collected);
         assert!(
             text.starts_with(
-                "No folder called “docker” is in this scan (“Docker data” lives in /var/lib/docker;"
+                "No file or folder called “docker” is in this scan (“Docker data” lives in /var/lib/docker,"
             ),
             "{question}: {text}"
         );
@@ -129,7 +129,7 @@ fn a_tool_that_is_not_in_the_scan_says_only_that_and_where_it_lives() {
 
 #[test]
 fn a_tool_with_a_fixed_place_outside_a_home_scan_says_where_the_rest_is() {
-    let note = "“/var/lib/docker” (Docker data) is outside this scan; scan / to include it.";
+    let note = "“/var/lib/docker” (Docker data) is outside this scan. Scan / to include it.";
 
     // A home scan holds the Docker Desktop disk, and Docker's own folder is outside it.
     let home = Setup::rooted(docker_disk(), "/home/u");
@@ -165,7 +165,7 @@ fn a_tool_with_a_fixed_place_outside_a_home_scan_says_where_the_rest_is() {
     let none = Setup::rooted(seeded(), "/home/u");
     let nothing = text_of(&words_only(&none, "how big is my docker data?"));
     assert!(
-        nothing.starts_with("No folder called “docker” is in this scan"),
+        nothing.starts_with("No file or folder called “docker” is in this scan"),
         "{nothing}"
     );
     assert!(!nothing.contains("is outside this scan"), "{nothing}");
@@ -279,7 +279,7 @@ fn downloads_is_the_users_own_downloads_folder_and_a_namesake_elsewhere_is_never
     assert!(
         collected
             .notes
-            .contains(&"There is no “~/Downloads”; your downloads folder is “~/Pobrane”.".to_owned()),
+            .contains(&"There is no “~/Downloads”. Your downloads folder is “~/Pobrane”.".to_owned()),
         "{:?}",
         collected.notes
     );
@@ -291,6 +291,33 @@ fn downloads_is_the_users_own_downloads_folder_and_a_namesake_elsewhere_is_never
         "the user used the folder's own name: {:?}",
         polish.notes
     );
+}
+
+#[test]
+fn a_file_in_the_users_own_downloads_folder_is_found_by_its_path_and_by_its_name() {
+    let setup = Setup::new(polish_home());
+
+    let by_path = setup
+        .collect_read_with("how big is ~/Pobrane/big.iso", None, None, polish_dirs())
+        .unwrap();
+    let by_name = setup
+        .collect_read_with(
+            "how big is big.iso?",
+            Some(query(Intent::Largest, "big.iso", Kind::Any, 5)),
+            None,
+            polish_dirs(),
+        )
+        .unwrap();
+
+    for collected in [by_path, by_name] {
+        assert_eq!(paths(&collected), ["~/Pobrane/big.iso"]);
+        assert!(collected.rows[0].file);
+        assert!(
+            text_of(&collected).starts_with("“~/Pobrane/big.iso” is a file of 734 MB."),
+            "{}",
+            text_of(&collected)
+        );
+    }
 }
 
 #[test]
@@ -308,7 +335,7 @@ fn a_personal_folder_that_is_not_in_the_scan_is_missing_and_never_a_namesake() {
     assert!(collected.rows.is_empty());
     assert_eq!(
         text_of(&collected),
-        "No folder called “Downloads” is in this scan (your downloads folder is “~/Pobrane”)."
+        "No file or folder called “Downloads” is in this scan (your downloads folder is “~/Pobrane”)."
     );
 }
 
@@ -380,7 +407,7 @@ fn an_explicit_path_beats_a_personal_folder_name_and_says_where_the_users_folder
     );
     assert_eq!(
         text_of(&collected),
-        "“~/Documents” holds 4.1 KB in 1 file. Platter has no rule for it; deleting it is your call. Your \
+        "“~/Documents” holds 4.1 KB in 1 file. Platter has no rule for it. Deleting it is your call. Your \
          documents folder is “~/Dokumenty”."
     );
 }
@@ -452,7 +479,7 @@ fn a_pick_takes_the_choice_of_the_same_question_and_a_stale_pick_is_refused() {
         let error = refused.err().expect("refused");
         assert_eq!(
             serde_json::to_value(&error).unwrap()["message"],
-            "that choice is no longer available; ask again"
+            "that choice is no longer available, so ask again"
         );
     }
 }
@@ -579,7 +606,7 @@ fn a_folder_with_nothing_to_clean_says_what_it_holds_and_where_platter_stands() 
     let none = text_of(&words_only(&setup, "is ~/Notes safe to delete?"));
     assert_eq!(
         none,
-        "“~/Notes” holds 4.2 MB in 1 file. Platter has no rule for it; deleting it is your call."
+        "“~/Notes” holds 4.2 MB in 1 file. Platter has no rule for it. Deleting it is your call."
     );
 
     // A rule keeps something inside it (Steam's games).
@@ -593,7 +620,7 @@ fn a_folder_with_nothing_to_clean_says_what_it_holds_and_where_platter_stands() 
     ));
     assert!(
         kept.contains(
-            "Platter keeps part of it, such as “Steam library” (2.1 GB); deleting the rest is your call."
+            "Platter keeps part of it, such as “Steam library” (2.1 GB). Deleting the rest is your call."
         ),
         "{kept}"
     );
@@ -695,7 +722,7 @@ fn a_polish_question_and_a_wish_to_clean_everything_each_get_one_short_note() {
         everything
             .notes
             .iter()
-            .filter(|note| *note == "Platter does not delete anything from here; use Cleanup to choose.")
+            .filter(|note| *note == "Platter does not delete anything from here. Use Cleanup to choose.")
             .count(),
         1
     );

@@ -88,7 +88,7 @@ pub fn open_private_file(path: &Path) -> io::Result<File> {
         if no_follow_refusal(&error) {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("{} is a link; Platter does not follow it", path.display()),
+                format!("{} is a link and Platter does not follow it", path.display()),
             )
         } else {
             error

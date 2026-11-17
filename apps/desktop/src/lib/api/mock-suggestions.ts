@@ -150,7 +150,7 @@ const nodeModules = (age: Age): Matcher =>
   });
 
 const KEPT_REASON = (what: string): string =>
-  `Your ${what} folder. Left alone on purpose; nothing inside is suggested for cleanup.`;
+  `Your ${what} folder. Left alone on purpose. Nothing inside is suggested for cleanup.`;
 
 // Same order as the backend's table: when two rules match one folder, a `keep` rule wins, then the earlier one.
 const BUILTIN_RULES: Rule[] = [
@@ -251,7 +251,7 @@ const BUILTIN_RULES: Rule[] = [
     'Trash',
     'safe',
     home('.local/share/Trash'),
-    'Files moved to the trash. Emptying it deletes them for good; a file that is also hard-linked elsewhere keeps its space.',
+    'Files moved to the trash. Emptying it deletes them for good. A file that is also hard-linked elsewhere keeps its space.',
   ),
   rule(
     'coredumps',
@@ -281,7 +281,7 @@ const BUILTIN_RULES: Rule[] = [
     'System journal',
     'review',
     fixed('/var/log/journal'),
-    'System logs kept by systemd-journald, including the current boot. Removing entries loses that history; journalctl can trim them for you.',
+    'System logs kept by systemd-journald, including the current boot. Removing entries loses that history. You can trim them with journalctl instead.',
   ),
   rule(
     'app-cache',
@@ -295,7 +295,7 @@ const BUILTIN_RULES: Rule[] = [
     'Maven repository',
     'review',
     home('.m2/repository'),
-    'Artifacts Maven downloaded, and those your own builds installed with mvn install. Downloaded ones are fetched again when a build needs them; installed ones exist only here.',
+    'Artifacts Maven downloaded, and those your own builds installed with mvn install. Downloaded ones are fetched again when a build needs them. Installed ones exist only here.',
   ),
   rule(
     'docker-data',
@@ -316,7 +316,7 @@ const BUILTIN_RULES: Rule[] = [
     'btrfs snapshots',
     'review',
     fixed('/.snapshots'),
-    'Snapshots in the default snapper location. Deleting them removes those rollback points; how much space that frees depends on how much the snapshots share with the live system.',
+    'Snapshots in the default snapper location. Deleting them removes those rollback points. How much space that frees depends on how much the snapshots share with the live system.',
   ),
   rule(
     'old-downloads',

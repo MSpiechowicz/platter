@@ -66,7 +66,7 @@ pub async fn pick_folder(app: AppHandle, state: State<'_, AppState>) -> CommandR
             .and_then(|resolved| resolved.identity)
     })
     .await?
-    .ok_or_else(|| CommandError::invalid("the chosen folder cannot be read; choose another one"))?;
+    .ok_or_else(|| CommandError::invalid("the chosen folder cannot be read, so choose another one"))?;
     state.allow_picked(picked.clone(), Some(identity));
     Ok(Some(picked))
 }
@@ -77,7 +77,7 @@ fn wire_path(path: &Path) -> CommandResult<String> {
         Some(text) => Ok(text.to_owned()),
         None => Err(CommandError::invalid(format!(
             "the folder {} has a name that is not valid text, so it cannot be scanned from the \
-             folder picker; choose its parent folder instead",
+             folder picker. Choose its parent folder instead",
             path.display()
         ))),
     }
@@ -135,7 +135,7 @@ mod tests {
 
         assert_eq!(error.code(), ApiErrorCode::Invalid);
         assert!(
-            format!("{error:?}").contains("choose its parent folder"),
+            format!("{error:?}").contains("Choose its parent folder"),
             "{error:?}"
         );
     }

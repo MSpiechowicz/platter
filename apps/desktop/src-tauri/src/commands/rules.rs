@@ -178,12 +178,12 @@ fn safe_allowed(
 ) -> CommandResult<()> {
     if is_scan_root {
         return Err(CommandError::invalid(
-            "this is the folder that was scanned; Platter never cleans it, so it cannot be marked safe",
+            "this is the folder that was scanned. Platter never cleans it, so it cannot be marked safe",
         ));
     }
     if env.home.as_deref() == Some(folder) {
         return Err(CommandError::invalid(
-            "this is your home folder; Platter never cleans it, so it cannot be marked safe",
+            "this is your home folder. Platter never cleans it, so it cannot be marked safe",
         ));
     }
 
@@ -194,7 +194,7 @@ fn safe_allowed(
     };
     if let Some(place) = protected.refuses_on_disk(probe, folder.as_os_str().as_encoded_bytes()) {
         return Err(CommandError::invalid(format!(
-            "this is, holds or lies inside a protected place ({place}); Platter never cleans it, so it cannot be marked safe"
+            "this is, holds or lies inside a protected place ({place}). Platter never cleans it, so it cannot be marked safe"
         )));
     }
 

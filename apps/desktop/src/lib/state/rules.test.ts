@@ -71,13 +71,13 @@ describe('RulesStore', () => {
       addUserRule: vi
         .fn()
         .mockRejectedValue(
-          new ApiRequestError('invalid', 'this is your home folder; it cannot be marked safe'),
+          new ApiRequestError('invalid', 'this is your home folder, so it cannot be marked safe'),
         ),
     });
 
     await store.load();
 
-    expect(await store.add(3, 42, 'safe')).toBe('this is your home folder; it cannot be marked safe');
+    expect(await store.add(3, 42, 'safe')).toBe('this is your home folder, so it cannot be marked safe');
     expect(store.rules).toEqual([keep(1, '~/Videos')]);
     expect(onChange).not.toHaveBeenCalled();
   });

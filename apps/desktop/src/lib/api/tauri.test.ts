@@ -135,6 +135,15 @@ describe('the Tauri advisor commands', () => {
     expect(invoke).toHaveBeenCalledWith('find_folders', { scan: 7, query: '~/docs', limit: 20 });
   });
 
+  it('searches folders and files with the text and limit', async () => {
+    const found = [{ node: 3, path: '/home/me/old.iso', allocated: 10, kind: 'file' }];
+
+    invoke.mockResolvedValueOnce(found);
+
+    expect(await createTauriApi().findEntries(7, '~/Down', 8)).toBe(found);
+    expect(invoke).toHaveBeenCalledWith('find_entries', { scan: 7, query: '~/Down', limit: 8 });
+  });
+
   it('lists, adds, removes and resets rules by node id and rule id only', async () => {
     const list = { rules: [{ id: 1, path: '~/Videos', verdict: 'keep' }] };
 

@@ -38,5 +38,7 @@ pub use ports::{
     DirListing, DirSource, EntryMeta, EntryProbe, EntryRemover, ExpectedEntry, ProbedEntry, RawEntry,
     RemoveMode, Removed, RootInfo, SourceOptions, ToolCommand, ToolFailure, ToolRunner, VolumeProvider,
 };
-pub use query::{FolderMatch, find_folders};
+pub use query::{
+    EntryMatch, FolderMatch, entry_at, find_entries, find_entries_until, find_files_named, find_folders,
+};
 pub use scan::{CancelToken, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_MEMORY_BYTES, ProgressFn, ScanConfig, scan};

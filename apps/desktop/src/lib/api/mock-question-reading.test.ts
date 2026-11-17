@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { interpret, readQuestion, type Reading } from './mock-question-reader';
-import { fold, roleOfName, signals, wordsOfQuestion } from './mock-question-signals';
+import { fold, quotedPath, roleOfName, signals, wordsOfQuestion } from './mock-question-signals';
 import type { ScanKind } from './types';
 
 /*
@@ -190,5 +190,30 @@ describe('the reading of a question: the words first', () => {
     expect(signals('node 18 build folders').limit).toBeNull();
     expect(signals('biggest folders').limit).toBeNull();
     expect(signals('top 99 folders').limit).toBeNull();
+  });
+
+  it('takes a quoted text as a path only when it is `~`, starts with `~/`, or is `/` and more', () => {
+    const subject = (question: string) => readQuestion(question, null).subject;
+
+    expect(subject('how big is "~/My Files/a b.txt"?')).toEqual({ kind: 'path', text: '~/My Files/a b.txt' });
+    expect(subject('how big is " ~/My Files "')).toEqual({ kind: 'path', text: '~/My Files' });
+    expect(subject('how big is "/My Files/a"')).toEqual({ kind: 'path', text: '/My Files/a' });
+    expect(subject('how big is "~foo" in ~/Pobrane')).toEqual({ kind: 'path', text: '~/Pobrane' });
+    expect(subject('how big is "notes" and "~/a b"')).toEqual({ kind: 'path', text: '~/a b' });
+  });
+
+  it('opens a quote only at the start or after white space, so a stray quote does not pair with a later one', () => {
+    const subject = (question: string) => readQuestion(question, null).subject;
+
+    expect(subject('it\'s 5" wide, how big is "~/x/report."')).toEqual({ kind: 'path', text: '~/x/report.' });
+    expect(subject('is say" big "~/x/foo)"')).toEqual({ kind: 'path', text: '~/x/foo)' });
+    expect(subject('"~/a b" is big')).toEqual({ kind: 'path', text: '~/a b' });
+    expect(quotedPath('size of 5"~/a b"')).toBeNull();
+    expect(quotedPath('size of "~/a b')).toBeNull();
+  });
+
+  it('does not read a word with a slash in it as the name of a file', () => {
+    expect(signals('what about docs/readme.txt').aboutDisk).toBe(false);
+    expect(signals('what about readme.txt').aboutDisk).toBe(true);
   });
 });

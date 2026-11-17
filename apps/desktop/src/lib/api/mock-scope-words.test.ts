@@ -29,10 +29,10 @@ describe('the words of a scope name a rule by its title, its id or a name it goe
     const [modules] = rulesNamedBy('node_modules');
 
     expect(data && placeHint(data)).toBe(
-      '“Docker data” lives in /var/lib/docker; scan a folder that holds it',
+      '“Docker data” lives in /var/lib/docker, so scan a folder that holds it',
     );
     expect(vm && placeHint(vm)).toBe(
-      '“Docker Desktop virtual machine” lives in ~/.docker/desktop/vms; scan your home folder',
+      '“Docker Desktop virtual machine” lives in ~/.docker/desktop/vms, so scan your home folder',
     );
     expect(modules && placeHint(modules)).toBeNull();
   });

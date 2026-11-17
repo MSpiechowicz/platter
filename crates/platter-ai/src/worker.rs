@@ -140,7 +140,7 @@ pub enum Device {
 }
 
 /// The problem shown when the model was moved from a graphics card to the processor.
-pub const GPU_FALLBACK: &str = "The graphics card could not run the model; it runs on the processor.";
+pub const GPU_FALLBACK: &str = "The graphics card could not run the model, so it runs on the processor.";
 
 /// The problem shown when the model stopped on the processor.
 pub const STOPPED: &str = "The model stopped unexpectedly.";
@@ -572,7 +572,7 @@ impl AdvisorHandle {
     pub fn download_if(&self, ticket: StateTicket) -> Result<(), WorkerError> {
         let inner = self.shared.lock();
         if inner.generation != ticket.0 {
-            return Err(refused("The model's state changed; try again."));
+            return Err(refused("The model's state changed. Try again."));
         }
 
         self.start_download(inner)

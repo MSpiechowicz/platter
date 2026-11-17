@@ -26,7 +26,7 @@ export const OFFTOPIC_TEXT =
   'I can only answer questions about this scan: what takes space, what can be cleaned, why a folder is big, and what the model labelled.';
 
 /** The note of a scan that is from before a cleanup; the same text as `OUTDATED_NOTE` in `answer.rs`. */
-export const OUTDATED_NOTE = 'This scan is from before a cleanup; rescan for current figures.';
+export const OUTDATED_NOTE = 'This scan is from before a cleanup. Rescan for current figures.';
 
 /** Most rows in a sheet, most notes in a sheet, longest note in characters. */
 export const SHEET_ROWS = 10;
@@ -97,6 +97,30 @@ export interface FactSheet {
   more: number;
   /** Paths that are not rows, that the notes may still speak of. */
   contextPaths: readonly string[];
+  /** The question is about one file, which is the only row: the answer says what it is and where Platter stands. */
+  file?: {
+    /** Whole days from the file's modification to the scan, `undefined` without a modification time. */
+    ageDays?: number;
+  };
+}
+
+/** How long ago a file changed, in the words of the answer: `today`, `3 days ago`, `2 months ago`, `1 year ago`. */
+export function ageWords(days: number): string {
+  const ago = (count: number, unit: string): string => `${count} ${unit}${count === 1 ? '' : 's'} ago`;
+
+  if (days < 1) {
+    return 'today';
+  }
+
+  if (days <= 30) {
+    return ago(Math.floor(days), 'day');
+  }
+
+  if (days < 365) {
+    return ago(Math.floor(days / 30), 'month');
+  }
+
+  return ago(Math.floor(days / 365), 'year');
 }
 
 const VERDICT_LABEL: Record<Verdict, string> = {
@@ -374,7 +398,76 @@ class Writer {
     return line.parts;
   }
 
+  /**
+   * A file: what it is and how old, then where Platter stands (the guard, a rule, the model's label, else nobody). The
+   * answer is the same for every intent.
+   */
+  private file(): Segment[][] {
+    const [row] = this.rows();
+
+    if (!row) {
+      return [];
+    }
+
+    const line = this.line();
+    const age = this.sheet.file?.ageDays;
+
+    line.path(row.row.path, { at: 'row', index: row.index });
+    line.text(' is a file of ');
+    line.size(row.row.size);
+    line.text(age === undefined ? '.' : `, last changed ${ageWords(age)}.`);
+
+    return [line.parts, ...this.fileStanding(row.row)];
+  }
+
+  /**
+   * Where Platter stands on a file: the guard first, then a rule, then the model's label, else that no rule covers it.
+   * The reason follows the guard and a rule that wants a review, never a file that is safe or kept.
+   */
+  private fileStanding(row: FactRow): Segment[][] {
+    const titled = (words: string): Segment[] => {
+      const line = this.line();
+
+      line.text(words);
+
+      if (row.note !== undefined && row.note !== '') {
+        line.text(' (');
+        line.quoted(row.note);
+        line.text(')');
+      }
+
+      line.text('.');
+
+      return line.parts;
+    };
+    const reason = row.why === undefined ? [] : [this.note(row.why)];
+
+    switch (row.by) {
+      case 'guard':
+        return [this.said('Platter leaves it alone.'), ...reason];
+      case 'rule':
+      case 'user':
+        if (row.verdict === 'safe') {
+          return [titled('It is safe to clean')];
+        }
+
+        if (row.verdict === 'keep') {
+          return [titled('It is kept')];
+        }
+
+        return [titled('It needs your review'), ...reason];
+      case 'model':
+        return [this.said(`The local model marked it ${row.verdict === 'keep' ? 'to keep' : 'for review'}.`)];
+      default:
+        return [this.said('No rule covers it, so deleting it is your call.')];
+    }
+  }
+
   body(): Segment[][] {
+    if (this.sheet.file) {
+      return this.file();
+    }
+
     switch (this.sheet.intent) {
       case 'largest':
         return this.largest();

@@ -119,6 +119,30 @@ fn the_sentences_kept_out_of_the_answer_are_in_the_log() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn a_question_about_a_file_is_logged_with_the_file_as_its_scope() {
+    let (w, path) = logged(true);
+    let scan = register(&w.state, &disk());
+
+    let answer = ask(&w, scan, "how big is /mnt/photos/img?").unwrap();
+
+    assert_eq!(answer.rows.len(), 1);
+    assert!(answer.rows[0].file);
+    assert_eq!(
+        answer.understood.scope.as_ref().map(|scope| scope.file),
+        Some(true)
+    );
+    let written = lines(&path);
+    assert_eq!(written.len(), 1);
+    let line = &written[0];
+    assert_eq!(line["understood"]["scope"], "/mnt/photos/img");
+    assert_eq!(line["understood"]["scopeText"], Value::Null);
+    assert_eq!(line["rows"], 1);
+    assert_eq!(line["answer"], answer.answer);
+    assert_eq!(line["model"], "not asked");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn nothing_is_written_while_the_switch_is_off_and_it_is_read_for_each_question() {
     let (w, path) = logged(true);
     let scan = register(&w.state, &disk());

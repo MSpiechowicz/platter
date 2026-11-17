@@ -137,7 +137,7 @@ describe('advisor mock: where the model runs', () => {
 
     expect(loaded.device).toEqual({ kind: 'cpu' });
     expect(loaded.videoBytes).toBeUndefined();
-    expect(loaded.problem).toBe('The graphics card could not run the model; it runs on the processor.');
+    expect(loaded.problem).toBe('The graphics card could not run the model, so it runs on the processor.');
 
     await api.configureAdvisor({ ...options, useGpu: false });
 

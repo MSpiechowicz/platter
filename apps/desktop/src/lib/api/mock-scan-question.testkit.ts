@@ -20,6 +20,26 @@ export function sketchContext(sketch: Sketch, extra: Partial<ScanQuestionContext
     path === '~' ? HOME : path.startsWith('~/') ? `${HOME}${path.slice(1)}` : path;
   const bySize = (a: MockNode, b: MockNode): number => b.allocated - a.allocated || a.id - b.id;
 
+  /** The node an absolute or `~` path names, whatever it is. */
+  const entryAt = (path: string): MockNode | null => {
+    const full = absolute(path);
+    // A scan that started below `/` holds only what lies below it.
+    const inner =
+      tree.rootPath === '/'
+        ? full
+        : full === tree.rootPath
+          ? '/'
+          : full.startsWith(`${tree.rootPath}/`)
+            ? full.slice(tree.rootPath.length)
+            : null;
+
+    try {
+      return inner === null ? null : nodeAt(tree, inner);
+    } catch {
+      return null;
+    }
+  };
+
   return {
     scan: 1,
     tree,
@@ -29,24 +49,14 @@ export function sketchContext(sketch: Sketch, extra: Partial<ScanQuestionContext
     units: 'GB',
     lookup: {
       exact: (path) => {
-        const full = absolute(path);
-        // A scan that started below `/` holds only what lies below it.
-        const inner =
-          tree.rootPath === '/'
-            ? full
-            : full === tree.rootPath
-              ? '/'
-              : full.startsWith(`${tree.rootPath}/`)
-                ? full.slice(tree.rootPath.length)
-                : null;
+        const node = entryAt(path);
 
-        try {
-          const node = inner === null ? null : nodeAt(tree, inner);
+        return node?.kind === 'dir' ? node : null;
+      },
+      entry: (path) => {
+        const node = entryAt(path);
 
-          return node?.kind === 'dir' ? node : null;
-        } catch {
-          return null;
-        }
+        return node?.kind === 'dir' || node?.kind === 'file' ? node : null;
       },
       search: (text, limit) => {
         const needle = text.toLowerCase();
@@ -59,6 +69,22 @@ export function sketchContext(sketch: Sketch, extra: Partial<ScanQuestionContext
           .sort(bySize);
 
         return [...prefix, ...within].slice(0, limit);
+      },
+      searchEntries: (text, limit) => {
+        const needle = text.toLowerCase();
+        const entries = tree.nodes.filter(
+          (node) => (node.kind === 'dir' || node.kind === 'file') && node.parent >= 0,
+        );
+        const nameOf = (node: MockNode): string => node.name.toLowerCase();
+        const exact = entries.filter((node) => nameOf(node) === needle).sort(bySize);
+        const prefix = entries
+          .filter((node) => nameOf(node) !== needle && nameOf(node).startsWith(needle))
+          .sort(bySize);
+        const within = entries
+          .filter((node) => !nameOf(node).startsWith(needle) && nameOf(node).includes(needle))
+          .sort(bySize);
+
+        return [...exact, ...prefix, ...within].slice(0, limit);
       },
     },
     guard: (node) => {

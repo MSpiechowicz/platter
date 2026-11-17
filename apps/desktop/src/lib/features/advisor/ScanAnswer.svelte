@@ -98,7 +98,7 @@
   <ul class="rows">
     {#each answer.rows as row, index (index)}
       {@const path = visibleText(row.path)}
-      <li class="row">
+      <li class="row" class:file={row.file}>
         <!-- The path is the button that opens it in the Explorer: a folder glyph and the path, cut at the end. -->
         <button
           type="button"
@@ -111,9 +111,12 @@
           <span class="p">{path}</span>
         </button>
         <b class="size num">{fmt.size(row.allocated)}</b>
-        <Button size="sm" disabled={askDisabled} aria-label="Ask about {path}" onclick={() => onask(row)}
-          >Ask</Button
-        >
+        <!-- Only a folder can be asked about: a file has no Ask. -->
+        {#if !row.file}
+          <Button size="sm" disabled={askDisabled} aria-label="Ask about {path}" onclick={() => onask(row)}
+            >Ask</Button
+          >
+        {/if}
 
         {#if row.verdict || row.source || row.note}
           <div class="meta">
@@ -358,6 +361,11 @@
     justify-self: end;
     font-size: 12.5px;
     white-space: nowrap;
+  }
+
+  /* A file has no button after its size: the size takes the last two columns and still ends on the same edge. */
+  .row.file .size {
+    grid-column: 2 / -1;
   }
 
   .meta {

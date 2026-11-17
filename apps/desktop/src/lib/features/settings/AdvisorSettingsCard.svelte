@@ -147,7 +147,7 @@
   {#if status?.gpuSupported}
     <Field
       label="Use the graphics card"
-      description="Faster when a graphics card with enough memory is there; Platter falls back to the processor."
+      description="Faster when a graphics card with enough memory is there. Otherwise Platter uses the processor."
     >
       {#snippet control(labelId, descriptionId)}
         <Toggle

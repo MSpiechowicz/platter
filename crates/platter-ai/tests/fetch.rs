@@ -129,7 +129,7 @@ fn a_proxy_variable_that_cannot_be_read_refuses_the_request_without_connecting()
 
         assert_eq!(
             error.to_string(),
-            format!("A proxy is set ({variable}) that Platter cannot read; fix it or unset it.")
+            format!("A proxy is set ({variable}) that Platter cannot read. Fix it or unset it.")
         );
         assert!(
             !connected_within(&listener, Duration::from_millis(200)),

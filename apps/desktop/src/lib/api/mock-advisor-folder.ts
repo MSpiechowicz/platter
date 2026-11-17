@@ -11,7 +11,7 @@ import type { AdvisorAnswerDto, SummaryDto } from './types';
  * which way it marked it. Every answer ends with the folder's size and how much of it is older than a year.
  */
 
-const NO_RULE = 'Platter has no rule for it; deleting it is your call.';
+const NO_RULE = 'Platter has no rule for it. Deleting it is your call.';
 const MARKED_FOR_REVIEW = 'The local model marked it for review.';
 const MARKED_TO_KEEP = 'The local model marked it to keep.';
 const LEFT_ALONE = 'Left alone by Platter.';

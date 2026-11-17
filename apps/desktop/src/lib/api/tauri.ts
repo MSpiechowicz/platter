@@ -11,6 +11,7 @@ import type {
   CleanupId,
   CleanupPlanDto,
   ExternalLink,
+  EntryMatchDto,
   FolderMatchDto,
   GpuProblemChoice,
   LodNode,
@@ -162,6 +163,9 @@ export function createTauriApi(): Api {
 
     findFolders: (scan: ScanId, query: string, limit: number) =>
       call<FolderMatchDto[]>('find_folders', { scan, query, limit }),
+
+    findEntries: (scan: ScanId, query: string, limit: number) =>
+      call<EntryMatchDto[]>('find_entries', { scan, query, limit }),
 
     listUserRules: () => call<UserRulesDto>('list_user_rules'),
 

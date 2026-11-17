@@ -52,7 +52,7 @@ impl fmt::Display for Refusal {
             Refusal::Kept => write!(f, "kept on purpose"),
             Refusal::KeptUnresolved => write!(
                 f,
-                "a folder you keep could not be looked up in time (a disk may not be answering); nothing is planned. Try again."
+                "a folder you keep could not be looked up in time (a disk may not be answering), so nothing is planned. Try again."
             ),
             Refusal::NotCleaned => write!(f, "Platter does not clean this"),
             Refusal::ScanRoot => write!(f, "it is the scanned folder itself"),

@@ -43,8 +43,8 @@ pub mod verify;
 pub mod worker;
 
 pub use answer::{
-    By, FactRow, FactSheet, FactTotal, OFFTOPIC_TEXT, OUTDATED_NOTE, Place, Segment, TotalKind, Units,
-    format_size, render, template, template_segments,
+    By, FactRow, FactSheet, FactTotal, FileFact, OFFTOPIC_TEXT, OUTDATED_NOTE, Place, Segment, TotalKind,
+    Units, format_size, render, template, template_segments,
 };
 pub use download::{DownloadError, Helpers, SPACE_HEADROOM, download};
 pub use engine::{

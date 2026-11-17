@@ -192,13 +192,13 @@ export function namedWords(text: string, rules: readonly RuleName[]): string {
   return named.length > 0 ? named.join(' ') : text;
 }
 
-/** Where the rule looks, when it has one place: `“Docker data” lives in /var/lib/docker; scan a folder that holds it`. */
+/** Where the rule looks, when it has one place: `“Docker data” lives in /var/lib/docker, so scan a folder that holds it`. */
 export function placeHint(rule: RuleName): string | null {
   if (rule.place === null) {
     return null;
   }
 
   return rule.place.startsWith('~')
-    ? `“${rule.title}” lives in ${rule.place}; scan your home folder`
-    : `“${rule.title}” lives in ${rule.place}; scan a folder that holds it`;
+    ? `“${rule.title}” lives in ${rule.place}, so scan your home folder`
+    : `“${rule.title}” lives in ${rule.place}, so scan a folder that holds it`;
 }

@@ -9,6 +9,7 @@ import type {
   AdvisorModelDto,
   AdvisorOptionsDto,
   AdvisorStatusDto,
+  EntryMatchDto,
   FolderMatchDto,
   GpuProblemChoice,
   GpuProblemDto,
@@ -30,8 +31,9 @@ import type {
  *   notDownloaded -> downloading -> onDisk -> loading -> loaded -> onDisk
  *
  * Labelling, Ask, free questions and folder search (`labelFolders`, `cancelLabelling`, `getAdvisorLabels`,
- * `askAdvisor`, `askScan`, `findFolders`) follow the contract's validation and answer order. `askAdvisor` is the rules
- * alone (`mock-advisor-folder.ts`): no model, no wait, no refusal for the model's state, labelling or another question.
+ * `askAdvisor`, `askScan`, `findFolders`, `findEntries`) follow the contract's validation and answer order.
+ * `askAdvisor` is the rules alone (`mock-advisor-folder.ts`): no model, no wait, no refusal for the model's state,
+ * labelling or another question.
  * Still different from the backend:
  * - The fake model is a few name heuristics (cache, build, tmp, download, `.next`, vm, ... say `review`, any other
  *   name says `keep`) with a canned one-sentence reason. It never says `safe`. Its answers do not depend on facts
@@ -69,11 +71,14 @@ import type {
  *   the rules) is answered at once, without the model and without a wait, as the backend does; any other takes the model
  *   for 800 ms (loaded first when needed), and a model switched off meanwhile fails it
  *   with "the model was stopped before it read the question". While it runs, `labelFolders` is refused with "the model is
- *   busy; wait for it to finish" (`askAdvisor` is not: it uses no model). A `pick` takes one choice
+ *   busy, so wait for it to finish" (`askAdvisor` is not: it uses no model). A `pick` takes one choice
  *   of the same question asked back, and a stale one is `invalid`.
  * - `findFolders` matches names in the mock's tree; an exact path is looked up as the rules see it (the demo disks
  *   `/real` and `/skew` start at `/`), and `~` is the home directory of the mock's rules. A blank query finds nothing;
  *   any other is matched as typed (lower-cased, not trimmed). The scan root matches only by its exact path.
+ * - `findEntries` also lists regular files (never a link or a mount point, nor the scan root). A query that is `~` or
+ *   starts with `~/` or `/` is a path: the children of the folder before its last `/` that fit the rest. Any other
+ *   query is a name looked for in the whole tree.
  *
  * Still different from the backend (download and state machine):
  * - The download is simulated: 30 chunks, 100 ms apart (about 3 s). The backend asks the user in a native dialog
@@ -130,7 +135,7 @@ const MAX_QUERY_BYTES = 1024;
 const MAX_FOUND = 20;
 
 /** The refusal while another job holds the model, as the backend's `busy()`. */
-const BUSY = 'the model is busy; wait for it to finish';
+const BUSY = 'the model is busy, so wait for it to finish';
 
 /** Whether a job is a free question: it holds the model, also for what the backend would answer without it. */
 const holdsModel = (job: Job): boolean => job.kind === 'ask' && job.free === true;
@@ -150,7 +155,7 @@ const GPU_NAME = 'AMD Radeon RX 7900 XTX (RADV NAVI31)';
 const VIDEO_LOADED = 3.2 * 1000 ** 3;
 
 /** The backend's problem line when the graphics card could not run the model. */
-const GPU_FALLBACK_PROBLEM = 'The graphics card could not run the model; it runs on the processor.';
+const GPU_FALLBACK_PROBLEM = 'The graphics card could not run the model, so it runs on the processor.';
 
 /**
  * What the mock's build and graphics card do: `works` runs the model on the card; `fallback` has a card that fails,
@@ -210,6 +215,7 @@ export type MockAdvisorApi = Pick<
   | 'askAdvisor'
   | 'askScan'
   | 'findFolders'
+  | 'findEntries'
 >;
 
 /** The advisor mock: the commands, and what the rest of the mock needs to know about the options. */
@@ -429,8 +435,8 @@ const encoder = new TextEncoder();
 
 const utf8Length = (text: string): number => encoder.encode(text).length;
 
-/** The folder an exact path (`~/...` or `/...`) names, if the tree has it. */
-function folderAtPath(tree: MockTree, view: RuleView, text: string): MockNode | null {
+/** The folder an exact path (`~/...` or `/...`) names, if the tree has it, or with `files` a regular file too. */
+function folderAtPath(tree: MockTree, view: RuleView, text: string, files = false): MockNode | null {
   let path = text;
 
   if (text === '~' || text.startsWith('~/')) {
@@ -460,12 +466,17 @@ function folderAtPath(tree: MockTree, view: RuleView, text: string): MockNode | 
 
   let at: MockNode | undefined = tree.nodes[0];
 
-  for (const name of names.slice(rootNames.length)) {
+  const inner = names.slice(rootNames.length);
+
+  for (const [index, name] of inner.entries()) {
     const parent: MockNode = at as MockNode;
+    const last = index === inner.length - 1;
 
     at = tree.nodes
       .slice(parent.firstChild, parent.firstChild + parent.childCount)
-      .find((child) => child.kind === 'dir' && child.name === name);
+      .find(
+        (child) => child.name === name && (child.kind === 'dir' || (files && last && child.kind === 'file')),
+      );
 
     if (!at) {
       return null;
@@ -493,6 +504,51 @@ function searchFolders(tree: MockTree, view: RuleView, query: string, wanted: nu
     .sort(bySize);
 
   return [...(exact ? [exact] : []), ...prefix, ...inside].slice(0, wanted);
+}
+
+/**
+ * `find_entries`: folders and files, never a link, a mount point or the scan root. A path (`~`, `~/...` or `/...`)
+ * lists the children of the folder before its last `/` whose name fits the rest, any other text looks in the whole tree. An
+ * exact name (case ignored) comes first, then names that start with the text, then names that hold it, largest first.
+ */
+function searchEntries(tree: MockTree, view: RuleView, query: string, wanted: number): MockNode[] {
+  if (query.trim() === '') {
+    return [];
+  }
+
+  let pool: MockNode[];
+  let rest = query;
+
+  // A path is exactly `~`, or starts with `~/` or `/`: `~foo` is a name.
+  if (query === '~' || query.startsWith('~/') || query.startsWith('/')) {
+    // A bare `~` is `~/`.
+    const path = query === '~' ? '~/' : query;
+    const slash = path.lastIndexOf('/');
+    const parent = folderAtPath(tree, view, path.slice(0, slash) || '/');
+
+    if (!parent) {
+      return [];
+    }
+
+    pool = tree.nodes.slice(parent.firstChild, parent.firstChild + parent.childCount);
+    rest = path.slice(slash + 1);
+  } else {
+    pool = tree.nodes.filter((node) => node.parent >= 0);
+  }
+
+  const needle = rest.toLowerCase();
+  const bySize = (a: MockNode, b: MockNode): number => b.allocated - a.allocated || a.id - b.id;
+  const entries = pool.filter((node) => node.kind === 'dir' || node.kind === 'file');
+  const nameOf = (node: MockNode): string => node.name.toLowerCase();
+  const exact = entries.filter((node) => nameOf(node) === needle).sort(bySize);
+  const prefix = entries
+    .filter((node) => nameOf(node) !== needle && nameOf(node).startsWith(needle))
+    .sort(bySize);
+  const inside = entries
+    .filter((node) => !nameOf(node).startsWith(needle) && nameOf(node).includes(needle))
+    .sort(bySize);
+
+  return [...exact, ...prefix, ...inside].slice(0, wanted);
 }
 
 const invalid = (message: string): never => {
@@ -570,13 +626,15 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
   const timers = init.timers ?? realTimers;
   const confirmDownload = init.confirmDownload ?? (() => true);
 
-  /** The folder lookups a question's scope is resolved with: the ones `findFolders` uses. */
+  /** The lookups a question's scope is resolved with: the ones `findFolders` and `findEntries` use. */
   const lookupOf = (tree: MockTree): FolderLookup => {
     const view = ruleView(tree, host.userRules());
 
     return {
       exact: (path) => folderAtPath(tree, view, path),
+      entry: (path) => folderAtPath(tree, view, path, true),
       search: (text, limit) => searchFolders(tree, view, text, limit),
+      searchEntries: (text, limit) => searchEntries(tree, view, text, limit),
     };
   };
 
@@ -855,7 +913,7 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
       state = 'notDownloaded';
       received = Math.floor(MODEL.bytes * HELD_SHARE);
       problem =
-        'The download stopped: the connection dropped. Nothing was lost; it continues where it stopped.';
+        'The download stopped: the connection dropped. Nothing was lost. It continues where it stopped.';
     } else if (target === 'disk') {
       state = 'onDisk';
     } else {
@@ -981,7 +1039,7 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
         return invalid(`The model cannot be downloaded while it is ${state}.`);
       }
       if (declinePause !== null) {
-        return invalid('The download was just declined; wait a moment.');
+        return invalid('The download was just declined, so wait a moment.');
       }
 
       // The backend's native dialog: declined, nothing starts and the model stays as it was, and for a moment
@@ -1069,7 +1127,7 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
         return invalid('The scan is still running.');
       }
       if (host.outdated.has(scan)) {
-        return invalid('The disk changed since this scan; rescan first.');
+        return invalid('The disk changed since this scan, so rescan first.');
       }
       if (job !== null) {
         return invalid(holdsModel(job) ? BUSY : 'The model is busy with another job.');
@@ -1269,7 +1327,7 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
       // As the backend's `check_can_ask`: labelling, then a busy model (a load, a download, another job or question),
       // then the model switched off, then not on disk.
       if (job?.kind === 'label') {
-        return invalid('folders are being labelled; ask again when that is done');
+        return invalid('folders are being labelled, so ask again when that is done');
       }
       if (job !== null || state === 'downloading' || state === 'loading') {
         return invalid(BUSY);
@@ -1346,6 +1404,23 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
         node: node.id,
         path: host.pathOf(tree, node),
         allocated: node.allocated,
+      }));
+    },
+
+    async findEntries(scan, query, limit): Promise<EntryMatchDto[]> {
+      const tree = host.treeOf(scan);
+
+      if (utf8Length(query) > MAX_QUERY_BYTES) {
+        return invalid(`The search text must not be longer than ${MAX_QUERY_BYTES} bytes.`);
+      }
+
+      const wanted = Math.min(MAX_FOUND, Math.max(1, Math.trunc(Number.isFinite(limit) ? limit : 1)));
+
+      return searchEntries(tree, ruleView(tree, host.userRules()), query, wanted).map((node) => ({
+        node: node.id,
+        path: host.pathOf(tree, node),
+        allocated: node.allocated,
+        kind: node.kind === 'file' ? 'file' : 'dir',
       }));
     },
   };

@@ -39,7 +39,7 @@ describe('advisor mock: graphics card problems', () => {
     expect(status.lastGpuProblem).toEqual(status.gpuProblem);
     expect(status.device).toEqual({ kind: 'cpu' });
     expect(status.videoBytes).toBeUndefined();
-    expect(status.problem).toBe('The graphics card could not run the model; it runs on the processor.');
+    expect(status.problem).toBe('The graphics card could not run the model, so it runs on the processor.');
   });
 
   it('starts with a last problem in the log and none waiting, the model on the card', async () => {

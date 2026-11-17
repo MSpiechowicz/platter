@@ -221,7 +221,7 @@ describe('RulesCard', () => {
     it('says a scan is running while one is', async () => {
       await setup({ scan: undefined, scanning: true });
 
-      expect(screen.getByText('A scan is running; the advisor uses it once it finishes.')).toBeTruthy();
+      expect(screen.getByText('A scan is running. The advisor uses it once it finishes.')).toBeTruthy();
     });
 
     it('can still remove a rule', async () => {

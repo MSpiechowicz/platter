@@ -56,7 +56,7 @@ export function actionText(group: PlanGroupDto): string {
     case 'delete':
       return 'Deleted for good.';
     case 'emptyFolder':
-      return 'Contents deleted for good; the folder stays.';
+      return 'Contents deleted for good. The folder stays.';
     case 'emptyTrash':
       return 'The trash is emptied for good.';
     case 'trash':

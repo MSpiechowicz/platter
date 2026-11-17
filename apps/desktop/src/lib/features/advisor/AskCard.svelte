@@ -1,14 +1,17 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { ChoiceDto, ScanRowDto } from '../../api/types';
+  import type { ChoiceDto, EntryMatchDto, ScanRowDto } from '../../api/types';
   import Button from '../../components/ui/Button.svelte';
   import Card from '../../components/ui/Card.svelte';
   import Icon from '../../components/ui/Icon.svelte';
   import Tag from '../../components/ui/Tag.svelte';
   import { delayed } from '../../state/delayed.svelte';
+  import { fmt } from '../../state/fmt.svelte';
   import type { AdvisorStore } from '../../state/advisor.svelte';
   import { ui } from '../../state/ui.svelte';
   import { visibleText } from '../overview/display';
+  import { accept, insertable, queryOf, wordAtCaret, type CaretWord } from './autocomplete';
+  import { SEARCH_DELAY_MS } from './FolderPicker.svelte';
   import ScanAnswer from './ScanAnswer.svelte';
   import { askReadiness, noScanText, sourceLabel } from './model';
 
@@ -72,7 +75,201 @@
   $effect(() => {
     void scan;
     question = '';
+    reset();
   });
+
+  const id = $props.id();
+  const listId = `${id}-list`;
+
+  /** What the word under the caret may be completed to, and the word those were looked up for. */
+  let results = $state<EntryMatchDto[]>([]);
+  let looked: { start: number; query: string } | undefined;
+  /** The word being looked up or listed: the search of a word the caret has left is dropped. */
+  let wanted: { start: number; query: string } | undefined;
+  let open = $state(false);
+  let active = $state(-1);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  /** Bumped by every key, every pick and every reset, so an answer that arrives late is ignored. */
+  let sequence = 0;
+
+  const showList = $derived(open && results.length > 0);
+
+  // A card that goes away takes its waiting search with it.
+  $effect(() => () => {
+    clearTimeout(timer);
+    sequence++;
+  });
+
+  // A field that is shut has no list.
+  $effect(() => {
+    if (!canType) {
+      reset();
+    }
+  });
+
+  function reset(): void {
+    clearTimeout(timer);
+    sequence++;
+    results = [];
+    looked = undefined;
+    wanted = undefined;
+    open = false;
+    active = -1;
+  }
+
+  /** Looks for the word at the caret after the pause, and closes the list when there is nothing to look for. */
+  function schedule(value: string, caret: number): void {
+    clearTimeout(timer);
+    sequence++;
+
+    const word = scan === undefined || !canType ? undefined : wordAtCaret(value, caret);
+
+    if (!word) {
+      reset();
+
+      return;
+    }
+
+    const mine = sequence;
+    const target = scan as number;
+
+    wanted = { start: word.start, query: queryOf(word) };
+
+    timer = setTimeout(() => void search(mine, target, word), SEARCH_DELAY_MS);
+  }
+
+  async function search(mine: number, target: number, word: CaretWord): Promise<void> {
+    const query = queryOf(word);
+
+    try {
+      const found = await store.findEntries(target, query);
+
+      if (mine !== sequence) {
+        return;
+      }
+
+      // The caret may have left the word by a key no handler sees (ArrowUp, PageDown, select all).
+      if (!caretAt(word.start, query)) {
+        reset();
+
+        return;
+      }
+
+      // A name the question could not carry intact is not offered (see `insertable`).
+      const offered = found.filter((match) => insertable(match.path));
+
+      results = offered;
+      looked = { start: word.start, query };
+      active = offered.length > 0 ? 0 : -1;
+      open = offered.length > 0;
+    } catch {
+      if (mine !== sequence) {
+        return;
+      }
+
+      // The question box is for questions: a search that fails only leaves it without suggestions.
+      reset();
+    }
+  }
+
+  function typed(): void {
+    if (!field) {
+      return;
+    }
+
+    schedule(field.value, field.selectionStart ?? field.value.length);
+  }
+
+  /** The caret is still in the word that starts at `start` and is looked up as `query`. */
+  function caretAt(start: number, query: string): boolean {
+    if (!field) {
+      return false;
+    }
+
+    const word = wordAtCaret(field.value, field.selectionStart ?? field.value.length);
+
+    return word !== undefined && word.start === start && queryOf(word) === query;
+  }
+
+  /** The word at the caret when the list on screen is the one made for it, else undefined. */
+  function listed(): CaretWord | undefined {
+    if (!field || looked === undefined) {
+      return undefined;
+    }
+
+    const word = wordAtCaret(field.value, field.selectionStart ?? field.value.length);
+
+    return word && word.start === looked.start && queryOf(word) === looked.query ? word : undefined;
+  }
+
+  /**
+   * The caret moved by a key or a click: the list, or the search on its way, made for another word is dropped, so a
+   * late result for the word the caret left never opens.
+   */
+  function caretMoved(): void {
+    if (wanted === undefined || !field) {
+      return;
+    }
+
+    const word = wordAtCaret(field.value, field.selectionStart ?? field.value.length);
+
+    if (!word || word.start !== wanted.start || queryOf(word) !== wanted.query) {
+      reset();
+    }
+  }
+
+  function move(step: number): void {
+    active = Math.max(0, Math.min(results.length - 1, active + step));
+  }
+
+  /** Puts a match in place of the word at the caret. A folder starts the search of its next level. */
+  async function choose(match: EntryMatchDto | undefined): Promise<void> {
+    const word = listed();
+
+    if (!match || !field || !word) {
+      reset();
+
+      return;
+    }
+
+    const next = accept(field.value, word, match);
+
+    question = next.value;
+    schedule(next.value, next.caret);
+
+    await tick();
+    field?.setSelectionRange(next.caret, next.caret);
+  }
+
+  function onKey(event: KeyboardEvent): void {
+    if (event.isComposing) {
+      return;
+    }
+
+    // A list that is still the one of the word before the last key is not taken by Tab or Enter: they go on as usual.
+    const current = showList && listed() !== undefined;
+
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      // With the list closed the arrows move the caret, as in any field.
+      if (!showList) {
+        return;
+      }
+
+      move(event.key === 'ArrowDown' ? 1 : -1);
+    } else if (event.key === 'Tab' && current && !event.shiftKey) {
+      void choose(results[active]);
+    } else if (event.key === 'Enter' && current) {
+      void choose(results[active]);
+    } else if (event.key === 'Escape' && showList) {
+      open = false;
+      event.stopPropagation();
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+  }
 
   /** How far from the end the log may be scrolled and still count as reading the newest message. */
   const NEAR_END_PX = 48;
@@ -171,6 +368,7 @@
       return;
     }
 
+    reset();
     refocus = true;
     void store.askScan(scan, question);
     question = '';
@@ -270,7 +468,7 @@
       <p class="empty">
         {scan === undefined
           ? noScanText(scanning)
-          : 'Ask anything about what was scanned. The local model only reads your question; Platter answers from the scan and its rules.'}
+          : 'Ask anything about what was scanned. The local model only reads your question. Platter answers from the scan and its rules.'}
       </p>
     {/each}
   </div>
@@ -292,7 +490,51 @@
         autocomplete="off"
         spellcheck="false"
         disabled={!canType}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={showList}
+        aria-controls={listId}
+        aria-activedescendant={showList && active >= 0 ? `${id}-o${active}` : undefined}
+        oninput={typed}
+        onkeydown={onKey}
+        onkeyup={(event) =>
+          ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(
+            event.key,
+          ) && caretMoved()}
+        onclick={caretMoved}
+        onblur={reset}
       />
+
+      {#if showList}
+        <!-- Above the field: it sits at the bottom of its card. A mouse press must not take the focus from the field. -->
+        <div
+          class="list"
+          id={listId}
+          role="listbox"
+          aria-label="Folders and files"
+          tabindex="-1"
+          onmousedown={(event) => event.preventDefault()}
+        >
+          {#each results as match, index (match.node)}
+            {@const path = `${visibleText(match.path)}${match.kind === 'dir' ? '/' : ''}`}
+            <div
+              id="{id}-o{index}"
+              class="opt"
+              class:on={index === active}
+              role="option"
+              tabindex="-1"
+              aria-selected={index === active}
+              aria-label="{match.kind === 'dir' ? 'Folder' : 'File'} {path}, {fmt.size(match.allocated)}"
+              onclick={() => void choose(match)}
+              onkeydown={(event) => event.key === 'Enter' && void choose(match)}
+              onmouseenter={() => (active = index)}
+            >
+              <span class="p" title={path}>{path}</span>
+              <span class="s num">{fmt.size(match.allocated)}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
     </div>
     <Button type="submit" variant="primary" disabled={!canType || question.trim() === ''}>Ask</Button>
     <!-- Always there, so the field keeps its width; nothing to clear or a question on its way disables it. -->
@@ -464,6 +706,7 @@
   }
 
   .field {
+    position: relative;
     display: flex;
     min-width: 0;
     background: var(--card2);
@@ -496,5 +739,52 @@
 
   input::placeholder {
     color: var(--dim);
+  }
+
+  /* The list of the folder picker, above the field. */
+  .list {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 6px);
+    z-index: 30;
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 5px;
+    background: var(--card2);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    box-shadow: 0 14px 40px #000a;
+  }
+
+  .opt {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 8px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+
+  .opt.on {
+    background: var(--hover);
+    color: var(--text);
+  }
+
+  .p {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--mono);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .s {
+    flex: none;
+    color: var(--muted);
   }
 </style>

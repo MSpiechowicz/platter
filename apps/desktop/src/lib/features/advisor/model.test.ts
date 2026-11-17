@@ -257,7 +257,7 @@ describe('askReadiness', () => {
 
     expect(reason({ hasScan: false })).toBe('Scan a disk or folder first.');
     expect(reason({ hasScan: false, scanning: true })).toBe(
-      'A scan is running; the advisor uses it once it finishes.',
+      'A scan is running. The advisor uses it once it finishes.',
     );
     expect(reason({ status: undefined })).toBe('Checking the model…');
     expect(reason({ status: statusOf('notDownloaded') })).toBe('Download the model first.');

@@ -31,7 +31,7 @@ pub const NAMED_ROWS: usize = 5;
 pub const OFFTOPIC_TEXT: &str = "I can only answer questions about this scan: what takes space, what can be cleaned, why a folder is big, and what the model labelled.";
 
 /// The note of a scan that is from before a cleanup. The sheet says it with [`FactSheet::outdated`].
-pub const OUTDATED_NOTE: &str = "This scan is from before a cleanup; rescan for current figures.";
+pub const OUTDATED_NOTE: &str = "This scan is from before a cleanup. Rescan for current figures.";
 
 /// The unit family sizes are written in: `GB` counts in thousands, `GiB` in 1024s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,6 +220,14 @@ impl FactRow {
     }
 }
 
+/// What is known of the file a question was about (see [`FactSheet::file`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileFact {
+    /// Whole days from the file's last change to the time of the scan. `None` when the scan has no
+    /// modification time for the file: the answer then leaves its age out.
+    pub age_days: Option<u64>,
+}
+
 /// What a figure over many folders is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TotalKind {
@@ -315,6 +323,9 @@ pub struct FactSheet {
     pub more: u64,
     /// Paths that are not rows, that the notes may still speak of.
     pub context_paths: Vec<String>,
+    /// The question was about one file, which is the only row: the answer says what it is and where Platter
+    /// stands on it, whatever the intent.
+    pub file: Option<FileFact>,
 }
 
 impl FactSheet {
@@ -337,6 +348,7 @@ impl FactSheet {
             outdated: false,
             more: 0,
             context_paths: Vec::new(),
+            file: None,
         }
     }
 }
@@ -924,6 +936,12 @@ impl Writer<'_> {
     }
 
     fn body(&self) -> Vec<Vec<Segment>> {
+        if let Some(file) = &self.sheet.file
+            && let Some(row) = self.sheet.rows.first()
+        {
+            return self.file(file, row);
+        }
+
         match self.sheet.intent {
             Intent::Largest => self.largest(),
             Intent::Cleanable => self.cleanable(),
@@ -1476,6 +1494,67 @@ impl Writer<'_> {
         sentences
     }
 
+    /// The answer about one file, for every intent: what it is, then where Platter stands on it.
+    ///
+    /// `“~/Downloads/old.iso” is a file of 4.2 GB, last changed 1 year ago. It is safe to clean (“Old
+    /// downloads”).`
+    fn file(&self, file: &FileFact, row: &FactRow) -> Vec<Vec<Segment>> {
+        let mut line = self.line();
+        line.mark_unreadable = false;
+
+        line.path(&row.path, Place::Row(0));
+        line.text(" is a file of ");
+        line.size(row.size);
+        if let Some(days) = file.age_days {
+            line.text(", last changed ");
+            line.text(&age_words(days));
+        }
+        line.text(".");
+
+        let mut sentences = vec![line.done()];
+        sentences.extend(self.standing(row));
+
+        sentences
+    }
+
+    /// Where Platter stands on a file: the guard first, then a rule, then the model's label, else that no
+    /// rule covers it.
+    fn standing(&self, row: &FactRow) -> Vec<Vec<Segment>> {
+        let titled = |words: &str| {
+            let mut line = self.line();
+
+            line.text(words);
+            if let Some(title) = row.note.as_deref().filter(|title| !title.is_empty()) {
+                line.text(" (");
+                line.quoted(title);
+                line.text(")");
+            }
+            line.text(".");
+
+            line.done()
+        };
+
+        match (row.by, row.verdict) {
+            (Some(By::Guard), _) => {
+                let mut sentences = vec![self.said("Platter leaves it alone.")];
+                sentences.extend(row.why.as_deref().map(|why| self.note(why)));
+
+                sentences
+            }
+            (Some(By::Rule | By::User), Some(Verdict::Safe)) => vec![titled("It is safe to clean")],
+            (Some(By::Rule | By::User), Some(Verdict::Keep)) => vec![titled("It is kept")],
+            (Some(By::Rule | By::User), _) => {
+                let mut sentences = vec![titled("It needs your review")];
+                sentences.extend(row.why.as_deref().map(|why| self.note(why)));
+
+                sentences
+            }
+            (Some(By::Model), Some(Verdict::Keep)) => vec![self.said("The local model marked it to keep.")],
+            (Some(By::Model), _) => vec![self.said("The local model marked it for review.")],
+            (None, _) => vec![self.said("No rule covers it, so deleting it is your call.")],
+        }
+    }
+
     /// `Matches for “node_modules”: “a” (1 GB), “b” (2 GB) and 3 more.`
     fn find(&self) -> Vec<Vec<Segment>> {
         let rows = self.rows();
@@ -1523,6 +1602,19 @@ impl Writer<'_> {
 
         sentences
     }
+}
+
+/// How long ago a file was last changed: `today`, `1 day ago`, `12 days ago`, `3 months ago`, `2 years ago`.
+/// Up to 30 days it counts days, under a year months of 30 days, then years of 365 days.
+fn age_words(days: u64) -> String {
+    let (count, unit) = match days {
+        0 => return "today".to_owned(),
+        1..=30 => (days, "day"),
+        31..=364 => (days / 30, "month"),
+        _ => (days / 365, "year"),
+    };
+
+    format!("{count} {unit}{} ago", if count == 1 { "" } else { "s" })
 }
 
 /// How a family of folders is called, in the singular and the plural.

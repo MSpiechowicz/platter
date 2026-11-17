@@ -63,7 +63,7 @@
     labels?.stopped === 'cancelled'
       ? 'Stopped before every folder was labelled.'
       : labels?.stopped === 'timeBudget'
-        ? 'Stopped at the time limit; some folders were not labelled.'
+        ? 'Stopped at the time limit, so some folders were not labelled.'
         : undefined,
   );
 

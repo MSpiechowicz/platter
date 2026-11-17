@@ -98,12 +98,12 @@ function checkSafeAllowed(tree: MockTree, folder: string, isScanRoot: boolean): 
   if (isScanRoot) {
     fail(
       'invalid',
-      'this is the folder that was scanned; Platter never cleans it, so it cannot be marked safe',
+      'this is the folder that was scanned. Platter never cleans it, so it cannot be marked safe',
     );
   }
 
   if (home === folder) {
-    fail('invalid', 'this is your home folder; Platter never cleans it, so it cannot be marked safe');
+    fail('invalid', 'this is your home folder. Platter never cleans it, so it cannot be marked safe');
   }
 
   if (home === null) {
@@ -113,7 +113,7 @@ function checkSafeAllowed(tree: MockTree, folder: string, isScanRoot: boolean): 
   if (protection(folder, home) !== null) {
     fail(
       'invalid',
-      'this is, holds or lies inside a protected place; Platter never cleans it, so it cannot be marked safe',
+      'this is, holds or lies inside a protected place. Platter never cleans it, so it cannot be marked safe',
     );
   }
 }

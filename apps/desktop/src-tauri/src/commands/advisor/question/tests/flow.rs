@@ -176,7 +176,7 @@ fn labelling_another_model_job_a_switched_off_model_and_a_missing_model_each_ref
         let refused = ask(&w, scan, "what is big?");
         assert_eq!(
             message_of(refused),
-            "folders are being labelled; ask again when that is done"
+            "folders are being labelled, so ask again when that is done"
         );
         assert_eq!(w.control.judges(), 1, "the question never reached the model");
 
@@ -191,7 +191,7 @@ fn labelling_another_model_job_a_switched_off_model_and_a_missing_model_each_ref
     let held = w.state.advisor.begin_ask().expect("the first question is taken");
     assert_eq!(
         message_of(ask(&w, scan, "what is big?")),
-        "the model is busy; wait for it to finish"
+        "the model is busy, so wait for it to finish"
     );
     drop(held);
 
@@ -548,10 +548,10 @@ fn a_scope_the_question_names_is_resolved_and_one_that_is_not_in_the_scan_says_s
     assert_eq!(missing.understood.scope_text.as_deref(), Some("/srv/nothing"));
     assert_eq!(
         missing.notes,
-        ["No folder called “/srv/nothing” is in this scan".to_owned()]
+        ["No file or folder called “/srv/nothing” is in this scan".to_owned()]
     );
     assert_eq!(
-        missing.answer, "No folder called “/srv/nothing” is in this scan.",
+        missing.answer, "No file or folder called “/srv/nothing” is in this scan.",
         "the note is the answer, with the user's own words in quotes"
     );
 }
@@ -571,12 +571,12 @@ fn an_outdated_scan_says_so_and_the_answer_is_still_given() {
 
     assert_eq!(
         answer.notes.first().map(String::as_str),
-        Some("This scan is from before a cleanup; rescan for current figures.")
+        Some("This scan is from before a cleanup. Rescan for current figures.")
     );
     assert!(
         answer
             .answer
-            .ends_with("This scan is from before a cleanup; rescan for current figures."),
+            .ends_with("This scan is from before a cleanup. Rescan for current figures."),
         "the answer says it too: {}",
         answer.answer
     );
@@ -666,7 +666,7 @@ fn a_model_that_cannot_be_loaded_ends_the_question_with_the_reason_and_no_genera
     assert!(ask(&w, scan, "what can I clean?").is_ok());
 }
 
-const BUSY: &str = "the model is busy; wait for it to finish";
+const BUSY: &str = "the model is busy, so wait for it to finish";
 
 #[cfg(target_os = "linux")]
 #[test]
@@ -1016,7 +1016,10 @@ fn a_question_asked_back_is_sent_with_its_choices_and_a_pick_takes_one_of_them()
         json!({ "scan": scan, "question": question, "units": "GB", "pick": 9 }),
     )
     .unwrap_err();
-    assert_eq!(stale["message"], "that choice is no longer available; ask again");
+    assert_eq!(
+        stale["message"],
+        "that choice is no longer available, so ask again"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -1285,6 +1288,14 @@ fn check_rows(
         None => tree.root(),
     };
 
+    let scope_is_file = collected
+        .understood
+        .scope
+        .as_ref()
+        .is_some_and(|scope| scope.file);
+    if scope_is_file {
+        assert_eq!(collected.rows.len(), 1, "{context}: a file is one row");
+    }
     assert!(
         collected.rows.len() <= usize::from(query.limit).min(MAX_ROWS),
         "{context}: too many rows"
@@ -1316,10 +1327,17 @@ fn check_rows(
     for (row, fact) in collected.rows.iter().zip(&collected.sheet.rows) {
         let node = row.node;
         assert!(tree.contains(node), "{context}: a row that is not in the tree");
-        assert_eq!(
-            tree.kind(node),
-            NodeKind::Dir,
+        // A row is a folder, or a file when the question named that file or looked for a name.
+        let file_allowed = scope_is_file || query.intent == Intent::Find;
+        assert!(
+            tree.kind(node) == NodeKind::Dir || (file_allowed && tree.kind(node) == NodeKind::File),
             "{context}: {} is not a folder",
+            row.path
+        );
+        assert_eq!(
+            row.file,
+            tree.kind(node) == NodeKind::File,
+            "{context}: {}",
             row.path
         );
         assert!(!seen.contains(&node), "{context}: {} twice", row.path);

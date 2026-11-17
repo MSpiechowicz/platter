@@ -1,4 +1,11 @@
-import { roleOfName, signals, wordsOfQuestion, type MediaKind, type Role } from './mock-question-signals';
+import {
+  quotedPath,
+  roleOfName,
+  signals,
+  wordsOfQuestion,
+  type MediaKind,
+  type Role,
+} from './mock-question-signals';
 import {
   isGenericWord,
   isScopeWord,
@@ -130,6 +137,13 @@ const clean = (word: string): string => word.replace(/[.:]+$/, '');
 
 /** The first path in the question (`~`, `~/...`, `/...`) with no trailing punctuation. */
 function pathIn(text: string): string | null {
+  // A path with white space in it is typed in straight quotes: one path, the quotes left out.
+  const quoted = quotedPath(text);
+
+  if (quoted !== null) {
+    return quoted.path;
+  }
+
   for (const match of text.matchAll(/(?:^|\s)(~(?:\/[^\s?,;!"'()]*)?|\/[^\s?,;!"'()]*)/g)) {
     const found = clean(match[1] as string);
 

@@ -414,6 +414,62 @@ fn path_token(raw: &str) -> Option<String> {
     None
 }
 
+/// A path in straight double quotes (`"~/My Files/a.txt"`), so that white space can be part of it: the
+/// path with the quotes cut off, and the question without the quoted text. A quote opens only at the start
+/// of the text or after white space, and closes at the next quote, the same rule the question box follows
+/// when it completes a path. A quote in the middle of a word (`5" wide`) opens nothing, and the characters
+/// after a closing quote belong to its word. Only the first quoted text that is a path counts, and a quote
+/// that is never closed quotes nothing.
+fn quoted_path(question: &str) -> Option<(String, String)> {
+    let mut from = 0;
+
+    while from < question.len() {
+        let rest = &question[from..];
+        let word = rest.trim_start();
+        let open = from + (rest.len() - word.len());
+
+        if word.is_empty() {
+            return None;
+        }
+
+        // The word that starts here ends at white space, or at its closing quote when it opens with one.
+        let mut end = open;
+        if word.starts_with('"') {
+            // Without a closing quote there is no quoted text.
+            let close = open + 1 + question[open + 1..].find('"')?;
+            let text = question[open + 1..close].trim();
+
+            if text == "~" || text.starts_with("~/") || (text.starts_with('/') && text.len() > 1) {
+                let rest = format!("{} {}", &question[..open], &question[close + 1..]);
+
+                return Some((text.to_owned(), rest));
+            }
+            end = close + 1;
+        }
+
+        let tail = &question[end..];
+        from = end + tail.find(char::is_whitespace).unwrap_or(tail.len());
+    }
+
+    None
+}
+
+/// A word that reads as the name of a file: a dot inside it, not at its start, with 1 to 5 letters or digits
+/// after the last dot to its end (`old.iso`, `notes.txt`), the punctuation around it cut off. A version
+/// (`v1.2`) reads like that too, which is no harm: it only makes the question one about the disk, and the
+/// model still says when it is not.
+fn file_name_token(raw: &str) -> bool {
+    let token = trimmed(raw);
+    let Some((stem, extension)) = token.rsplit_once('.') else {
+        return false;
+    };
+
+    !stem.is_empty()
+        && !token.contains('/')
+        && (1..=5).contains(&extension.chars().count())
+        && extension.chars().all(char::is_alphanumeric)
+}
+
 fn limit_of(tokens: &[String]) -> Option<u8> {
     let limit_words = [
         "top",
@@ -476,7 +532,12 @@ const POLISH_WORDS: &[&str] = &[
 
 /// Reads what the words of `question` say by themselves.
 pub fn signals(question: &str) -> Signals {
-    let raw_words: Vec<&str> = question.split_whitespace().collect();
+    // A quoted path is one path, whatever white space is in it, and is no words of the question.
+    let (quoted, unquoted) = match quoted_path(question) {
+        Some((path, rest)) => (Some(path), rest),
+        None => (None, question.to_owned()),
+    };
+    let raw_words: Vec<&str> = unquoted.split_whitespace().collect();
     // A typed path is a path, not words: `/var/cache` is no word about caches.
     let spoken: Vec<&str> = raw_words
         .iter()
@@ -485,9 +546,8 @@ pub fn signals(question: &str) -> Signals {
         .collect();
     let tokens = words_of_question(&spoken.join(" "));
 
-    let path = raw_words
-        .iter()
-        .find_map(|word| path_token(word))
+    let path = quoted
+        .or_else(|| raw_words.iter().find_map(|word| path_token(word)))
         .or_else(|| home_word(&tokens).then(|| "~".to_owned()));
     let hidden = raw_words.iter().find_map(|word| hidden_token(word));
     let intent = intent_of(&tokens);
@@ -543,6 +603,7 @@ pub fn signals(question: &str) -> Signals {
 
     let about_disk = path.is_some()
         || hidden.is_some()
+        || raw_words.iter().any(|word| file_name_token(word))
         || media.is_some()
         || !roles.is_empty()
         || has_stem(&tokens, DISK_STEMS)
@@ -592,6 +653,128 @@ mod tests {
 
     fn read(question: &str) -> Signals {
         signals(question)
+    }
+
+    #[test]
+    fn a_quoted_path_keeps_the_punctuation_at_its_end() {
+        // Bare, the full stop and the bracket are trimmed off as sentence punctuation.
+        assert_eq!(
+            read("is ~/Downloads/report. big").path.as_deref(),
+            Some("~/Downloads/report")
+        );
+
+        // In quotes, they are part of the name.
+        assert_eq!(
+            read(r#"is "~/Downloads/report." big"#).path.as_deref(),
+            Some("~/Downloads/report.")
+        );
+        assert_eq!(read(r#"is "~/x/foo)" big?"#).path.as_deref(), Some("~/x/foo)"));
+    }
+
+    #[test]
+    fn a_path_in_straight_quotes_is_one_path_with_its_white_space() {
+        let signals = read(r#"how big is "~/My Files/a.txt"?"#);
+
+        assert_eq!(signals.path.as_deref(), Some("~/My Files/a.txt"));
+        assert_eq!(signals.tokens, ["how", "big", "is"]);
+        assert!(signals.about_disk);
+
+        assert_eq!(
+            read(r#"why is "/srv/my data" so big"#).path.as_deref(),
+            Some("/srv/my data")
+        );
+        assert_eq!(read(r#"what is in "~""#).path.as_deref(), Some("~"));
+    }
+
+    #[test]
+    fn a_quote_in_the_middle_of_a_word_opens_no_quoted_text() {
+        let signals = read(r#"it's 5" wide, how big is "~/x/report.""#);
+
+        assert_eq!(signals.path.as_deref(), Some("~/x/report."));
+        assert_eq!(signals.tokens, ["it", "s", "5", "wide", "how", "big", "is"]);
+
+        assert_eq!(
+            read(r#"is say" big "~/x/foo)""#).path.as_deref(),
+            Some("~/x/foo)")
+        );
+    }
+
+    #[test]
+    fn a_quoted_word_ends_at_its_closing_quote() {
+        // The quote that closes `"a b"` is not the one that opens the path, which follows its word.
+        assert_eq!(
+            read(r#"is "a b"x "~/My Files/a.txt" big"#).path.as_deref(),
+            Some("~/My Files/a.txt")
+        );
+        // A quote that follows a closing quote in the same word opens nothing.
+        assert_eq!(read(r#"is "a"b"~/x y" big"#).path, None);
+    }
+
+    #[test]
+    fn quotes_that_hold_no_path_are_no_path() {
+        assert_eq!(read(r#"what is "node_modules" here"#).path, None);
+        // An unclosed quote is no quoted text: the word is a path as it always was.
+        assert_eq!(read(r#"how big is "~/open"#).path.as_deref(), Some("~/open"));
+        assert_eq!(
+            read(r#"how big is "~/nospace.txt""#).path.as_deref(),
+            Some("~/nospace.txt")
+        );
+    }
+
+    #[test]
+    fn the_name_of_a_file_makes_a_question_about_the_disk() {
+        let find = read("where is old.iso?");
+        assert!(find.about_disk);
+        assert_eq!(find.intent, Some(Intent::Find));
+
+        assert!(read("how big is notes.txt").about_disk);
+        assert!(read("is archive.tar.gz big").about_disk);
+        assert!(
+            read("where is v1.2").about_disk,
+            "a version reads like a file name"
+        );
+
+        // No dot inside the word, a dot at its start (a hidden folder is read on its own), or a long tail.
+        assert!(!read("write me a poem").about_disk);
+        assert!(!read("what is the weather. tell me").about_disk);
+        assert!(!read("see www.example.international").about_disk);
+    }
+
+    #[test]
+    fn a_sentence_ending_in_e_g_is_on_topic_only_for_the_model_to_turn_down() {
+        let signals = read("write me a poem, e.g. about spring.");
+
+        // The words cannot tell, so the question is not decided off topic by them: the model decides.
+        assert!(signals.about_disk);
+        assert_eq!(signals.intent, None);
+        assert_eq!(signals.path, None);
+    }
+
+    #[test]
+    fn the_name_of_a_file_the_model_returns_as_the_scope_survives_grounding() {
+        let asked = |scope: &str| crate::question::ScanQuestion {
+            intent: Intent::Find,
+            scope: scope.to_owned(),
+            kind: Kind::Any,
+            limit: 5,
+        };
+
+        for question in [
+            "where is old.iso?",
+            "find the file Old.ISO.",
+            "where is \"old.iso\"",
+        ] {
+            assert_eq!(
+                crate::question::ground(question, asked("old.iso")).scope,
+                "old.iso",
+                "{question}"
+            );
+        }
+        // A name that is only the start of a longer word is no scope.
+        assert_eq!(
+            crate::question::ground("where is old.iso2", asked("old.iso")).scope,
+            "",
+        );
     }
 
     #[test]

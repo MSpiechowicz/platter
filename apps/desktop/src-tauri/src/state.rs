@@ -19,7 +19,7 @@
 //! Ids start at 1 and only grow; an id is never reused, so a stale id can never address a newer scan.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use platter_ai::Stopped;
@@ -46,6 +46,9 @@ pub struct AppState {
     pub user_rules: Arc<UserRulesStore>,
     /// The local log of free questions (`advisor-questions.jsonl`), written only when the user's switch is on.
     pub question_log: Arc<QuestionLog>,
+    /// How many `find_entries` calls have started. A walk over the tree stops once a newer call has taken
+    /// a higher number, so the walks of keystrokes that were typed over do not pile up.
+    pub entry_searches: Arc<AtomicU64>,
     /// The scan roots the backend handed to the UI itself: volume mount points from `list_volumes`
     /// and folders from its own folder dialog. `start_scan` accepts nothing else.
     pub roots: Mutex<HashMap<String, Option<(u64, u64)>>>,
@@ -86,6 +89,7 @@ impl AppState {
             advisor: Arc::new(advisor),
             user_rules: Arc::new(user_rules),
             question_log: Arc::new(QuestionLog::new(None)),
+            entry_searches: Arc::new(AtomicU64::new(0)),
             roots: Mutex::new(HashMap::new()),
             confirm: OnceLock::new(),
         }
@@ -221,7 +225,7 @@ impl ScanRegistry {
             .count();
         if running >= MAX_RUNNING {
             return Err(CommandError::invalid(format!(
-                "{MAX_RUNNING} scans are already running; cancel one first"
+                "{MAX_RUNNING} scans are already running, so cancel one first"
             )));
         }
 

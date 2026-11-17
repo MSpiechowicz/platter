@@ -815,7 +815,7 @@ fn a_dialog_approved_after_the_state_changed_starts_nothing_more() {
 
     assert_eq!(
         result,
-        Err(CommandError::invalid("The model's state changed; try again."))
+        Err(CommandError::invalid("The model's state changed. Try again."))
     );
     let started = Instant::now();
     while state.advisor.status().state != ModelStateDto::OnDisk {
@@ -863,7 +863,7 @@ fn a_ticket_from_an_earlier_state_does_not_start_a_download() {
 
     assert_eq!(
         stale,
-        CommandError::invalid("The model's state changed; try again.")
+        CommandError::invalid("The model's state changed. Try again.")
     );
     assert_eq!(w.service.status().state, ModelStateDto::NotDownloaded);
     assert_eq!(w.fetch.requests().len(), requests, "nothing was requested");
@@ -1575,6 +1575,7 @@ fn app_over(state: AppState) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
             get_advisor_labels,
             ask_advisor,
             find_folders,
+            find_entries,
             crate::commands::suggestions::get_suggestions,
         ])
         .build(tauri::generate_context!())
@@ -1697,7 +1698,7 @@ fn a_folder_labelled_for_review_or_to_keep_says_so_without_the_models_reason() {
     );
     assert_eq!(
         review.reason,
-        "Platter has no rule for it; deleting it is your call. The local model marked it for review."
+        "Platter has no rule for it. Deleting it is your call. The local model marked it for review."
     );
     assert_eq!(
         (keep.source, keep.verdict),
@@ -1705,7 +1706,7 @@ fn a_folder_labelled_for_review_or_to_keep_says_so_without_the_models_reason() {
     );
     assert_eq!(
         keep.reason,
-        "Platter has no rule for it; deleting it is your call. The local model marked it to keep."
+        "Platter has no rule for it. Deleting it is your call. The local model marked it to keep."
     );
     for (answer, said) in [
         (&review, "Cache the system rebuilds."),
@@ -1731,7 +1732,7 @@ fn a_folder_no_rule_covers_and_the_model_has_not_labelled_is_your_call() {
         (
             AnswerSourceDto::Unruled,
             Verdict::Review,
-            "Platter has no rule for it; deleting it is your call."
+            "Platter has no rule for it. Deleting it is your call."
         )
     );
     assert_eq!(answer.path, "/mnt/photos");
@@ -1930,6 +1931,140 @@ fn found_folders_are_sent_in_the_contracts_shape() {
     )
     .unwrap_err();
     assert_eq!(refused["code"], "invalid");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn found_entries_are_sent_with_their_kind_and_follow_the_limits_of_found_folders() {
+    let w = world(true);
+    let scan = register(&w.state, &many_folders());
+    let folder = node_at(&w.state, scan, "/d/app3");
+    let file = node_at(&w.state, scan, "/d/app3.txt");
+    let (_app, window) = app_over(w.state);
+
+    let found = invoke(
+        &window,
+        "find_entries",
+        json!({ "scan": scan, "query": "app3.", "limit": 5 }),
+    )
+    .unwrap();
+    assert_eq!(
+        found,
+        json!([{ "node": file, "path": "/d/app3.txt", "allocated": 5, "kind": "file" }])
+    );
+
+    let both = invoke(
+        &window,
+        "find_entries",
+        json!({ "scan": scan, "query": "/d/app3", "limit": 5 }),
+    )
+    .unwrap();
+    assert_eq!(
+        both[0],
+        json!({ "node": folder, "path": "/d/app3", "allocated": 3, "kind": "dir" }),
+        "the folder at the exact path comes first, as a dir"
+    );
+
+    // At most twenty and at least one. The text is at most 1024 bytes.
+    let counted = |limit: u32| {
+        invoke(
+            &window,
+            "find_entries",
+            json!({ "scan": scan, "query": "app", "limit": limit }),
+        )
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .len()
+    };
+    assert_eq!(counted(100), 20);
+    assert_eq!(counted(0), 1);
+    let refused = invoke(
+        &window,
+        "find_entries",
+        json!({ "scan": scan, "query": "x".repeat(1025), "limit": 3 }),
+    )
+    .unwrap_err();
+    assert_eq!(refused["code"], "invalid");
+    let unknown = invoke(
+        &window,
+        "find_entries",
+        json!({ "scan": 4242, "query": "app", "limit": 3 }),
+    )
+    .unwrap_err();
+    assert_eq!(unknown["code"], "notFound");
+}
+
+#[test]
+fn a_search_that_a_newer_one_has_overtaken_stops_and_finds_nothing() {
+    let w = world(true);
+    let scan = register(&w.state, &many_folders());
+
+    // Two searches start one after the other: the second takes the higher number.
+    let older = w.state.entry_searches.fetch_add(1, Ordering::SeqCst) + 1;
+    let newer = w.state.entry_searches.fetch_add(1, Ordering::SeqCst) + 1;
+
+    let older = block_on(find_entries_numbered(&w.state, scan, "app".to_owned(), 5, older)).unwrap();
+    let newer = block_on(find_entries_numbered(&w.state, scan, "app".to_owned(), 5, newer)).unwrap();
+    assert!(older.is_empty(), "the overtaken search found {older:?}");
+    assert_eq!(newer.len(), 5);
+
+    // The calls of the command take their numbers in turn, and each one finds its answer when no other
+    // started meanwhile.
+    for _ in 0..2 {
+        let found = block_on(find_entries_in(&w.state, scan, "app".to_owned(), 5)).unwrap();
+        assert_eq!(found.len(), 5);
+    }
+    assert_eq!(w.state.entry_searches.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn a_row_and_a_scope_say_they_are_a_file_only_when_they_are() {
+    use self::question::{ScanRowDto, ScopeDto};
+
+    let row = |file| ScanRowDto {
+        node: NodeId(1),
+        path: "~/a".to_owned(),
+        allocated: 1,
+        verdict: None,
+        source: None,
+        note: None,
+        file,
+    };
+    let scope = |file| ScopeDto {
+        node: NodeId(1),
+        path: "~/a".to_owned(),
+        file,
+    };
+
+    assert_eq!(
+        serde_json::to_value(row(false)).unwrap(),
+        json!({ "node": 1, "path": "~/a", "allocated": 1 })
+    );
+    assert_eq!(
+        serde_json::to_value(row(true)).unwrap(),
+        json!({ "node": 1, "path": "~/a", "allocated": 1, "file": true })
+    );
+    assert_eq!(
+        serde_json::to_value(scope(false)).unwrap(),
+        json!({ "node": 1, "path": "~/a" })
+    );
+    assert_eq!(
+        serde_json::to_value(scope(true)).unwrap(),
+        json!({ "node": 1, "path": "~/a", "file": true })
+    );
+}
+
+#[test]
+fn asking_about_a_file_is_still_refused_as_only_a_folder_can_be_asked_about() {
+    let w = world(true);
+    let scan = register(&w.state, &many_folders());
+
+    let file = node_at(&w.state, scan, "/d/app3.txt");
+    let refused = block_on(ask_about(&w.state, scan, file));
+
+    assert_eq!(code_of(refused), ApiErrorCode::Invalid);
+    assert!(block_on(ask_about(&w.state, scan, node_at(&w.state, scan, "/d/app3"))).is_ok());
 }
 
 fn advisor_suggestion(suggestions: &Value) -> Option<&Value> {
