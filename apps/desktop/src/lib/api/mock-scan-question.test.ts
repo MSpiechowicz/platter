@@ -27,7 +27,12 @@ const LOAD_MS = 400;
 const LABEL_MS = 300;
 const ASK_MS = 800;
 const HOME = '/home/demo';
-const SWITCHED_OFF = { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true } as const;
+const SWITCHED_OFF = {
+  enabled: false,
+  unloadAfter: 'fiveMinutes',
+  logQuestions: true,
+  useGpu: true,
+} as const;
 const BUSY = 'the model is busy; wait for it to finish';
 
 function setup(
@@ -159,7 +164,7 @@ describe('askScan: errors, in order', () => {
       advisor: {
         timers,
         state: 'none',
-        options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true },
+        options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true },
       },
       userRules: { broken: true },
     });
@@ -200,7 +205,7 @@ describe('askScan: errors, in order', () => {
   it('rejects when the model is switched off, not on disk or downloading, and changes nothing', async () => {
     const off = setup({
       state: 'disk',
-      options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true },
+      options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true },
     });
 
     expect(await expectCode(off.api.askScan(await off.scan, 'what takes space?', 'GB'), 'invalid')).toBe(
@@ -278,10 +283,20 @@ describe('askScan: errors, in order', () => {
     const id = await scan;
     const cancelled = api.askScan(id, 'what takes space?', 'GB');
 
-    await api.configureAdvisor({ enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true });
+    await api.configureAdvisor({
+      enabled: false,
+      unloadAfter: 'fiveMinutes',
+      logQuestions: true,
+      useGpu: true,
+    });
     expect(await expectCode(cancelled, 'invalid')).toBe('the model was stopped before it read the question');
 
-    await api.configureAdvisor({ enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true });
+    await api.configureAdvisor({
+      enabled: true,
+      unloadAfter: 'fiveMinutes',
+      logQuestions: true,
+      useGpu: true,
+    });
 
     const dropped = api.askScan(id, 'what takes space?', 'GB');
 

@@ -17,6 +17,8 @@ export interface SettingsData {
   advisorUnloadAfter: UnloadAfter;
   /** Keep a local log of the questions and how they were read. The backend holds it in memory only, so it is sent at start. */
   advisorLogQuestions: boolean;
+  /** Run the model on a graphics card when one fits it. An older save has no such value and gets the default, on. */
+  advisorUseGpu: boolean;
 }
 
 const UNLOAD_AFTER: readonly UnloadAfter[] = ['oneMinute', 'fiveMinutes', 'windowClose'];
@@ -32,6 +34,7 @@ const DEFAULTS: SettingsData = {
   advisorEnabled: false,
   advisorUnloadAfter: 'fiveMinutes',
   advisorLogQuestions: true,
+  advisorUseGpu: true,
 };
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
@@ -72,6 +75,7 @@ function sanitize(raw: unknown): Partial<SettingsData> {
     'sidebarCollapsed',
     'advisorEnabled',
     'advisorLogQuestions',
+    'advisorUseGpu',
   ] as const) {
     if (typeof value[key] === 'boolean') {
       clean[key] = value[key];
@@ -90,6 +94,7 @@ export class SettingsStore implements SettingsData {
   advisorEnabled = $state(DEFAULTS.advisorEnabled);
   advisorUnloadAfter = $state<UnloadAfter>(DEFAULTS.advisorUnloadAfter);
   advisorLogQuestions = $state(DEFAULTS.advisorLogQuestions);
+  advisorUseGpu = $state(DEFAULTS.advisorUseGpu);
 
   readonly #storage: StorageLike | null;
 
@@ -126,6 +131,7 @@ export class SettingsStore implements SettingsData {
       advisorEnabled: this.advisorEnabled,
       advisorUnloadAfter: this.advisorUnloadAfter,
       advisorLogQuestions: this.advisorLogQuestions,
+      advisorUseGpu: this.advisorUseGpu,
     };
 
     try {

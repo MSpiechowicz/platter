@@ -8,13 +8,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use platter_ai::testing::{FakeControl, FakeEngine, FakeFetch, FakeReply, Gate, tiny_spec};
+use platter_ai::testing::{
+    FakeControl, FakeEngine, FakeFetch, FakeReply, Fault, Gate, Phase, SpawnerControl, ThreadSpawner, card,
+    tiny_spec,
+};
 use platter_ai::{
-    AdvisorHandle, AdvisorWorker, AiError, Budget, Engine, FolderFacts, Generation, Host, IdleTimes, Intent,
-    Kind, Labelling, LoadInfo, ModelLock, ModelSpec, ModelState, Options, ScanQuestion, StageLimit, Status,
-    Stopped, UnloadAfter, VerifiedModel, WorkerConfig, WorkerError,
+    AdvisorHandle, AdvisorWorker, AiError, Budget, Device, Engine, Exit, FolderFacts, GPU_FALLBACK,
+    Generation, GpuIncident, Host, IdleTimes, IncidentKind, Intent, Kind, Labelling, Limits, LoadInfo,
+    ModelLock, ModelSpec, ModelState, Options, Placement, ProcessEngine, STOPPED, ScanQuestion, StageLimit,
+    Status, Stopped, UnloadAfter, VerifiedModel, WorkerConfig, WorkerError,
 };
 use platter_core::{ModelVerdict, NodeId};
+use platter_platform::RuntimeMode;
 
 const GIB: u64 = 1 << 30;
 const WAIT: Duration = Duration::from_secs(10);
@@ -35,6 +40,12 @@ struct Rig {
     control: FakeControl,
     fetch: Arc<FakeFetch>,
     handle: AdvisorHandle,
+    /// The helper's remote control, when the model runs in one.
+    spawner: Option<SpawnerControl>,
+    /// Every incident the worker told, in order, with the number of status changes told before it.
+    told: Arc<Mutex<Vec<(GpuIncident, usize)>>>,
+    /// What the helper process holds in RAM.
+    helper_resident: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
@@ -62,6 +73,10 @@ struct Start {
     reading: Option<Duration>,
     /// Records the grammar and the token limit of every generation.
     asked: Option<Asked>,
+    /// The model runs in a helper (a thread here) as in the app, instead of in the worker's own thread.
+    helper: bool,
+    /// The graphics card is blocked from the start (an incident was left unanswered).
+    gpu_blocked: bool,
 }
 
 /// What the model was asked with: the grammar and the most tokens it may write, per generation.
@@ -74,8 +89,13 @@ struct Recording {
 }
 
 impl Engine for Recording {
-    fn load(&mut self, model: &VerifiedModel, threads: u32) -> Result<LoadInfo, AiError> {
-        self.inner.load(model, threads)
+    fn load(
+        &mut self,
+        model: &VerifiedModel,
+        threads: u32,
+        placement: Placement,
+    ) -> Result<LoadInfo, AiError> {
+        self.inner.load(model, threads, placement)
     }
 
     fn unload(&mut self) {
@@ -122,6 +142,7 @@ impl Rig {
 
         let available = Arc::new(AtomicU64::new(64 * GIB));
         let resident = Arc::new(AtomicU64::new(10_000));
+        let helper_resident = Arc::new(AtomicU64::new(0));
         let host = Host {
             available_memory: {
                 let available = Arc::clone(&available);
@@ -136,6 +157,10 @@ impl Rig {
                 let resident = Arc::clone(&resident);
                 Arc::new(move || Some(resident.load(Ordering::SeqCst)))
             },
+            resident_of: {
+                let helper_resident = Arc::clone(&helper_resident);
+                Arc::new(move |_pid| Some(helper_resident.load(Ordering::SeqCst)))
+            },
         };
         let mut config = WorkerConfig::new(spec, dir.clone());
         config.threads = 3;
@@ -143,13 +168,26 @@ impl Rig {
         config.idle = setup.idle;
         config.progress_every = Duration::ZERO;
         config.budget = setup.budget;
-
+        config.gpu_blocked = setup.gpu_blocked;
         let events = Arc::new(Mutex::new(Vec::new()));
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let (heard, before) = (Arc::clone(&told), Arc::clone(&events));
+        config.on_gpu_incident = Some(Arc::new(move |incident: &GpuIncident| {
+            let changes = before.lock().unwrap().len();
+            heard.lock().unwrap().push((incident.clone(), changes));
+        }));
+
         let seen = Arc::clone(&events);
         let panic_in_download = AtomicBool::new(setup.panic_in_download);
         let (engine, control) = FakeEngine::new();
+        let mut spawner = None;
         let engine: Box<dyn Engine> = match setup.asked.clone() {
             Some(asked) => Box::new(Recording { inner: engine, asked }),
+            None if setup.helper => {
+                let (threads, remote) = ThreadSpawner::new(&control);
+                spawner = Some(remote);
+                Box::new(ProcessEngine::with_limits(threads, quick_limits()))
+            }
             None => Box::new(engine),
         };
         let mut fetch = FakeFetch::new(setup.replies);
@@ -176,6 +214,7 @@ impl Rig {
                 .configure(Options {
                     enabled: true,
                     unload_after: UnloadAfter::FiveMinutes,
+                    use_gpu: true,
                 })
                 .unwrap();
             events.lock().unwrap().clear();
@@ -192,7 +231,20 @@ impl Rig {
             control,
             fetch,
             handle,
+            spawner,
+            told,
+            helper_resident,
         }
+    }
+
+    /// The incidents the worker told, in order.
+    fn incidents(&self) -> Vec<GpuIncident> {
+        self.told
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(incident, _)| incident.clone())
+            .collect()
     }
 
     fn model(&self) -> PathBuf {
@@ -232,6 +284,18 @@ impl Rig {
 
     fn wait_for_state(&self, state: ModelState) -> Status {
         self.wait_for(&format!("{state:?}"), |status| status.state == state)
+    }
+}
+
+/// The helper's limits, short enough for a test to wait for.
+fn quick_limits() -> Limits {
+    Limits {
+        probe: Duration::from_secs(5),
+        load: Duration::from_secs(5),
+        query: Duration::from_secs(2),
+        stall: Duration::from_millis(150),
+        cancel_grace: Duration::from_millis(200),
+        shutdown: Duration::from_millis(500),
     }
 }
 
@@ -563,6 +627,7 @@ fn the_idle_time_follows_the_setting() {
         .configure(Options {
             enabled: true,
             unload_after: UnloadAfter::OneMinute,
+            use_gpu: true,
         })
         .unwrap();
     rig.handle.load().unwrap();
@@ -577,6 +642,7 @@ fn the_idle_time_follows_the_setting() {
         .configure(Options {
             enabled: true,
             unload_after: UnloadAfter::FiveMinutes,
+            use_gpu: true,
         })
         .unwrap();
     rig.wait_for_state(ModelState::OnDisk);
@@ -585,6 +651,7 @@ fn the_idle_time_follows_the_setting() {
         .configure(Options {
             enabled: true,
             unload_after: UnloadAfter::WindowClose,
+            use_gpu: true,
         })
         .unwrap();
     rig.handle.load().unwrap();
@@ -606,6 +673,7 @@ fn switching_the_model_off_unloads_it_and_refuses_a_load() {
         .configure(Options {
             enabled: false,
             unload_after: UnloadAfter::FiveMinutes,
+            use_gpu: true,
         })
         .unwrap();
 
@@ -622,6 +690,7 @@ fn switching_the_model_off_unloads_it_and_refuses_a_load() {
         .configure(Options {
             enabled: true,
             unload_after: UnloadAfter::FiveMinutes,
+            use_gpu: true,
         })
         .unwrap();
     assert!(on.options.enabled);
@@ -637,6 +706,7 @@ fn a_change_of_options_is_an_event_and_the_same_options_are_not() {
         .configure(Options {
             enabled: true,
             unload_after: UnloadAfter::FiveMinutes,
+            use_gpu: true,
         })
         .unwrap();
     assert_eq!(rig.events.lock().unwrap().len(), before);
@@ -645,6 +715,7 @@ fn a_change_of_options_is_an_event_and_the_same_options_are_not() {
         .configure(Options {
             enabled: true,
             unload_after: UnloadAfter::OneMinute,
+            use_gpu: true,
         })
         .unwrap();
     let events = rig.events.lock().unwrap();
@@ -1128,6 +1199,7 @@ fn switching_the_model_off_during_labelling_stops_the_job_and_unloads_the_model(
             .configure(Options {
                 enabled: false,
                 unload_after: UnloadAfter::FiveMinutes,
+                use_gpu: true,
             })
             .unwrap();
         (labelling.join().unwrap().unwrap(), off)
@@ -1476,6 +1548,7 @@ fn while_labelling_runs_a_question_is_refused_and_while_a_question_is_read_every
             .configure(Options {
                 enabled: false,
                 unload_after: UnloadAfter::FiveMinutes,
+                use_gpu: true,
             })
             .unwrap();
         assert_eq!(reading.join().unwrap(), Err(WorkerError::Cancelled));
@@ -1506,4 +1579,652 @@ fn a_question_after_shutdown_is_refused() {
     rig.handle.shutdown();
 
     assert_eq!(rig.handle.interpret("q"), Err(WorkerError::Stopped));
+}
+
+// ---- The graphics card (G2) ----
+
+const XTX: &str = "AMD Radeon RX 7900 XTX (RADV NAVI31)";
+
+/// The owner's machine: an integrated part that reports the system's 32 GB, and a discrete 24 GB card.
+fn two_cards(rig: &Rig) {
+    rig.control.set_gpus(vec![
+        card(0, "AMD Ryzen 7 7800X3D (RADV RAPHAEL)", 32_000, true),
+        card(1, XTX, 23_000, false),
+    ]);
+}
+
+fn with_gpu(rig: &Rig, use_gpu: bool) {
+    rig.handle
+        .configure(Options {
+            enabled: true,
+            unload_after: UnloadAfter::FiveMinutes,
+            use_gpu,
+        })
+        .unwrap();
+}
+
+#[test]
+fn the_model_loads_on_the_discrete_card_and_the_status_says_so() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    rig.control.use_video_memory(3 << 30);
+
+    let status = rig.handle.load().unwrap();
+
+    assert_eq!(rig.control.calls(), ["load 3 gpu 1"]);
+    assert_eq!(status.state, ModelState::Loaded);
+    assert_eq!(status.device, Some(Device::Gpu { name: XTX.to_owned() }));
+    assert_eq!(status.video_bytes, Some(3 << 30));
+    assert_eq!(status.problem, None);
+
+    let unloaded = rig.handle.unload().unwrap();
+    assert_eq!((unloaded.device, unloaded.video_bytes), (None, None));
+}
+
+#[test]
+fn without_a_card_with_enough_free_memory_the_model_loads_on_the_processor() {
+    for gpus in [
+        vec![],
+        vec![card(0, "integrated", 64_000, true)],
+        vec![card(0, "small", 4_095, false)],
+    ] {
+        let rig = Rig::new(on_disk());
+        rig.control.set_gpus(gpus.clone());
+
+        let status = rig.handle.load().unwrap();
+
+        assert_eq!(rig.control.calls(), ["load 3"], "{gpus:?}");
+        assert_eq!(status.device, Some(Device::Cpu));
+        assert_eq!(status.video_bytes, None);
+        assert_eq!(status.problem, None);
+    }
+}
+
+#[test]
+fn with_the_graphics_card_switched_off_it_is_never_used() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    with_gpu(&rig, false);
+
+    let status = rig.handle.load().unwrap();
+
+    assert_eq!(rig.control.calls(), ["load 3"]);
+    assert_eq!(status.device, Some(Device::Cpu));
+    assert!(!status.options.use_gpu);
+}
+
+#[test]
+fn a_failed_load_on_the_card_loads_on_the_processor_once_and_says_so() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    rig.control.fail_gpu_loads("vk::DeviceLostError");
+
+    let status = rig.handle.load().unwrap();
+
+    assert_eq!(rig.control.calls(), ["load 3 gpu 1", "unload", "load 3"]);
+    assert_eq!(status.state, ModelState::Loaded);
+    assert_eq!(status.device, Some(Device::Cpu));
+    assert_eq!(status.problem.as_deref(), Some(GPU_FALLBACK));
+
+    // The card is not tried again on the next load.
+    rig.handle.unload().unwrap();
+    rig.handle.load().unwrap();
+    assert_eq!(
+        rig.control.calls()[3..],
+        ["unload".to_owned(), "load 3".to_owned()]
+    );
+}
+
+#[test]
+fn the_processor_after_a_failed_card_still_needs_its_own_free_memory() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    rig.control.fail_gpu_loads("out of device memory");
+    // Enough for the card, not for the processor.
+    rig.available.store(rig.spec.min_free_bytes - 1, Ordering::SeqCst);
+
+    let status = rig.handle.load().unwrap();
+
+    assert_eq!(rig.control.calls(), ["load 3 gpu 1", "unload"]);
+    assert_eq!(status.state, ModelState::OnDisk);
+    let problem = status.problem.unwrap();
+    assert!(
+        problem.starts_with("The graphics card could not run the model."),
+        "{problem}"
+    );
+    assert!(problem.contains("not enough free memory"), "{problem}");
+}
+
+#[test]
+fn a_load_on_the_card_needs_less_free_memory_than_one_on_the_processor_but_not_none() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    rig.available
+        .store(rig.spec.gpu_min_free_bytes - 1, Ordering::SeqCst);
+
+    let refused = rig.handle.load().unwrap();
+    assert_eq!(refused.state, ModelState::OnDisk);
+    assert!(refused.problem.unwrap().contains("not enough free memory"));
+    assert!(rig.control.calls().is_empty());
+
+    rig.available.store(rig.spec.gpu_min_free_bytes, Ordering::SeqCst);
+    assert_eq!(rig.handle.load().unwrap().state, ModelState::Loaded);
+    assert_eq!(rig.control.calls(), ["load 3 gpu 1"]);
+}
+
+#[test]
+fn a_generation_that_fails_on_the_card_is_tried_again_on_the_processor() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    rig.control.fail_gpu_runs("vk::DeviceLostError");
+    rig.control.push_reply(QUERY);
+
+    let query = rig.handle.interpret("biggest caches in ~/Projekty");
+
+    assert!(query.is_ok(), "{query:?}");
+    assert_eq!(
+        rig.control.calls(),
+        ["load 3 gpu 1", "judge", "unload", "load 3", "judge"]
+    );
+    assert_eq!(rig.control.placement(), Placement::Cpu);
+    let status = rig.handle.status();
+    assert_eq!(status.state, ModelState::Loaded);
+    assert_eq!(status.device, Some(Device::Cpu));
+    assert_eq!(status.problem.as_deref(), Some(GPU_FALLBACK));
+}
+
+#[test]
+fn a_labelling_job_moves_to_the_processor_once_and_labels_everything() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    rig.control.fail_gpu_runs("vk::DeviceLostError");
+    rig.control.set_reply(REVIEW);
+
+    let run = rig.handle.label(items(3)).unwrap();
+
+    assert_eq!(run.labels.len(), 3);
+    let loads: Vec<_> = rig
+        .control
+        .calls()
+        .into_iter()
+        .filter(|call| call.starts_with("load"))
+        .collect();
+    assert_eq!(loads, ["load 3 gpu 1", "load 3"]);
+    assert_eq!(rig.handle.status().device, Some(Device::Cpu));
+}
+
+#[test]
+fn a_failed_move_to_the_processor_leaves_the_model_on_disk_with_the_reason() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    rig.control.fail_gpu_runs("vk::DeviceLostError");
+    rig.handle.load().unwrap();
+    rig.available.store(rig.spec.min_free_bytes - 1, Ordering::SeqCst);
+
+    let failed = rig.handle.interpret("biggest caches in ~/Projekty");
+
+    assert!(matches!(failed, Err(WorkerError::Failed(_))), "{failed:?}");
+    let status = rig.handle.status();
+    assert_eq!(status.state, ModelState::OnDisk);
+    assert_eq!(status.device, None);
+    assert!(status.problem.unwrap().contains("not enough free memory"));
+    assert!(!rig.control.is_loaded());
+}
+
+#[test]
+fn switching_the_card_while_loaded_unloads_and_the_next_load_chooses_again() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    rig.handle.load().unwrap();
+
+    with_gpu(&rig, false);
+    let status = rig.wait_for_state(ModelState::OnDisk);
+    assert_eq!(status.device, None);
+    assert!(!rig.control.is_loaded());
+
+    assert_eq!(rig.handle.load().unwrap().device, Some(Device::Cpu));
+    with_gpu(&rig, true);
+    rig.wait_for_state(ModelState::OnDisk);
+    assert_eq!(
+        rig.handle.load().unwrap().device,
+        Some(Device::Gpu { name: XTX.to_owned() })
+    );
+    assert_eq!(
+        rig.control.calls(),
+        ["load 3 gpu 1", "unload", "load 3", "unload", "load 3 gpu 1"]
+    );
+}
+
+#[test]
+fn switching_the_card_off_and_on_tries_a_card_that_failed_again() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    rig.control.fail_gpu_loads("vk::DeviceLostError");
+    assert_eq!(rig.handle.load().unwrap().device, Some(Device::Cpu));
+
+    // Off: the model is already on the processor, so it stays.
+    with_gpu(&rig, false);
+    assert_eq!(rig.handle.status().state, ModelState::Loaded);
+
+    // On: the model is not where the option says; it is unloaded and the card is tried at the next load.
+    with_gpu(&rig, true);
+    rig.wait_for_state(ModelState::OnDisk);
+    let status = rig.handle.load().unwrap();
+
+    assert_eq!(status.device, Some(Device::Cpu), "the fake still fails");
+    assert!(
+        rig.control
+            .calls()
+            .iter()
+            .filter(|call| call.contains("gpu"))
+            .count()
+            == 2
+    );
+}
+
+#[test]
+fn switching_the_card_off_keeps_a_model_that_is_on_the_processor_and_clears_the_fallback_line() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    rig.control.fail_gpu_loads("vk::DeviceLostError");
+    rig.handle.load().unwrap();
+    assert_eq!(rig.handle.status().problem.as_deref(), Some(GPU_FALLBACK));
+
+    with_gpu(&rig, false);
+
+    rig.wait_for("the line to go", |status| status.problem.is_none());
+    let status = rig.handle.status();
+    assert_eq!(status.state, ModelState::Loaded);
+    assert_eq!(status.device, Some(Device::Cpu));
+    assert!(rig.control.is_loaded(), "no reload and no unload");
+}
+
+#[test]
+fn the_switch_of_the_card_while_not_loaded_loads_nothing() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+
+    with_gpu(&rig, false);
+    with_gpu(&rig, true);
+    thread::sleep(Duration::from_millis(20));
+
+    assert!(rig.control.calls().is_empty());
+    assert_eq!(rig.handle.status().state, ModelState::OnDisk);
+}
+
+#[test]
+fn text_the_model_cannot_take_on_the_card_does_not_move_it() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    rig.control.fail_next_input("The text is too long for the model.");
+
+    let failed = rig.handle.interpret("biggest caches in ~/Projekty");
+
+    assert_eq!(
+        failed,
+        Err(WorkerError::Failed(
+            "The text is too long for the model.".to_owned()
+        ))
+    );
+    assert_eq!(rig.control.calls(), ["load 3 gpu 1", "judge"]);
+    let status = rig.handle.status();
+    assert_eq!(status.device, Some(Device::Gpu { name: XTX.to_owned() }));
+    assert_eq!(status.problem, None);
+}
+
+#[test]
+fn a_question_that_ran_out_of_time_while_the_model_moved_gets_a_fresh_time() {
+    let rig = Rig::new(Start {
+        reading: Some(Duration::from_millis(200)),
+        ..on_disk()
+    });
+    two_cards(&rig);
+    rig.control.fail_gpu_runs("vk::DeviceLostError");
+    rig.control.push_slow_reply(QUERY, Duration::from_secs(5));
+    rig.control.push_reply(QUERY);
+
+    let query = rig.handle.interpret("biggest caches in ~/Projekty");
+
+    assert!(query.is_ok(), "{query:?}");
+    assert_eq!(
+        rig.control.calls(),
+        ["load 3 gpu 1", "judge", "unload", "load 3", "judge", "judge"]
+    );
+    assert_eq!(rig.handle.status().problem.as_deref(), Some(GPU_FALLBACK));
+}
+
+#[test]
+fn switching_the_card_off_and_on_while_on_disk_clears_the_fallback_line() {
+    let rig = Rig::new(on_disk());
+    two_cards(&rig);
+    rig.control.fail_gpu_loads("vk::DeviceLostError");
+    rig.handle.load().unwrap();
+    rig.handle.unload().unwrap();
+    assert_eq!(rig.handle.status().problem.as_deref(), Some(GPU_FALLBACK));
+
+    with_gpu(&rig, false);
+    with_gpu(&rig, true);
+
+    rig.wait_for("the line to go", |status| status.problem.is_none());
+    assert_eq!(rig.handle.status().state, ModelState::OnDisk);
+}
+
+// ---- The model in a helper process (G4) ----
+
+fn in_helper() -> Start {
+    Start {
+        helper: true,
+        ..on_disk()
+    }
+}
+
+fn crash(signal: i32) -> Fault {
+    Fault::Crash {
+        exit: Exit::Signal(signal),
+        stderr: vec!["radv: GPU hang detected".to_owned()],
+    }
+}
+
+/// What helpers were started, in order.
+fn spawned(rig: &Rig) -> Vec<RuntimeMode> {
+    rig.spawner.as_ref().unwrap().spawned()
+}
+
+fn fault(rig: &Rig, mode: RuntimeMode, phase: Phase, fault: Fault) {
+    rig.spawner.as_ref().unwrap().fault(mode, phase, fault);
+}
+
+#[test]
+fn a_crash_of_the_card_while_a_question_is_read_moves_to_the_processor_and_is_told_once() {
+    let rig = Rig::new(in_helper());
+    two_cards(&rig);
+    fault(&rig, RuntimeMode::Gpu, Phase::Judge, crash(11));
+    rig.control.push_reply(QUERY);
+
+    let query = rig.handle.interpret("biggest caches in ~/Projekty");
+
+    assert!(query.is_ok(), "{query:?}");
+    let incidents = rig.incidents();
+    assert_eq!(incidents.len(), 1, "{incidents:?}");
+    let incident = &incidents[0];
+    assert!(incident.on_gpu);
+    assert_eq!(incident.what, IncidentKind::Crash);
+    assert_eq!(incident.exit, Some(Exit::Signal(11)));
+    assert_eq!(incident.card.as_deref(), Some(XTX));
+    assert!(incident.stderr_tail.contains("GPU hang"));
+    assert_eq!(
+        spawned(&rig),
+        [RuntimeMode::Probe, RuntimeMode::Gpu, RuntimeMode::Cpu]
+    );
+    let status = rig.handle.status();
+    assert_eq!(status.state, ModelState::Loaded);
+    assert_eq!(status.device, Some(Device::Cpu));
+    assert_eq!(status.problem.as_deref(), Some(GPU_FALLBACK));
+}
+
+#[test]
+fn the_incident_is_told_before_the_status_that_follows_it() {
+    let rig = Rig::new(in_helper());
+    two_cards(&rig);
+    fault(&rig, RuntimeMode::Gpu, Phase::Judge, crash(11));
+    rig.control.push_reply(QUERY);
+
+    rig.handle.interpret("biggest caches in ~/Projekty").unwrap();
+
+    let told = rig.told.lock().unwrap();
+    let events = rig.events.lock().unwrap();
+    let before = told[0].1;
+    assert!(
+        events[..before]
+            .iter()
+            .all(|status| status.problem.as_deref() != Some(GPU_FALLBACK)),
+        "a status that names the problem came first"
+    );
+    assert!(
+        events[before..]
+            .iter()
+            .any(|status| status.problem.as_deref() == Some(GPU_FALLBACK)),
+        "and one follows"
+    );
+}
+
+#[test]
+fn a_crash_of_the_card_during_labelling_moves_to_the_processor_once_and_labels_everything() {
+    let rig = Rig::new(in_helper());
+    two_cards(&rig);
+    fault(&rig, RuntimeMode::Gpu, Phase::Judge, crash(11));
+    rig.control.set_reply(REVIEW);
+
+    let run = rig.handle.label(items(3)).unwrap();
+
+    assert_eq!(run.labels.len(), 3);
+    assert_eq!(run.stopped, None);
+    assert_eq!(rig.incidents().len(), 1);
+    assert_eq!(rig.handle.status().device, Some(Device::Cpu));
+    assert_eq!(
+        spawned(&rig),
+        [RuntimeMode::Probe, RuntimeMode::Gpu, RuntimeMode::Cpu]
+    );
+}
+
+#[test]
+fn a_hang_of_the_card_is_found_by_the_stall_limit_and_the_job_finishes_on_the_processor() {
+    let rig = Rig::new(in_helper());
+    two_cards(&rig);
+    rig.control.push_stall();
+    rig.control.push_reply(QUERY);
+
+    let query = rig.handle.interpret("biggest caches in ~/Projekty");
+
+    assert!(query.is_ok(), "{query:?}");
+    let incidents = rig.incidents();
+    assert_eq!(incidents.len(), 1);
+    assert_eq!(incidents[0].what, IncidentKind::Hang);
+    assert!(incidents[0].on_gpu);
+    assert_eq!(rig.handle.status().device, Some(Device::Cpu));
+}
+
+#[test]
+fn an_error_on_the_card_is_an_incident_with_or_without_a_helper() {
+    for start in [on_disk(), in_helper()] {
+        let rig = Rig::new(start);
+        two_cards(&rig);
+        rig.control.fail_gpu_runs("vk::DeviceLostError");
+        rig.control.push_reply(QUERY);
+
+        rig.handle.interpret("biggest caches in ~/Projekty").unwrap();
+
+        let incidents = rig.incidents();
+        assert_eq!(incidents.len(), 1, "{incidents:?}");
+        assert_eq!(incidents[0].what, IncidentKind::Error);
+        assert!(incidents[0].on_gpu);
+        assert!(incidents[0].detail.contains("vk::DeviceLostError"));
+        assert_eq!(incidents[0].exit, None);
+    }
+}
+
+#[test]
+fn text_the_model_cannot_take_is_no_incident() {
+    let rig = Rig::new(in_helper());
+    two_cards(&rig);
+    rig.control.fail_next_input("The text is too long for the model.");
+
+    let failed = rig.handle.interpret("biggest caches in ~/Projekty");
+
+    assert!(matches!(failed, Err(WorkerError::Failed(_))));
+    assert!(rig.incidents().is_empty());
+    assert_eq!(
+        rig.handle.status().device,
+        Some(Device::Gpu { name: XTX.to_owned() })
+    );
+}
+
+#[test]
+fn a_crash_while_listing_the_cards_loads_on_the_processor_and_says_so() {
+    let rig = Rig::new(in_helper());
+    two_cards(&rig);
+    fault(&rig, RuntimeMode::Probe, Phase::Probe, crash(11));
+
+    let status = rig.handle.load().unwrap();
+
+    assert_eq!(status.state, ModelState::Loaded);
+    assert_eq!(status.device, Some(Device::Cpu));
+    assert_eq!(status.problem.as_deref(), Some(GPU_FALLBACK));
+    let incidents = rig.incidents();
+    assert_eq!(incidents.len(), 1);
+    assert!(incidents[0].on_gpu);
+    assert_eq!(incidents[0].card, None, "no card was chosen yet");
+    assert_eq!(spawned(&rig), [RuntimeMode::Probe, RuntimeMode::Cpu]);
+}
+
+#[test]
+fn a_crash_while_loading_on_the_card_loads_on_the_processor_and_says_so() {
+    let rig = Rig::new(in_helper());
+    two_cards(&rig);
+    fault(&rig, RuntimeMode::Gpu, Phase::Load, crash(6));
+
+    let status = rig.handle.load().unwrap();
+
+    assert_eq!(status.state, ModelState::Loaded);
+    assert_eq!(status.device, Some(Device::Cpu));
+    assert_eq!(status.problem.as_deref(), Some(GPU_FALLBACK));
+    let incidents = rig.incidents();
+    assert_eq!(incidents.len(), 1);
+    assert_eq!(incidents[0].card.as_deref(), Some(XTX));
+    assert_eq!(incidents[0].exit, Some(Exit::Signal(6)));
+    assert_eq!(
+        spawned(&rig),
+        [RuntimeMode::Probe, RuntimeMode::Gpu, RuntimeMode::Cpu]
+    );
+}
+
+#[test]
+fn a_crash_on_the_processor_leaves_the_model_on_disk_and_a_labelling_job_stops() {
+    let rig = Rig::new(in_helper());
+    with_gpu(&rig, false);
+    rig.control.set_reply(REVIEW);
+    fault(&rig, RuntimeMode::Cpu, Phase::Judge, crash(11));
+
+    let run = rig.handle.label(items(5)).unwrap();
+
+    assert_eq!(
+        run.stopped,
+        Some(Stopped::Cancelled),
+        "not on to the other folders"
+    );
+    assert!(run.labels.is_empty());
+    let status = rig.handle.status();
+    assert_eq!(status.state, ModelState::OnDisk);
+    assert_eq!(status.problem.as_deref(), Some(STOPPED));
+    assert_eq!(status.device, None);
+    assert_eq!(status.ram_bytes, None);
+    let incidents = rig.incidents();
+    assert_eq!(incidents.len(), 1);
+    assert!(
+        !incidents[0].on_gpu,
+        "the callback is told, for the log; there is no prompt"
+    );
+    assert_eq!(rig.spawner.as_ref().unwrap().running(), 0);
+
+    // The next job loads a helper afresh.
+    rig.control.push_reply(QUERY);
+    assert!(rig.handle.interpret("biggest caches in ~/Projekty").is_ok());
+    assert_eq!(rig.handle.status().state, ModelState::Loaded);
+}
+
+#[test]
+fn a_crash_on_the_processor_during_a_question_fails_the_question() {
+    let rig = Rig::new(in_helper());
+    with_gpu(&rig, false);
+    fault(&rig, RuntimeMode::Cpu, Phase::Judge, crash(11));
+
+    let failed = rig.handle.interpret("biggest caches in ~/Projekty");
+
+    assert!(matches!(failed, Err(WorkerError::Failed(_))), "{failed:?}");
+    assert_eq!(rig.handle.status().state, ModelState::OnDisk);
+    assert_eq!(rig.incidents().len(), 1);
+    assert!(!rig.incidents()[0].on_gpu);
+}
+
+#[test]
+fn a_card_that_is_blocked_at_start_is_not_even_looked_at_until_it_is_tried_again() {
+    let rig = Rig::new(Start {
+        gpu_blocked: true,
+        ..in_helper()
+    });
+    two_cards(&rig);
+
+    let status = rig.handle.load().unwrap();
+
+    assert_eq!(status.device, Some(Device::Cpu));
+    assert_eq!(status.problem.as_deref(), Some(GPU_FALLBACK));
+    assert_eq!(spawned(&rig), [RuntimeMode::Cpu], "no helper looked at the cards");
+    assert!(rig.incidents().is_empty());
+
+    rig.handle.retry_gpu();
+    assert_eq!(
+        rig.handle.status().state,
+        ModelState::Loaded,
+        "the model stays where it is"
+    );
+    rig.handle.unload().unwrap();
+    let again = rig.handle.load().unwrap();
+
+    assert_eq!(again.device, Some(Device::Gpu { name: XTX.to_owned() }));
+    assert_eq!(again.problem, None);
+}
+
+#[test]
+fn trying_the_card_again_after_a_failure_loads_on_it_at_the_next_load() {
+    let rig = Rig::new(in_helper());
+    two_cards(&rig);
+    fault(&rig, RuntimeMode::Gpu, Phase::Judge, crash(11));
+    rig.control.push_reply(QUERY);
+    rig.handle.interpret("biggest caches in ~/Projekty").unwrap();
+
+    // Without the answer the card stays out, also after an unload.
+    rig.handle.unload().unwrap();
+    assert_eq!(rig.handle.load().unwrap().device, Some(Device::Cpu));
+
+    rig.handle.retry_gpu();
+    assert_eq!(rig.handle.status().device, Some(Device::Cpu), "nothing moved yet");
+    rig.handle.unload().unwrap();
+    let status = rig.handle.load().unwrap();
+
+    assert_eq!(status.device, Some(Device::Gpu { name: XTX.to_owned() }));
+    assert_eq!(rig.incidents().len(), 1, "nothing new went wrong");
+}
+
+#[test]
+fn the_memory_shown_is_that_of_the_helper_and_the_helper_is_reaped_on_unload() {
+    let rig = Rig::new(in_helper());
+    two_cards(&rig);
+    rig.helper_resident.store(806 << 20, Ordering::SeqCst);
+
+    let loaded = rig.handle.load().unwrap();
+    rig.resident.store(1, Ordering::SeqCst);
+
+    assert_eq!(loaded.ram_bytes, Some(806 << 20), "not this process's own growth");
+    assert_eq!(rig.handle.status().ram_bytes, Some(806 << 20));
+
+    let unloaded = rig.handle.unload().unwrap();
+
+    assert_eq!(unloaded.ram_bytes, None);
+    assert_eq!(rig.spawner.as_ref().unwrap().running(), 0);
+}
+
+#[test]
+fn switching_the_card_off_keeps_a_loaded_model_that_is_on_the_processor_without_a_reload() {
+    let rig = Rig::new(in_helper());
+    with_gpu(&rig, false);
+    rig.handle.load().unwrap();
+
+    with_gpu(&rig, true);
+    rig.wait_for_state(ModelState::OnDisk);
+    rig.handle.load().unwrap();
+    with_gpu(&rig, false);
+    thread::sleep(Duration::from_millis(30));
+
+    assert_eq!(rig.handle.status().state, ModelState::Loaded);
+    assert_eq!(rig.handle.status().device, Some(Device::Cpu));
 }

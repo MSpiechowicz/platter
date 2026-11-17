@@ -58,7 +58,10 @@ describe('AskCard: asking a free question', () => {
     expect(screen.getByRole('region', { name: 'Ask about this scan' })).toBeTruthy();
     expect(screen.getByText(EMPTY_LINE)).toBeTruthy();
     expect(input().placeholder).toBe('Ask about this scan, in your own words');
-    expect(screen.queryAllByRole('button').map((button) => button.textContent?.trim())).toEqual(['Ask', 'Clear']);
+    expect(screen.queryAllByRole('button').map((button) => button.textContent?.trim())).toEqual([
+      'Ask',
+      'Clear',
+    ]);
     expect(send().disabled).toBe(true);
   });
 

@@ -62,6 +62,22 @@ pub fn resident_bytes() -> Option<u64> {
     None
 }
 
+/// Memory the process `pid` holds in RAM right now (from `/proc/<pid>/statm`). `None` where it cannot be
+/// read, and for a process that is gone.
+#[cfg(target_os = "linux")]
+pub fn resident_bytes_of(pid: u32) -> Option<u64> {
+    let page = rustix::param::page_size() as u64;
+
+    parse_resident(&std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?, page)
+}
+
+/// Memory the process `pid` holds in RAM right now. `None` on this system.
+#[cfg(not(target_os = "linux"))]
+pub fn resident_bytes_of(pid: u32) -> Option<u64> {
+    let _ = pid;
+    None
+}
+
 /// The `MemAvailable` line of `/proc/meminfo` (`MemAvailable:   12345678 kB`) in bytes.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_mem_available(meminfo: &str) -> Option<u64> {
@@ -165,6 +181,10 @@ mod tests {
         let total = total_memory_bytes().unwrap();
 
         assert!(resident > 0 && resident < total);
+        assert!(
+            resident_bytes_of(std::process::id()).is_some_and(|of| of > 0 && of < total),
+            "a process is read by its number"
+        );
         assert!(available_memory_bytes().unwrap() <= total);
     }
 

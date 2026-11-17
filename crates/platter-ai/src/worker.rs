@@ -16,20 +16,30 @@
 //!
 //! Every change of the state is passed to the status callback, in order. The callback runs while the
 //! state is locked: it must be quick and must not call back into the handle.
+//!
+//! When the model runs in a helper process (see [`crate::process`]) the worker also hears of what went
+//! wrong in it: a crash, a hang, or an error on a graphics card. Each is told once to the incident callback
+//! ([`WorkerConfig::on_gpu_incident`], on the worker's thread with no lock held, before the status change
+//! that follows). A card that failed is not tried again until the user says so (a switch of "Use the
+//! graphics card", [`AdvisorHandle::retry_gpu`]) and the job goes on on the processor. A helper on the
+//! processor that fails leaves the model on disk with a problem, and a labelling job stops.
 
 use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use platter_core::NodeId;
 
+use crate::device::choose;
 use crate::download::{DownloadError, Helpers, download};
-use crate::engine::Engine;
+use crate::engine::{
+    AiError, Engine, Exit, Generation, GpuDevice, IncidentKind, LoadInfo, Placement, RuntimeIncident,
+};
 use crate::facts::FolderFacts;
 use crate::fetch::Fetch;
 use crate::grammar::QUESTION_GRAMMAR;
@@ -37,10 +47,11 @@ use crate::interpret::{interpret_prompt, parse_question};
 use crate::label::{self, Budget, Generated, LabelRun, Outcome, StageLimit};
 use crate::lock::ModelLock;
 use crate::parse::Judgement;
+use crate::protocol::{MAX_ERROR_CHARS, clean_text};
 use crate::question::ScanQuestion;
 use crate::retire::remove_retired;
 use crate::spec::ModelSpec;
-use crate::verify::{VerifyError, verify};
+use crate::verify::{VerifiedModel, VerifyError, verify};
 
 /// Most threads the model computes with; more are slower (see the architecture notes).
 const MAX_THREADS: usize = 8;
@@ -90,6 +101,8 @@ pub struct Options {
     /// sends the user's choice, so nothing loads before that.
     pub enabled: bool,
     pub unload_after: UnloadAfter,
+    /// "Use the graphics card": the model is loaded on a graphics card when one has enough free memory.
+    pub use_gpu: bool,
 }
 
 impl Default for Options {
@@ -97,6 +110,7 @@ impl Default for Options {
         Self {
             enabled: false,
             unload_after: UnloadAfter::FiveMinutes,
+            use_gpu: true,
         }
     }
 }
@@ -115,6 +129,43 @@ pub struct Labelling {
     pub total: usize,
 }
 
+/// Where the loaded model runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Device {
+    Cpu,
+    /// A graphics card, by the driver's description of it.
+    Gpu {
+        name: String,
+    },
+}
+
+/// The problem shown when the model was moved from a graphics card to the processor.
+pub const GPU_FALLBACK: &str = "The graphics card could not run the model; it runs on the processor.";
+
+/// The problem shown when the model stopped on the processor.
+pub const STOPPED: &str = "The model stopped unexpectedly.";
+
+/// Something that went wrong in the process the model runs in, or on a graphics card. Told once, to
+/// [`WorkerConfig::on_gpu_incident`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuIncident {
+    pub at: SystemTime,
+    /// The driver's description of the card, when one was chosen.
+    pub card: Option<String>,
+    /// It happened on a graphics card (the model was loaded on one, or the cards were being listed); not on
+    /// the processor.
+    pub on_gpu: bool,
+    pub what: IncidentKind,
+    /// How the helper ended, when it did.
+    pub exit: Option<Exit>,
+    /// The last lines the helper wrote to its standard error.
+    pub stderr_tail: String,
+    /// A short sentence on what was seen.
+    pub detail: String,
+}
+
+pub type IncidentFn = Arc<dyn Fn(&GpuIncident) + Send + Sync>;
+
 /// Everything the user can be told about the model.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Status {
@@ -131,6 +182,10 @@ pub struct Status {
     pub tokens_per_second: Option<f64>,
     /// Set while a labelling job runs.
     pub labelling: Option<Labelling>,
+    /// Where the model runs, while it is loaded.
+    pub device: Option<Device>,
+    /// Video memory the model takes, while it is loaded on a graphics card.
+    pub video_bytes: Option<u64>,
 }
 
 pub type StatusFn = Arc<dyn Fn(&Status) + Send + Sync>;
@@ -159,6 +214,8 @@ pub struct Host {
     pub available_memory: Probe,
     pub total_memory: Probe,
     pub resident: Probe,
+    /// Memory a process (the model's helper) holds in RAM.
+    pub resident_of: Arc<dyn Fn(u32) -> Option<u64> + Send + Sync>,
 }
 
 impl Host {
@@ -167,6 +224,7 @@ impl Host {
             available_memory: Arc::new(platter_platform::available_memory_bytes),
             total_memory: Arc::new(platter_platform::total_memory_bytes),
             resident: Arc::new(platter_platform::resident_bytes),
+            resident_of: Arc::new(platter_platform::resident_bytes_of),
         }
     }
 }
@@ -185,6 +243,11 @@ pub struct WorkerConfig {
     /// job and for reading a question (see [`ModelSpec::folder_limit`], [`ModelSpec::interpret_limit`]),
     /// with the usual number of tokens.
     pub budget: Option<Budget>,
+    /// Told of every incident in the model's process or on a graphics card (see [`GpuIncident`]).
+    pub on_gpu_incident: Option<IncidentFn>,
+    /// Start with the graphics card blocked, as after a failure: the model loads on the processor until the
+    /// user switches the card or says to try it again.
+    pub gpu_blocked: bool,
 }
 
 impl WorkerConfig {
@@ -198,6 +261,8 @@ impl WorkerConfig {
             host: Host::real(),
             progress_every: Duration::from_millis(100),
             budget: None,
+            on_gpu_incident: None,
+            gpu_blocked: false,
         }
     }
 }
@@ -279,6 +344,8 @@ struct Inner {
     busy: Busy,
     /// Memory in use before the model was loaded; the model's share is measured from it.
     baseline: Option<u64>,
+    /// The process the model runs in, while it is loaded in one: its memory is the model's.
+    model_pid: Option<u32>,
     last_active: Instant,
 }
 
@@ -299,6 +366,13 @@ struct Shared {
     download_cancel: AtomicBool,
     /// Raised to stop a labelling job or a question.
     job_cancel: AtomicBool,
+    /// Counts changes of "Use the graphics card", so the worker sees a switch off and back on even when it
+    /// reads the options only after both.
+    gpu_switches: AtomicU64,
+    /// A graphics card failed to run the model (or was blocked at start): it is not tried again until
+    /// "Use the graphics card" is switched or [`AdvisorHandle::retry_gpu`] is called.
+    gpu_failed: AtomicBool,
+    on_incident: Option<IncidentFn>,
     closing: AtomicBool,
 }
 
@@ -311,13 +385,31 @@ impl Shared {
         let mut status = inner.status.clone();
 
         status.ram_total = (self.host.total_memory)().unwrap_or(0);
-        status.ram_bytes = match (status.state, inner.baseline) {
-            (ModelState::Loaded, Some(before)) => {
+        if status.state != ModelState::Loaded {
+            status.device = None;
+            status.video_bytes = None;
+        }
+        status.ram_bytes = match (status.state, inner.model_pid, inner.baseline) {
+            (ModelState::Loaded, Some(pid), _) => (self.host.resident_of)(pid),
+            (ModelState::Loaded, None, Some(before)) => {
                 (self.host.resident)().map(|now| now.saturating_sub(before))
             }
             _ => None,
         };
         status
+    }
+
+    /// Tells the incident callback. A callback that panics must not take the worker down.
+    fn report(&self, incident: &GpuIncident) {
+        if let Some(on_incident) = &self.on_incident {
+            let _ = catch_unwind(AssertUnwindSafe(|| on_incident(incident)));
+        }
+    }
+
+    /// The model's process is gone or about to be: its number is no longer the model's (a number can be
+    /// used again).
+    fn forget_process(&self) {
+        self.lock().model_pid = None;
     }
 
     fn status(&self) -> Status {
@@ -371,10 +463,13 @@ impl AdvisorWorker {
                     ram_total: 0,
                     tokens_per_second: None,
                     labelling: None,
+                    device: None,
+                    video_bytes: None,
                 },
                 generation: 0,
                 busy: Busy::No,
                 baseline: None,
+                model_pid: None,
                 last_active: Instant::now(),
             }),
             spec,
@@ -383,6 +478,9 @@ impl AdvisorWorker {
             host: config.host.clone(),
             download_cancel: AtomicBool::new(false),
             job_cancel: AtomicBool::new(false),
+            gpu_switches: AtomicU64::new(0),
+            gpu_failed: AtomicBool::new(config.gpu_blocked),
+            on_incident: config.on_gpu_incident.clone(),
             closing: AtomicBool::new(false),
         });
 
@@ -393,6 +491,8 @@ impl AdvisorWorker {
             engine,
             fetch,
             helpers: Helpers::new(),
+            loaded: None,
+            gpu_switches_seen: 0,
         };
         let thread = thread::Builder::new()
             .name("platter-advisor".to_owned())
@@ -585,6 +685,9 @@ impl AdvisorHandle {
         self.check_open()?;
 
         let changed = inner.status.options != options;
+        if inner.status.options.use_gpu != options.use_gpu {
+            self.shared.gpu_switches.fetch_add(1, Ordering::SeqCst);
+        }
         inner.status.options = options;
         let state = inner.status.state;
         let status = self.shared.snapshot(&inner);
@@ -604,12 +707,19 @@ impl AdvisorHandle {
             return wait_for(&answer);
         }
         if changed {
-            // Only the idle clock needs to know.
+            // The idle clock needs to know, and a model loaded with the other "Use the graphics card"
+            // is unloaded (when a job runs, after it); the worker reads the options itself.
             self.commands
                 .send(Command::Configure(None))
                 .map_err(|_| WorkerError::Stopped)?;
         }
         Ok(status)
+    }
+
+    /// Lets the next load try a graphics card again after one failed (or was blocked at start). A model that
+    /// is loaded stays where it is.
+    pub fn retry_gpu(&self) {
+        self.shared.gpu_failed.store(false, Ordering::SeqCst);
     }
 
     /// Asks the model about every folder of `items` and waits until the job has ended. The model is
@@ -780,6 +890,29 @@ struct Worker {
     fetch: Arc<dyn Fetch>,
     /// The network threads of every download so far, so abandoned ones cannot pile up.
     helpers: Helpers,
+    /// The loaded model: its verified file and where it is.
+    loaded: Option<Loaded>,
+    /// [`Shared::gpu_switches`] when the worker last looked.
+    gpu_switches_seen: u64,
+}
+
+/// The model in memory.
+struct Loaded {
+    /// The checked file, held by its descriptor so that the model can be loaded again on the processor
+    /// without checking it again when the graphics card fails.
+    verified: VerifiedModel,
+    /// The card it is on (`None`: the processor).
+    card: Option<Card>,
+}
+
+/// A graphics card the model is loaded on.
+#[derive(Debug, Clone)]
+struct Card {
+    index: usize,
+    /// The driver's description of it.
+    name: String,
+    /// Its free memory before the load.
+    free_before: u64,
 }
 
 impl Worker {
@@ -856,11 +989,12 @@ impl Worker {
         }
 
         // The runtime may hold a half-loaded model.
-        let _ = catch_unwind(AssertUnwindSafe(|| self.engine.unload()));
+        self.drop_engine();
         self.recover(|inner| {
             inner.set_state(ModelState::OnDisk);
             inner.status.problem = Some("Loading the model stopped unexpectedly.".to_owned());
             inner.baseline = None;
+            inner.model_pid = None;
         })
     }
 
@@ -869,6 +1003,8 @@ impl Worker {
             return status;
         }
 
+        self.loaded = None;
+        self.shared.forget_process();
         self.recover(|inner| {
             if inner.status.state == ModelState::Loaded {
                 inner.set_state(ModelState::OnDisk);
@@ -927,18 +1063,32 @@ impl Worker {
 
     /// The runtime may be half way through an answer: free it, so the next job loads afresh.
     fn recover_from_job_panic(&mut self) {
-        let _ = catch_unwind(AssertUnwindSafe(|| self.engine.unload()));
+        self.drop_engine();
+        self.loaded = None;
         self.recover(|inner| {
             inner.set_state(ModelState::OnDisk);
-            inner.status.problem = Some("The model stopped unexpectedly.".to_owned());
+            inner.status.problem = Some(STOPPED.to_owned());
             inner.status.tokens_per_second = None;
             inner.baseline = None;
+            inner.model_pid = None;
         });
     }
 
-    /// Ends a job: no job runs, the idle clock starts again, and the speed of the last answer is shown.
-    fn finish_job(&self, speed: Option<f64>) {
+    /// Frees the runtime without letting a panic out. What it reports of its process is not asked: the
+    /// model is being dropped.
+    fn drop_engine(&mut self) {
+        self.shared.forget_process();
+        let _ = catch_unwind(AssertUnwindSafe(|| self.engine.unload()));
+    }
+
+    /// Ends a job: no job runs, the idle clock starts again, and the speed of the last answer and the video
+    /// memory in use are shown.
+    fn finish_job(&mut self, speed: Option<f64>) {
+        let video_bytes = self.video_in_use();
         self.recover(|inner| {
+            if inner.status.state == ModelState::Loaded && video_bytes.is_some() {
+                inner.status.video_bytes = video_bytes;
+            }
             inner.busy = Busy::No;
             inner.status.labelling = None;
             inner.last_active = Instant::now();
@@ -1010,15 +1160,12 @@ impl Worker {
         let total = items.len();
         shared.change(|inner| inner.status.labelling = Some(Labelling { done: 0, total }));
 
-        let run = label::label(
-            &mut *self.engine,
-            items,
-            &budget,
-            &shared.job_cancel,
-            &|done, total| {
-                shared.change(|inner| inner.status.labelling = Some(Labelling { done, total }));
-            },
-        );
+        let mut engine = Fallback::new(&mut *self.engine, &mut self.loaded, self.config.threads, shared);
+        let run = label::label(&mut engine, items, &budget, &shared.job_cancel, &|done, total| {
+            shared.change(|inner| inner.status.labelling = Some(Labelling { done, total }));
+        });
+        let moved = engine.finish();
+        self.after_job_on(moved);
         Ok(run)
     }
 
@@ -1029,13 +1176,30 @@ impl Worker {
         }
 
         let budget = self.budget();
-        let outcome = label::ask(
-            &mut *self.engine,
-            facts,
-            budget.per_folder,
-            budget.max_tokens,
-            &self.shared.job_cancel,
-        );
+        let mut attempts = 0;
+        let outcome = loop {
+            attempts += 1;
+            let mut engine = Fallback::new(
+                &mut *self.engine,
+                &mut self.loaded,
+                self.config.threads,
+                &self.shared,
+            );
+            let outcome = label::ask(
+                &mut engine,
+                facts,
+                budget.per_folder,
+                budget.max_tokens,
+                &self.shared.job_cancel,
+            );
+            let moved = engine.finish();
+            // Moving the model took part of the time: a question that ran out of it gets a fresh one.
+            let again = attempts == 1 && moved == Moved::ToProcessor && matches!(outcome, Outcome::TimedOut);
+            self.after_job_on(moved);
+            if !again {
+                break outcome;
+            }
+        };
 
         match outcome {
             Outcome::Judged(judgement, generation) => (Ok(judgement), Some(generation.tokens_per_s)),
@@ -1056,14 +1220,33 @@ impl Worker {
             return (Err(error), None);
         }
 
-        let generated = label::generate(
-            &mut *self.engine,
-            &interpret_prompt(question),
-            QUESTION_GRAMMAR,
-            limit.time,
-            limit.max_tokens,
-            &self.shared.job_cancel,
-        );
+        let prompt = interpret_prompt(question);
+        let mut attempts = 0;
+        let generated = loop {
+            attempts += 1;
+            let mut engine = Fallback::new(
+                &mut *self.engine,
+                &mut self.loaded,
+                self.config.threads,
+                &self.shared,
+            );
+            let generated = label::generate(
+                &mut engine,
+                &prompt,
+                QUESTION_GRAMMAR,
+                limit.time,
+                limit.max_tokens,
+                &self.shared.job_cancel,
+            );
+            let moved = engine.finish();
+            // Moving the model took part of the time: a question that ran out of it gets a fresh one.
+            let again =
+                attempts == 1 && moved == Moved::ToProcessor && matches!(generated, Generated::TimedOut);
+            self.after_job_on(moved);
+            if !again {
+                break generated;
+            }
+        };
 
         match generated {
             Generated::Done(generation) => match parse_question(&generation.text) {
@@ -1078,6 +1261,38 @@ impl Worker {
 
     fn spec(&self) -> ModelSpec {
         self.config.spec
+    }
+
+    /// Tells what a job's [`Fallback`] did: the model moved to the processor, or was lost on the way.
+    fn after_job_on(&mut self, moved: Moved) {
+        match moved {
+            Moved::No => {}
+            Moved::ToProcessor => {
+                self.shared.gpu_failed.store(true, Ordering::SeqCst);
+                self.shared.change(|inner| {
+                    inner.status.device = Some(Device::Cpu);
+                    inner.status.video_bytes = None;
+                    inner.status.problem = Some(GPU_FALLBACK.to_owned());
+                });
+            }
+            Moved::Lost(problem) => {
+                self.shared.gpu_failed.store(true, Ordering::SeqCst);
+                self.lose_model(problem);
+            }
+            Moved::Stopped => self.lose_model(STOPPED.to_owned()),
+        }
+    }
+
+    /// The model is gone (its process failed, or it could not be moved): it is on disk again, with `problem`.
+    fn lose_model(&mut self, problem: String) {
+        self.loaded = None;
+        self.shared.change(|inner| {
+            inner.set_state(ModelState::OnDisk);
+            inner.status.problem = Some(problem);
+            inner.status.tokens_per_second = None;
+            inner.baseline = None;
+            inner.model_pid = None;
+        });
     }
 
     /// The limits of a job: the ones the config fixes, or else the model's own times.
@@ -1147,8 +1362,28 @@ impl Worker {
 
     fn load(&mut self) -> Status {
         let spec = self.spec();
+        self.loaded = None;
 
-        if let Some(problem) = self.not_enough_memory(&spec) {
+        // Where to load: a graphics card with enough free memory, unless the user switched it off or one
+        // already failed.
+        let use_gpu = self.shared.lock().status.options.use_gpu;
+        let mut gpus = Vec::new();
+        if use_gpu && !self.card_failed() {
+            gpus = catch_unwind(AssertUnwindSafe(|| self.engine.gpus())).unwrap_or_default();
+
+            // Listing the cards runs the driver, which may be what failed.
+            if note_incident(&mut *self.engine, &self.shared, true, None, None) {
+                gpus.clear();
+            }
+        }
+        let card = choose(&gpus, use_gpu && !self.card_failed(), &spec).cloned();
+
+        let ram_needed = if card.is_some() {
+            spec.gpu_min_free_bytes
+        } else {
+            spec.min_free_bytes
+        };
+        if let Some(problem) = self.not_enough_memory(ram_needed) {
             return self.fail_load(ModelState::OnDisk, problem);
         }
 
@@ -1193,34 +1428,98 @@ impl Worker {
 
         let before = (self.shared.host.resident)();
         let threads = self.config.threads;
-        let loaded = catch_unwind(AssertUnwindSafe(|| self.engine.load(&verified, threads)));
-        drop(verified);
+        let placement = card
+            .as_ref()
+            .map_or(Placement::Cpu, |card| Placement::Gpu { index: card.index });
+        let mut loaded = catch_unwind(AssertUnwindSafe(|| {
+            self.engine.load(&verified, threads, placement)
+        }));
+        let mut card = card;
+
+        if let Some(failed) = card.as_ref().map(|card| card.description.clone())
+            && !matches!(loaded, Ok(Ok(_)))
+        {
+            // The card could not take it (a driver error, too little video memory, a crash): the
+            // processor, once, with the processor's memory check.
+            let text = match &loaded {
+                Ok(Err(error)) => error.to_string(),
+                _ => "The model runtime stopped unexpectedly.".to_owned(),
+            };
+            note_incident(&mut *self.engine, &self.shared, true, Some(&failed), Some(&text));
+            self.drop_engine();
+            card = None;
+            if let Some(problem) = self.not_enough_memory(spec.min_free_bytes) {
+                return self.fail_load(
+                    ModelState::OnDisk,
+                    format!("The graphics card could not run the model. {problem}"),
+                );
+            }
+            loaded = catch_unwind(AssertUnwindSafe(|| {
+                self.engine.load(&verified, threads, Placement::Cpu)
+            }));
+        }
+        if card.is_none() {
+            // A helper on the processor that failed to load: told, and the load fails below.
+            note_incident(&mut *self.engine, &self.shared, false, None, None);
+        }
+        let fell_back = self.card_failed() && use_gpu;
 
         match loaded {
             Ok(Ok(_)) if !self.shared.lock().status.options.enabled => {
                 // Switched off while it loaded.
-                self.engine.unload();
+                self.drop_engine();
                 self.fail_load(
                     ModelState::OnDisk,
                     "The local model is switched off in the settings.".to_owned(),
                 )
             }
-            Ok(Ok(_)) => self.shared.change(|inner| {
-                inner.set_state(ModelState::Loaded);
-                inner.status.problem = None;
-                inner.status.tokens_per_second = None;
-                inner.baseline = before;
-                inner.last_active = Instant::now();
-            }),
+            Ok(Ok(_)) => {
+                let device = match &card {
+                    Some(card) => Device::Gpu {
+                        name: card.description.clone(),
+                    },
+                    None => Device::Cpu,
+                };
+                self.loaded = Some(Loaded {
+                    verified,
+                    card: card.as_ref().map(|card| Card {
+                        index: card.index,
+                        name: card.description.clone(),
+                        free_before: card.free_bytes,
+                    }),
+                });
+                let pid = self.engine.process_id();
+                let video_bytes = self.video_in_use();
+                if self.loaded.is_none() {
+                    // The card's driver took the helper down at once: it is told, and the model is on disk.
+                    return self.shared.status();
+                }
+
+                self.shared.change(|inner| {
+                    inner.set_state(ModelState::Loaded);
+                    inner.status.problem = fell_back.then(|| GPU_FALLBACK.to_owned());
+                    inner.status.tokens_per_second = None;
+                    inner.status.device = Some(device);
+                    inner.status.video_bytes = video_bytes;
+                    inner.baseline = before;
+                    inner.model_pid = pid;
+                    inner.last_active = Instant::now();
+                })
+            }
             Ok(Err(error)) => self.fail_load(ModelState::OnDisk, error.to_string()),
             Err(_) => {
-                self.engine.unload();
+                self.drop_engine();
                 self.fail_load(
                     ModelState::OnDisk,
                     "The model runtime stopped unexpectedly.".to_owned(),
                 )
             }
         }
+    }
+
+    /// Whether a graphics card is not to be tried: one failed, or the app started with it blocked.
+    fn card_failed(&self) -> bool {
+        self.shared.gpu_failed.load(Ordering::SeqCst)
     }
 
     fn fail_load(&self, state: ModelState, problem: String) -> Status {
@@ -1230,10 +1529,25 @@ impl Worker {
         })
     }
 
-    /// The reason a load must not start, when the machine has too little free memory.
-    fn not_enough_memory(&self, spec: &ModelSpec) -> Option<String> {
+    /// Video memory the loaded model takes: its card's free memory before the load less what is free
+    /// now. `None` on the processor or when the card cannot be read. When asking the runtime shows that its
+    /// process failed, the incident is told and the model is on disk.
+    fn video_in_use(&mut self) -> Option<u64> {
+        let card = self.loaded.as_ref()?.card.clone()?;
+        let gpus = catch_unwind(AssertUnwindSafe(|| self.engine.gpus())).ok()?;
+
+        if note_incident(&mut *self.engine, &self.shared, true, Some(&card.name), None) {
+            self.lose_model(GPU_FALLBACK.to_owned());
+            return None;
+        }
+        let now = gpus.iter().find(|found| found.index == card.index)?.free_bytes;
+
+        Some(card.free_before.saturating_sub(now))
+    }
+
+    /// The reason a load must not start, when the machine has less free memory than `needed`.
+    fn not_enough_memory(&self, needed: u64) -> Option<String> {
         let available = (self.shared.host.available_memory)()?;
-        let needed = spec.min_free_bytes;
 
         (available < needed).then(|| {
             format!(
@@ -1250,7 +1564,19 @@ impl Worker {
             return self.shared.status();
         }
 
+        // A runtime in another process may have died while idle: that is told here.
+        let card = self.loaded.as_ref().and_then(|loaded| loaded.card.clone());
+        self.shared.forget_process();
         self.engine.unload();
+        note_incident(
+            &mut *self.engine,
+            &self.shared,
+            card.is_some(),
+            card.as_ref().map(|card| card.name.as_str()),
+            None,
+        );
+
+        self.loaded = None;
         self.shared.change(|inner| {
             inner.set_state(ModelState::OnDisk);
             inner.status.tokens_per_second = None;
@@ -1259,15 +1585,240 @@ impl Worker {
     }
 
     fn configure(&mut self) -> Status {
-        let enabled = self.shared.lock().status.options.enabled;
-        if !enabled {
+        let options = self.shared.lock().status.options;
+        if !options.enabled {
             return self.guarded_unload();
+        }
+
+        // "Use the graphics card" was switched (perhaps off and on again): the card is tried again and its
+        // failure is no longer told. A loaded model is unloaded only when it is not where the option now
+        // says (on the card with the card switched off, or on the processor with the card switched on): the
+        // next job loads it there. One that already is stays (the processor after the card was switched
+        // off).
+        let switches = self.shared.gpu_switches.load(Ordering::SeqCst);
+        let toggled = switches != self.gpu_switches_seen;
+        self.gpu_switches_seen = switches;
+        if toggled {
+            self.shared.gpu_failed.store(false, Ordering::SeqCst);
+            let on_card = self.loaded.as_ref().map(|loaded| loaded.card.is_some());
+            let misplaced = on_card.is_some_and(|on_card| on_card != options.use_gpu);
+            let status = if misplaced {
+                self.guarded_unload()
+            } else {
+                self.shared.status()
+            };
+            if status.problem.as_deref() == Some(GPU_FALLBACK) {
+                return self.shared.change(|inner| inner.status.problem = None);
+            }
+            if misplaced {
+                return status;
+            }
         }
 
         // A new idle time counts from now.
         let mut inner = self.shared.lock();
         inner.last_active = Instant::now();
         self.shared.snapshot(&inner)
+    }
+}
+
+/// What the engine has to say about a failure it just had, told to the incident callback. `error` is the text
+/// of an error the engine returned for a call on a graphics card: when the engine has no incident of its own
+/// to report, that is the incident (an error). A failure on a graphics card also blocks the card, until the
+/// user switches it or says to try it again. Returns whether there was an incident.
+fn note_incident(
+    engine: &mut dyn Engine,
+    shared: &Shared,
+    on_gpu: bool,
+    card: Option<&str>,
+    error: Option<&str>,
+) -> bool {
+    let found = catch_unwind(AssertUnwindSafe(|| engine.take_incident()))
+        .ok()
+        .flatten();
+    let (what, exit, stderr_tail, detail) = match (found, error) {
+        (
+            Some(RuntimeIncident {
+                what,
+                exit,
+                stderr_tail,
+                detail,
+            }),
+            _,
+        ) => (what, exit, stderr_tail, detail),
+        (None, Some(text)) if on_gpu => (
+            IncidentKind::Error,
+            None,
+            String::new(),
+            clean_text(text, MAX_ERROR_CHARS),
+        ),
+        (None, _) => return false,
+    };
+
+    if on_gpu {
+        shared.gpu_failed.store(true, Ordering::SeqCst);
+    }
+    shared.report(&GpuIncident {
+        at: SystemTime::now(),
+        card: card.map(str::to_owned),
+        on_gpu,
+        what,
+        exit,
+        stderr_tail,
+        detail,
+    });
+
+    true
+}
+
+/// What a [`Fallback`] did to the model during a job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Moved {
+    No,
+    /// It failed on the graphics card and now runs on the processor.
+    ToProcessor,
+    /// It failed on the graphics card and could not be loaded on the processor; the text says why.
+    Lost(String),
+    /// The runtime's process failed on the processor: the model is gone.
+    Stopped,
+}
+
+/// The engine as a job uses it. A generation that fails on a graphics card (a driver error, out of video
+/// memory, a crash, a hang) unloads the model, loads it on the processor from the same checked file (after
+/// the processor's memory check) and is tried once more there. A runtime that fails on the processor leaves
+/// no model. Every failure that is an incident is told to the incident callback as it happens.
+struct Fallback<'a> {
+    engine: &'a mut dyn Engine,
+    loaded: &'a mut Option<Loaded>,
+    threads: u32,
+    shared: &'a Shared,
+    moved: Moved,
+}
+
+impl<'a> Fallback<'a> {
+    fn new(
+        engine: &'a mut dyn Engine,
+        loaded: &'a mut Option<Loaded>,
+        threads: u32,
+        shared: &'a Shared,
+    ) -> Self {
+        Self {
+            engine,
+            loaded,
+            threads,
+            shared,
+            moved: Moved::No,
+        }
+    }
+
+    fn finish(self) -> Moved {
+        self.moved
+    }
+
+    /// Moves the model to the processor. `Err` with the text for the user when it cannot be.
+    fn move_to_processor(&mut self) -> Result<(), String> {
+        self.engine.unload();
+        let Some(loaded) = self.loaded.as_mut() else {
+            return Err("The model is not loaded.".to_owned());
+        };
+        loaded.card = None;
+
+        let needed = self.shared.spec.min_free_bytes;
+        if let Some(available) = (self.shared.host.available_memory)()
+            && available < needed
+        {
+            return Err(format!(
+                "The graphics card could not run the model. There is not enough free memory to load the model: about {} is needed and {} is free.",
+                gigabytes(needed),
+                gigabytes(available)
+            ));
+        }
+
+        let moved = self.engine.load(&loaded.verified, self.threads, Placement::Cpu);
+        note_incident(&mut *self.engine, self.shared, false, None, None);
+        self.shared.lock().model_pid = self.engine.process_id();
+
+        moved
+            .map(|_| ())
+            .map_err(|error| format!("The graphics card could not run the model. {error}"))
+    }
+
+    /// An answer from the processor. A runtime that failed there is told, and the model is gone.
+    fn settle_on_processor(&mut self, result: Result<Generation, AiError>) -> Result<Generation, AiError> {
+        if note_incident(&mut *self.engine, self.shared, false, None, None) {
+            self.shared.forget_process();
+            self.give_up(Moved::Stopped);
+        }
+
+        result
+    }
+
+    /// There is no model any more: the job's cancel flag is raised, so a labelling job ends with the labels it
+    /// has instead of asking every other folder of a model that is not there.
+    fn give_up(&mut self, moved: Moved) {
+        *self.loaded = None;
+        self.moved = moved;
+        self.shared.job_cancel.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Engine for Fallback<'_> {
+    fn gpus(&mut self) -> Vec<GpuDevice> {
+        self.engine.gpus()
+    }
+
+    fn load(
+        &mut self,
+        model: &VerifiedModel,
+        threads: u32,
+        placement: Placement,
+    ) -> Result<LoadInfo, AiError> {
+        self.engine.load(model, threads, placement)
+    }
+
+    fn unload(&mut self) {
+        self.engine.unload();
+    }
+
+    fn judge(
+        &mut self,
+        prompt: &str,
+        grammar: &str,
+        max_tokens: u32,
+        cancel: &AtomicBool,
+    ) -> Result<Generation, AiError> {
+        let result = self.engine.judge(prompt, grammar, max_tokens, cancel);
+        let Some(card) = self.loaded.as_ref().and_then(|loaded| loaded.card.clone()) else {
+            return self.settle_on_processor(result);
+        };
+
+        // On a card, an error of the runtime is an incident, and so is whatever its process went through.
+        let failed = matches!(result, Err(AiError::Run(_)));
+        let text = result.as_ref().err().map(ToString::to_string).filter(|_| failed);
+        let told = note_incident(
+            &mut *self.engine,
+            self.shared,
+            true,
+            Some(&card.name),
+            text.as_deref(),
+        );
+        if !(failed || told) {
+            return result;
+        }
+
+        self.shared.forget_process();
+        match self.move_to_processor() {
+            Ok(()) => {
+                self.moved = Moved::ToProcessor;
+                let again = self.engine.judge(prompt, grammar, max_tokens, cancel);
+
+                self.settle_on_processor(again)
+            }
+            Err(problem) => {
+                self.give_up(Moved::Lost(problem.clone()));
+                Err(AiError::Run(problem))
+            }
+        }
     }
 }
 

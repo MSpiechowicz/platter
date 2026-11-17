@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { delayed } from '../../state/delayed.svelte';
   import type {
     AdvisorLabelsDto,
     AdvisorStatusDto,
@@ -33,6 +34,10 @@
   }
 
   let { scan, labels, loading, scanning = false, status, store, rules, onretry }: Props = $props();
+
+  // A spinner that appeared stays at least a second, so the list does not replace it after a flash.
+  const pendingShown = delayed(() => store.labelsPending);
+  const readingShown = delayed(() => !labels && loading);
 
   const items = $derived(needsInput(labels));
 
@@ -107,8 +112,10 @@
         <Button onclick={() => store.cancelLabelling()}>Cancel</Button>
       </div>
     </div>
-  {:else if store.labelsPending}
-    <Loading when={store.labelsPending} label="Reading the labels…" />
+  {:else if store.labelsPending || pendingShown.value}
+    <div class="wait">
+      <Loading when={store.labelsPending || pendingShown.value} label="Reading the labels…" />
+    </div>
   {:else if items.length > 0}
     <div class="items">
       {#each items as item (item.node)}
@@ -156,8 +163,10 @@
         <Button disabled={!readiness.ready} onclick={run}>Label again</Button>
       </div>
     {/if}
-  {:else if !labels && loading}
-    <Loading when={loading} label="Reading the labels…" />
+  {:else if (!labels && loading) || readingShown.value}
+    <div class="wait">
+      <Loading when={(!labels && loading) || readingShown.value} label="Reading the labels…" />
+    </div>
   {:else if !labels}
     <div class="empty-state" role="alert">
       <p class="msg">The labels could not be read.</p>
@@ -324,5 +333,12 @@
     border-top: 1px solid var(--line);
     font-size: 12px;
     color: var(--muted);
+  }
+
+  /* The spinner fills its positioned parent: this box, below the title, as tall as the card's usual content, so
+     it stays inside the card even while the card holds nothing else. */
+  .wait {
+    position: relative;
+    min-height: 120px;
   }
 </style>

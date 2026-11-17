@@ -106,7 +106,12 @@
   <PageHeader title="ADVISOR" sub="local model · runs offline in RAM">
     <!-- Exactly as wide as the right column below, so the header ends where the cards do. -->
     <div class="acts" class:alone={welcome}>
-      <Pill dot grow={!welcome} idle={status?.state !== 'loaded'}>{pillText(status?.state)}</Pill>
+      <Pill
+        dot
+        grow={!welcome}
+        idle={status?.state !== 'loaded'}
+        busy={status?.state === 'loading' || status?.state === 'downloading'}>{pillText(status?.state)}</Pill
+      >
       {#if action && !welcome}
         <Button
           variant={action.kind === 'download' ? 'primary' : 'default'}

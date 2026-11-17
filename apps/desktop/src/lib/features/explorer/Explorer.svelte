@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { delayed } from '../../state/delayed.svelte';
   import { untrack } from 'svelte';
   import { api } from '../../api';
   import { describeError } from '../../api/client';
@@ -51,20 +52,23 @@
       start: color !== undefined && start.focus === wanted ? { ...start, color } : start,
     };
   });
+
+  // A spinner that appeared stays at least a second, so the content does not replace it after a flash.
+  const shown = delayed(() => !opening.error && !opening.data && opening.loading);
 </script>
 
 <div class="explorer">
-  {#if opening.error}
+  {#if opening.error && !shown.value}
     <PageHeader title="EXPLORER" />
     <Notice kind="error">The Explorer could not open: {describeError(opening.error)}</Notice>
-  {:else if opening.data}
+  {:else if opening.data && !shown.value}
     {#key opening.data}
       <ExplorerPage scanId={opening.data.scanId} rootId={opening.data.rootId} start={opening.data.start} />
     {/key}
   {:else}
     <PageHeader title="EXPLORER" />
     <Card class="waiting" aria-busy="true">
-      <Loading when={opening.loading} label="Opening the Explorer…" />
+      <Loading when={opening.loading || shown.value} label="Opening the Explorer…" />
     </Card>
   {/if}
 </div>

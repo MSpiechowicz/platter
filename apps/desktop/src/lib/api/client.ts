@@ -11,6 +11,7 @@ import type {
   CleanupPlanDto,
   ExternalLink,
   FolderMatchDto,
+  GpuProblemChoice,
   LodNode,
   NodeDto,
   NodeId,
@@ -122,6 +123,19 @@ export interface Api {
    * the file. No log is not an error. `io`: a link or a folder is at the log's path, or it cannot be removed.
    */
   clearQuestionLog(): Promise<void>;
+  /**
+   * Answers the graphics card problem that `AdvisorStatusDto.gpuProblem` names, and answers with the status:
+   * `useCpu` keeps the card blocked (the web view also saves `useGpu` off and configures), `tryAgain` lets the next
+   * load try the card; a model already on the processor stays there. `invalid`: the id is not the pending problem
+   * (already answered, or gone), or the choice is not one of the two.
+   */
+  answerGpuProblem(id: number, choice: GpuProblemChoice): Promise<AdvisorStatusDto>;
+  /**
+   * Deletes the graphics card problem log (`advisor-gpu.log` in Platter's data folder), so `lastGpuProblem` goes.
+   * The web view never reads the file. No log is not an error. A problem that is still waiting for an answer stays
+   * for this session. `io`: a link or a folder is at the log's path, or it cannot be removed.
+   */
+  clearGpuLog(): Promise<void>;
   /**
    * Starts the opt-in model download, or resumes one that was cancelled; progress arrives through `watchAdvisor`.
    * `invalid` unless the model is `notDownloaded`. The backend asks the user in a native dialog first; when it is

@@ -4,6 +4,7 @@ import { formatSize } from '../../format';
 import { GIB, MODEL_BYTES, label, labelsOf, statusOf } from './fixtures';
 import {
   askReadiness,
+  deviceText,
   downloadLabel,
   downloadShare,
   labelReadiness,
@@ -20,6 +21,7 @@ import {
   speedText,
   splitParts,
   unloadAfterText,
+  videoText,
 } from './model';
 
 const size = (bytes: number): string => formatSize(bytes, 'GB');
@@ -73,15 +75,15 @@ describe('primaryAction', () => {
     });
     expect(primaryAction(statusOf('onDisk'), true, size)).toEqual({
       kind: 'load',
-      label: 'Load into RAM',
+      label: 'Load model',
       disabled: false,
       hint: undefined,
     });
     expect(primaryAction(statusOf('loaded'), true, size)).toEqual({
       kind: 'unload',
-      label: 'Unload from RAM',
+      label: 'Unload model',
     });
-    expect(primaryAction(statusOf('loading'), true, size)).toEqual({ kind: 'busy', label: 'Loading…' });
+    expect(primaryAction(statusOf('loading'), true, size)).toEqual({ kind: 'busy', label: 'Load model' });
   });
 
   it('has no action before the status is known or where there is no runtime', () => {
@@ -119,6 +121,33 @@ describe('the model card figures', () => {
     expect(ramText(statusOf('onDisk'), size)).toBeUndefined();
     expect(ramShare(statusOf('onDisk'))).toBe(0);
     expect(ramShare(statusOf('loaded', { ramBytes: 64 * GIB }))).toBe(1);
+  });
+
+  it('says where the loaded model runs, and a dash while it is not in memory', () => {
+    const card = { kind: 'gpu', name: 'AMD Radeon RX 7900 XTX (RADV NAVI31)' } as const;
+
+    expect(deviceText(statusOf('loaded', { device: card }))).toBe(
+      'GPU · AMD Radeon RX 7900 XTX (RADV NAVI31)',
+    );
+    expect(deviceText(statusOf('loaded', { device: card }), true)).toBe('GPU · AMD Radeon RX 7900 XTX');
+    expect(deviceText(statusOf('loaded', { device: { kind: 'gpu', name: '(Card)' } }), true)).toBe(
+      'GPU · (Card)',
+    );
+    expect(deviceText(statusOf('loaded', { device: { kind: 'gpu' } }))).toBe('GPU');
+    expect(deviceText(statusOf('loaded', { device: { kind: 'cpu' } }))).toBe('CPU');
+    expect(deviceText(statusOf('loaded'))).toBe('—');
+    expect(deviceText(statusOf('onDisk', { device: card }))).toBe('—');
+  });
+
+  it('reports video memory only while the model is loaded on a graphics card', () => {
+    const onCard = statusOf('loaded', { device: { kind: 'gpu', name: 'Card' }, videoBytes: 3_200_000_000 });
+
+    expect(videoText(onCard, size)).toBe('3.2 GB video memory in use');
+    expect(
+      videoText(statusOf('loaded', { device: { kind: 'cpu' }, videoBytes: 3_200_000_000 }), size),
+    ).toBeUndefined();
+    expect(videoText(statusOf('loaded', { device: { kind: 'gpu' } }), size)).toBeUndefined();
+    expect(videoText(statusOf('onDisk'), size)).toBeUndefined();
   });
 
   it('shows the size on disk once the file is there', () => {
@@ -200,7 +229,7 @@ describe('labelReadiness', () => {
     expect(reason({ status: statusOf('notDownloaded') })).toBe('Download the model first.');
     expect(reason({ status: statusOf('downloading') })).toBe('Download the model first.');
     expect(reason({ enabled: false })).toBe('The local model is switched off in Settings.');
-    expect(reason({ status: statusOf('loading') })).toBe('The model is loading.');
+    expect(reason({ status: statusOf('loading') })).toBeUndefined();
     expect(reason({ outdated: true })).toBe('Rescan first: a cleanup changed the disk.');
     expect(reason({ labels: labelsOf({ candidates: 0 }) })).toBe(
       'No folder is left for the model: the rules cover the rest.',
@@ -233,7 +262,7 @@ describe('askReadiness', () => {
     expect(reason({ status: undefined })).toBe('Checking the model…');
     expect(reason({ status: statusOf('notDownloaded') })).toBe('Download the model first.');
     expect(reason({ enabled: false })).toBe('The local model is switched off in Settings.');
-    expect(reason({ status: statusOf('loading') })).toBe('The model is loading.');
+    expect(reason({ status: statusOf('loading') })).toBeUndefined();
     expect(reason({ status: statusOf('loaded', { labelling: { scan: 1, done: 1, total: 4 } }) })).toMatch(
       /labelling/,
     );

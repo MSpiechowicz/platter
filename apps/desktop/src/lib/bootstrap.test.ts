@@ -65,6 +65,17 @@ describe('bootstrap: the advisor', () => {
     expect(state.calls).toEqual(['configure:false', 'mock:none', 'watch']);
   });
 
+  it('starts the mock model loaded, and on in the settings, for a graphics card problem that waits', async () => {
+    const { settings } = await boot({ gpuProblem: 'hang' });
+
+    expect(settings.advisorEnabled).toBe(true);
+    expect(state.calls).toEqual(['configure:true', 'mock:loaded', 'watch']);
+
+    state.calls = [];
+    await boot({ gpuProblem: 'hang', advisor: 'disk' });
+    expect(state.calls).toEqual(['configure:true', 'mock:disk', 'watch']);
+  });
+
   it('switches the model on for a mock state on disk without saving that, and sets the state after the options', async () => {
     const { settings } = await boot({ advisor: 'loaded' });
 

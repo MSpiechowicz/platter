@@ -25,6 +25,7 @@
 </script>
 
 <script lang="ts">
+  import { delayed } from '../../state/delayed.svelte';
   import { untrack } from 'svelte';
   import Checkbox from '../../components/ui/Checkbox.svelte';
   import Icon from '../../components/ui/Icon.svelte';
@@ -41,6 +42,9 @@
   import ReviewDialog from './ReviewDialog.svelte';
 
   let { suggestions, scanId, store, loading, error, onretry, onopen }: AdvisorListProps = $props();
+
+  // A spinner that appeared stays at least a second, so the content does not replace it after a flash.
+  const shown = delayed(() => !suggestions && !error && loading);
 
   const CHOICES: { value: SelectionChoice; label: string }[] = [
     { value: 'safe', label: 'Safe' },
@@ -83,7 +87,7 @@
   }
 </script>
 
-{#if suggestions}
+{#if suggestions && !shown.value}
   <div class="tools">
     <span>
       {store.cleanable.length > 0
@@ -217,10 +221,10 @@
     onconfirm={() => void store.confirmReview()}
     oncancel={() => store.dismissReview()}
   />
-{:else if error}
+{:else if error && !shown.value}
   <RetryNote {onretry} />
 {:else}
-  <Loading when={loading} label="Looking for things to clean…" />
+  <div class="wait"><Loading when={loading || shown.value} label="Looking for things to clean…" /></div>
 {/if}
 
 <style>
@@ -531,5 +535,11 @@
     padding: 9px 8px;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* The spinner fills its positioned parent: this box keeps it inside the card while the card holds nothing else. */
+  .wait {
+    position: relative;
+    min-height: 200px;
   }
 </style>

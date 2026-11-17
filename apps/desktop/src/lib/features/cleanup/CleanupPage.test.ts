@@ -102,8 +102,9 @@ describe('the Cleanup view', () => {
         bytes: 1,
         host: 'huggingface.co',
       },
-      options: { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true },
+      options: { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true },
       ramTotal: 1,
+      gpuSupported: false,
     };
 
     await waitFor(async () => expect(await tag()).toContain('LOCAL MODEL'));

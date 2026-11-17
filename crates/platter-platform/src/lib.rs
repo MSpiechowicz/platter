@@ -11,6 +11,7 @@
 //! - [`paths`]: the exact OS path of a scanned node, including names that are not valid UTF-8.
 //! - [`user_rules`]: reading and writing the user's rules file, which is never overwritten when broken.
 //! - [`root`]: resolving the folder a scan starts from, with the identity to pin it to.
+//! - [`runtime`] (Unix): starting the advisor's helper process and taking its descriptors in it.
 //! - `testing` (feature `testing`): helpers for other crates' tests that need OS-specific code.
 //!
 //! All `cfg(target_os)` code lives in this crate. Supporting another OS means adding a faster
@@ -28,6 +29,8 @@ pub mod memory;
 pub mod paths;
 mod pseudo;
 pub mod root;
+#[cfg(unix)]
+pub mod runtime;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod user_rules;
@@ -37,7 +40,14 @@ pub use app_dirs::{config_dir, create_private_dir, data_dir, free_space, lock_ex
 pub use cpu::physical_cores;
 pub use environment::current_environment;
 pub use generic::GenericDirSource;
-pub use memory::{available_memory_bytes, resident_bytes, suggested_memory_budget, total_memory_bytes};
+pub use memory::{
+    available_memory_bytes, resident_bytes, resident_bytes_of, suggested_memory_budget, total_memory_bytes,
+};
+#[cfg(unix)]
+pub use runtime::{
+    ADVISOR_RUNTIME_ARG, Exit, RuntimeChild, RuntimeMode, advisor_runtime_child, describe_exit,
+    runtime_environment, runtime_program, spawn_advisor_runtime,
+};
 pub use volumes::SystemVolumes;
 
 /// Raises the soft limit on open file descriptors to the hard limit, so deep scans on many threads do

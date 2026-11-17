@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { delayed } from '../../state/delayed.svelte';
   import type { SuggestionsDto } from '../../api/types';
   import Card from '../../components/ui/Card.svelte';
   import Loading from '../../components/ui/Loading.svelte';
@@ -27,10 +28,13 @@
 
   const segments = $derived(reclaimSegments(suggestions, scanned));
   const wins = $derived(biggestWins(suggestions));
+
+  // A spinner that appeared stays at least a second, so the content does not replace it after a flash.
+  const shown = delayed(() => !suggestions && !error && loading);
 </script>
 
 <Card title="Reclaimable" class="reclaimable">
-  {#if suggestions}
+  {#if suggestions && !shown.value}
     <div
       class="rec"
       class:stale
@@ -72,11 +76,11 @@
         {/each}
       {/if}
     </div>
-  {:else if error}
+  {:else if error && !shown.value}
     <RetryNote {onretry} />
   {:else}
     <div class="wait"></div>
-    <Loading when={loading} label="Looking for things to clean…" />
+    <Loading when={loading || shown.value} label="Looking for things to clean…" />
   {/if}
 </Card>
 

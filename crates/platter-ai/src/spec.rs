@@ -23,6 +23,12 @@ pub struct ModelSpec {
     /// A load is refused when less memory than this is available: the process's resident memory after the
     /// largest answer (measured, A5.0) plus 512 MiB.
     pub min_free_bytes: u64,
+    /// The same for a model loaded on a graphics card: the process's resident memory after the largest
+    /// answer there plus 512 MiB (G1).
+    pub gpu_min_free_bytes: u64,
+    /// A graphics card is used only with at least this much free video memory: what the model took there
+    /// after the largest answer plus a margin (G1).
+    pub gpu_video_bytes: u64,
     /// Tokens the context can hold at most: the prompt and the answer.
     pub context_tokens: u32,
     /// Time the labelling job gives this model for one folder before it skips it.
@@ -42,6 +48,12 @@ impl ModelSpec {
 }
 
 const MIB: u64 = 1024 * 1024;
+/// Resident memory with the model on a graphics card after the largest answer (3981 tokens), 806 MiB,
+/// plus 512 MiB, rounded up (G1, Radeon RX 7900 XTX, Vulkan).
+const GPU_MIN_FREE_MIB: u64 = 1344;
+/// Video memory the model took after the largest answer, 3303 MiB, plus 1 GiB for the driver and other
+/// programs, rounded up (G1).
+const GPU_VIDEO_NEED_MIB: u64 = 4352;
 
 /// Qwen3.5-4B, Q4_K_M quantisation, from a pinned revision.
 pub const MODEL: ModelSpec = ModelSpec {
@@ -54,6 +66,8 @@ pub const MODEL: ModelSpec = ModelSpec {
     licence: "Apache-2.0",
     // Resident memory after the largest answer (4096-token context), 4315 MiB, plus 512 MiB (A5.0).
     min_free_bytes: 4827 * MIB,
+    gpu_min_free_bytes: GPU_MIN_FREE_MIB * MIB,
+    gpu_video_bytes: GPU_VIDEO_NEED_MIB * MIB,
     context_tokens: 4096,
     // About 6.6 s a folder on 8 threads (A5.0); 15 s would leave little margin on a busy machine.
     folder_limit: Duration::from_secs(25),
@@ -89,6 +103,11 @@ mod tests {
             spec.min_free_bytes > spec.bytes + 512 * MIB,
             "room for the model, its context and 512 MiB"
         );
+        assert!(
+            spec.gpu_min_free_bytes < spec.min_free_bytes,
+            "the card holds the weights"
+        );
+        assert!(spec.gpu_video_bytes > spec.bytes, "the weights fit on the card");
         assert_eq!(spec.context_tokens, 4096);
         assert!(!spec.folder_limit.is_zero());
         assert!(spec.job_limit >= spec.folder_limit);

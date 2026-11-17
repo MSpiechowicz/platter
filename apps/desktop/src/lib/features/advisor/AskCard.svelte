@@ -42,6 +42,11 @@
    * within a moment shows no "Reading your question…" that flashes and goes. A question about a folder never waits.
    */
   const slow = delayed(() => waitingHere);
+  const lastId = $derived(exchanges.at(-1)?.id);
+  /** The wait of the newest free question is shown: once it appeared, for at least a second, even when the answer is in. */
+  function spinning(exchange: (typeof exchanges)[number]): boolean {
+    return exchange.kind === 'scan' && exchange.id === lastId && slow.value;
+  }
   const readiness = $derived(
     askReadiness({ hasScan: scan !== undefined, scanning, status: store.status, enabled: store.enabled }),
   );
@@ -218,11 +223,16 @@
       </div>
 
       <!-- A free question still on its way shows nothing until it has taken a moment: most come back at once. A question about a folder has no wait to show. -->
-      {#if exchange.answer || exchange.error || (exchange.kind === 'scan' && slow.value)}
+      {#if exchange.answer || exchange.error || spinning(exchange)}
         <div class="msg a">
           <div class="who"><Icon name="advisor" size={14} /> Advisor</div>
           <div class="bd">
-            {#if exchange.kind === 'scan' && exchange.answer}
+            {#if spinning(exchange)}
+              <span class="wait muted" role="status">
+                <i class="ring" aria-hidden="true"></i>
+                Reading your question…
+              </span>
+            {:else if exchange.kind === 'scan' && exchange.answer}
               <ScanAnswer
                 answer={exchange.answer}
                 onopen={(node) => ui.openInExplorer(node)}

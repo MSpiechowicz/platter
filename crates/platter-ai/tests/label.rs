@@ -21,7 +21,9 @@ fn loaded() -> (FakeEngine, FakeControl) {
     std::fs::write(&path, content).unwrap();
 
     let (mut engine, control) = FakeEngine::new();
-    engine.load(&verify(&spec, &path).unwrap(), 2).unwrap();
+    engine
+        .load(&verify(&spec, &path).unwrap(), 2, platter_ai::Placement::Cpu)
+        .unwrap();
     (engine, control)
 }
 

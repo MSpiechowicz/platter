@@ -3,6 +3,7 @@ import {
   baseName,
   formatCount,
   formatDate,
+  formatDateTime,
   formatDuration,
   formatPercent,
   formatShare,
@@ -75,6 +76,19 @@ describe('formatDate', () => {
     }
 
     expect(formatDate(8.64e12)).not.toBe('—');
+  });
+});
+
+describe('formatDateTime', () => {
+  it('formats unix seconds as a day, month, year and the local time', () => {
+    expect(formatDateTime(new Date(2025, 2, 12, 14, 5, 30).getTime() / 1000)).toBe('12 Mar 2025, 14:05');
+    expect(formatDateTime(new Date(2025, 2, 12, 0, 7).getTime() / 1000)).toBe('12 Mar 2025, 00:07');
+  });
+
+  it('shows a dash for a time that is no date instead of throwing', () => {
+    for (const bad of [Number.NaN, Infinity, 0, -1, 8.64e12 + 1, 1e18]) {
+      expect(formatDateTime(bad)).toBe('—');
+    }
   });
 });
 

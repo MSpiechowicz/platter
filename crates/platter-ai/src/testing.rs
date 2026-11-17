@@ -1,5 +1,5 @@
 //! Fakes for tests (feature `testing`): a web server and a model that need neither the network nor a
-//! real model file.
+//! real model file, and (on Unix) a way to start the model's helper process as a thread.
 
 use std::collections::VecDeque;
 use std::io::{self, Read};
@@ -9,10 +9,15 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
-use crate::engine::{AiError, Engine, Generation, LoadInfo};
+use crate::engine::{AiError, Engine, Generation, GpuDevice, LoadInfo, Placement, ProgressHook};
 use crate::fetch::{Fetch, FetchResponse};
 use crate::spec::ModelSpec;
 use crate::verify::{VerifiedModel, hex};
+
+#[cfg(unix)]
+mod spawner;
+#[cfg(unix)]
+pub use spawner::{Fault, Phase, SpawnerControl, ThreadSpawner};
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -30,6 +35,9 @@ pub fn tiny_spec(content: &[u8]) -> ModelSpec {
         url: "https://models.example/tiny.gguf",
         licence: "test",
         min_free_bytes: content.len() as u64 + 512 * 1024 * 1024,
+        gpu_min_free_bytes: content.len() as u64 + 256 * 1024 * 1024,
+        // 4 GiB of free video memory.
+        gpu_video_bytes: 4 << 30,
         context_tokens: 4096,
         folder_limit: Duration::from_secs(15),
         job_limit: Duration::from_secs(5 * 60),
@@ -295,6 +303,18 @@ impl Read for FakeBody {
     }
 }
 
+/// A graphics card for a [`FakeEngine`]: `free_mib` of free video memory, out of twice that.
+pub fn card(index: usize, description: &str, free_mib: u64, integrated: bool) -> GpuDevice {
+    GpuDevice {
+        index,
+        name: format!("Vulkan{index}"),
+        description: description.to_owned(),
+        total_bytes: (free_mib * 2) << 20,
+        free_bytes: free_mib << 20,
+        integrated,
+    }
+}
+
 /// What a [`FakeEngine`] was asked to do, and what it should do next.
 #[derive(Default)]
 struct EngineLog {
@@ -306,6 +326,18 @@ struct EngineLog {
     reply: String,
     script: VecDeque<Step>,
     prompts: Vec<String>,
+    /// The graphics cards the engine reports.
+    gpus: Vec<GpuDevice>,
+    /// Loads on a graphics card fail with this.
+    fail_gpu_load: Option<String>,
+    /// Generations on a graphics card fail with this.
+    fail_gpu_run: Option<String>,
+    /// The next generation, anywhere, cannot take its text.
+    fail_input: Option<String>,
+    /// Where the model is loaded.
+    on: Placement,
+    /// Free video memory the loaded model takes from its card.
+    video_use: u64,
 }
 
 /// One scripted answer of a [`FakeEngine`].
@@ -319,6 +351,7 @@ enum Step {
 /// A [`Engine`] that loads nothing. Its [`FakeControl`] steers it and reports what happened.
 pub struct FakeEngine {
     log: Arc<Mutex<EngineLog>>,
+    progress: Option<ProgressHook>,
 }
 
 /// The remote control of a [`FakeEngine`] that was given to a worker.
@@ -333,14 +366,37 @@ impl FakeEngine {
         (
             Self {
                 log: Arc::clone(&log),
+                progress: None,
             },
             FakeControl { log },
         )
     }
+
+    /// An engine on the log `control` reads, as a new process would have it: nothing is loaded in it. Used
+    /// by a [`ThreadSpawner`], whose helpers share one control.
+    pub fn attached_to(control: &FakeControl) -> Self {
+        {
+            let mut log = locked(&control.log);
+            log.loaded = false;
+            log.on = Placement::Cpu;
+        }
+
+        Self {
+            log: Arc::clone(&control.log),
+            progress: None,
+        }
+    }
+
+    fn report_progress(&self) {
+        if let Some(progress) = &self.progress {
+            progress();
+        }
+    }
 }
 
 impl FakeControl {
-    /// What the engine was asked, in order: `load <threads>`, `unload`, `judge`.
+    /// What the engine was asked, in order: `load <threads>` (on the processor), `load <threads> gpu
+    /// <index>`, `unload`, `judge`.
     pub fn calls(&self) -> Vec<String> {
         locked(&self.log).calls.clone()
     }
@@ -352,6 +408,36 @@ impl FakeControl {
     /// How many loads began (a load held at its gate has begun).
     pub fn loads_started(&self) -> usize {
         locked(&self.log).loads_started
+    }
+
+    /// The graphics cards the engine reports.
+    pub fn set_gpus(&self, gpus: Vec<GpuDevice>) {
+        locked(&self.log).gpus = gpus;
+    }
+
+    /// Every load on a graphics card fails with `message`.
+    pub fn fail_gpu_loads(&self, message: &str) {
+        locked(&self.log).fail_gpu_load = Some(message.to_owned());
+    }
+
+    /// Every generation on a graphics card fails with `message`.
+    pub fn fail_gpu_runs(&self, message: &str) {
+        locked(&self.log).fail_gpu_run = Some(message.to_owned());
+    }
+
+    /// The next generation fails as text the model cannot take ([`AiError::Input`]).
+    pub fn fail_next_input(&self, message: &str) {
+        locked(&self.log).fail_input = Some(message.to_owned());
+    }
+
+    /// While loaded on a card, it takes this much of its free video memory.
+    pub fn use_video_memory(&self, bytes: u64) {
+        locked(&self.log).video_use = bytes;
+    }
+
+    /// Where the model is loaded.
+    pub fn placement(&self) -> Placement {
+        locked(&self.log).on
     }
 
     /// The next load fails with `message`.
@@ -399,11 +485,33 @@ impl FakeControl {
 }
 
 impl Engine for FakeEngine {
-    fn load(&mut self, _model: &VerifiedModel, threads: u32) -> Result<LoadInfo, AiError> {
+    fn gpus(&mut self) -> Vec<GpuDevice> {
+        let log = locked(&self.log);
+        let mut gpus = log.gpus.clone();
+        if log.loaded
+            && let Placement::Gpu { index } = log.on
+            && let Some(card) = gpus.iter_mut().find(|card| card.index == index)
+        {
+            card.free_bytes = card.free_bytes.saturating_sub(log.video_use);
+        }
+        gpus
+    }
+
+    fn load(
+        &mut self,
+        _model: &VerifiedModel,
+        threads: u32,
+        placement: Placement,
+    ) -> Result<LoadInfo, AiError> {
         let gate = {
             let mut log = locked(&self.log);
             log.loads_started += 1;
-            log.calls.push(format!("load {threads}"));
+            log.loaded = false;
+            log.on = Placement::Cpu;
+            log.calls.push(match placement {
+                Placement::Cpu => format!("load {threads}"),
+                Placement::Gpu { index } => format!("load {threads} gpu {index}"),
+            });
             log.hold_load.clone()
         };
         if let Some(gate) = gate {
@@ -414,7 +522,13 @@ impl Engine for FakeEngine {
         if let Some(message) = log.fail_load.take() {
             return Err(AiError::Load(message));
         }
+        if matches!(placement, Placement::Gpu { .. })
+            && let Some(message) = log.fail_gpu_load.clone()
+        {
+            return Err(AiError::Load(message));
+        }
         log.loaded = true;
+        log.on = placement;
         Ok(LoadInfo { millis: 1, threads })
     }
 
@@ -422,6 +536,11 @@ impl Engine for FakeEngine {
         let mut log = locked(&self.log);
         log.calls.push("unload".to_owned());
         log.loaded = false;
+        log.on = Placement::Cpu;
+    }
+
+    fn on_progress(&mut self, hook: ProgressHook) {
+        self.progress = Some(hook);
     }
 
     fn judge(
@@ -431,6 +550,7 @@ impl Engine for FakeEngine {
         _max_tokens: u32,
         cancel: &AtomicBool,
     ) -> Result<Generation, AiError> {
+        self.report_progress();
         let step = {
             let mut log = locked(&self.log);
             log.calls.push("judge".to_owned());
@@ -441,6 +561,14 @@ impl Engine for FakeEngine {
             if cancel.load(Ordering::Relaxed) {
                 return Err(AiError::Cancelled);
             }
+            if let Some(message) = log.fail_input.take() {
+                return Err(AiError::Input(message));
+            }
+            if matches!(log.on, Placement::Gpu { .. })
+                && let Some(message) = log.fail_gpu_run.clone()
+            {
+                return Err(AiError::Run(message));
+            }
 
             log.prompts.push(prompt.to_owned());
             log.script.pop_front().unwrap_or_else(|| Step::Reply {
@@ -449,15 +577,19 @@ impl Engine for FakeEngine {
             })
         };
 
-        // Waits without holding the log, so the test can look at the engine meanwhile.
+        // Waits without holding the log, so the test can look at the engine meanwhile. A reply that takes a
+        // while shows progress as it goes, as the real model does; a stall shows none.
         let started = Instant::now();
-        let takes = match &step {
-            Step::Reply { takes, .. } => *takes,
-            Step::Stall => Duration::MAX,
+        let (takes, working) = match &step {
+            Step::Reply { takes, .. } => (*takes, true),
+            Step::Stall => (Duration::MAX, false),
         };
         while started.elapsed() < takes {
             if cancel.load(Ordering::Relaxed) {
                 return Err(AiError::Cancelled);
+            }
+            if working {
+                self.report_progress();
             }
             std::thread::sleep(Duration::from_millis(1));
         }

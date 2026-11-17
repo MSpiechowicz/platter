@@ -8,15 +8,17 @@
     idle?: boolean;
     /** Fill the free width of a flex row. */
     grow?: boolean;
+    /** Something is under way: the dot pulses. */
+    busy?: boolean;
     children: Snippet;
   }
 
-  let { dot = false, idle = false, grow = false, children }: Props = $props();
+  let { dot = false, idle = false, grow = false, busy = false, children }: Props = $props();
 </script>
 
 <div class="pill" class:grow>
-  {#if dot}<span class="dot" class:idle></span>{/if}
-  {@render children()}
+  {#if dot}<span class="dot" class:idle class:busy></span>{/if}
+  <span class="t">{@render children()}</span>
 </div>
 
 <style>
@@ -32,8 +34,16 @@
     white-space: nowrap;
   }
 
+  /* A pill that fills a row centres what it says, so the text does not sit at one end of a wide box. */
+  /* The text's box is trimmed to its capitals and baseline, so the letters (not the font's ascender space) are
+     centred in the pill and on the dot. */
+  .t {
+    text-box: trim-both cap alphabetic;
+  }
+
   .grow {
     flex: 1;
+    justify-content: center;
   }
 
   .pill :global(b) {
@@ -46,11 +56,37 @@
     height: 7px;
     border-radius: 50%;
     background: var(--accent);
-    transform: translateY(-1px);
     flex: none;
   }
 
   .dot.idle {
     background: var(--dim);
+  }
+
+  .dot.busy {
+    background: var(--accent);
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent);
+      opacity: 1;
+    }
+    50% {
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent);
+      opacity: 0.55;
+    }
+  }
+
+  :global(:root[data-motion='reduce']) .dot.busy {
+    animation: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dot.busy {
+      animation: none;
+    }
   }
 </style>

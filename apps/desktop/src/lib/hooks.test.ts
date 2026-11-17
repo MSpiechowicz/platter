@@ -18,6 +18,9 @@ const ALL_OFF = {
   warn: false,
   cleanup: false,
   advisor: null,
+  gpu: null,
+  gpuProblem: null,
+  gpuLast: false,
   labels: false,
   ask: null,
   chat: null,
@@ -126,6 +129,25 @@ describe('parseHooks', () => {
 
     expect(parseHooks('?advisor=huge', false).advisor).toBeNull();
     expect(parseHooks('?view=advisor&advisor=loaded&labels', true)).toEqual(ALL_OFF);
+  });
+
+  it('reads the graphics card of the mock model: a failing card or none, outside Tauri only', () => {
+    expect(parseHooks('?view=advisor&advisor=loaded&gpu=fallback', false)).toMatchObject({ gpu: 'fallback' });
+    expect(parseHooks('?view=settings&gpu=none', false).gpu).toBe('none');
+    expect(parseHooks('?gpu=fast', false).gpu).toBeNull();
+    expect(parseHooks('?gpu=fallback', true)).toEqual(ALL_OFF);
+  });
+
+  it('reads a graphics card problem that waits at start, and a last one in the log, outside Tauri only', () => {
+    for (const what of ['crash', 'hang', 'error']) {
+      expect(parseHooks(`?view=advisor&gpuProblem=${what}`, false).gpuProblem).toBe(what);
+    }
+
+    expect(parseHooks('?gpuProblem=melted', false).gpuProblem).toBeNull();
+    expect(parseHooks('?gpuProblem', false).gpuProblem).toBeNull();
+    expect(parseHooks('?view=settings&gpuLast=1', false)).toMatchObject({ gpuLast: true, gpuProblem: null });
+    expect(parseHooks('?view=settings', false).gpuLast).toBe(false);
+    expect(parseHooks('?gpuProblem=crash&gpuLast=1', true)).toEqual(ALL_OFF);
   });
 
   it('reads the question to ask on the Advisor view, outside Tauri only', () => {

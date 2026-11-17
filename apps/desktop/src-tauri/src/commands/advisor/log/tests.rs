@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde_json::{Value, json};
 
 use super::*;
@@ -153,7 +155,7 @@ fn trimming_starts_at_a_line_and_closes_a_line_that_was_cut_short() {
     }
     old.extend(b"{\"cut\":");
 
-    let out = trimmed(&old, &newest);
+    let out = jsonl::trimmed(&old, &newest, MAX_BYTES);
 
     assert!(out.len() <= MAX_BYTES);
     assert!(out.ends_with(&newest));

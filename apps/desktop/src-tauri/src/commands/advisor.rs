@@ -5,6 +5,11 @@
 //!
 //! Every free question is also appended to a local log (see [`log`]), unless the user switched that off.
 //!
+//! The model runs in a helper process of its own (the app's binary started again, see `platter_ai::process`),
+//! so that a graphics driver that crashes or hangs cannot take the app down. What goes wrong on the card is
+//! written to a second local log (see [`gpu_log`]) and reaches the web view as `gpuProblem` in the status,
+//! which asks the user what to do (`answer_gpu_problem`); `clear_gpu_log` deletes the log.
+//!
 //! The download is confirmed by the backend itself, in a native dialog, before every start: the consent
 //! is not left to the web view (see [`download_model`]).
 //!
@@ -26,10 +31,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use platter_ai::{
-    AdvisorHandle, AdvisorWorker, Engine, Fetch, FolderFacts, LabelRun, MODEL, ModelSpec, ModelState,
+    AdvisorHandle, AdvisorWorker, Device, Engine, Fetch, FolderFacts, LabelRun, MODEL, ModelSpec, ModelState,
     Options, RuleContext, ScanQuestion, StateTicket, Status, Stopped, UnloadAfter, WorkerConfig, WorkerError,
     facts,
 };
+#[cfg(all(feature = "advisor", unix))]
+use platter_ai::{ProcessEngine, RealSpawner};
 use platter_cleanup::{CandidateLimits, Protected, label_candidates, with_real_keeps};
 use platter_core::dto::{ApiErrorCode, ScanId, SuggestionDto, SuggestionSource, SuggestionsDto, Verdict};
 use platter_core::find_folders as search_folders;
@@ -43,6 +50,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri::ipc::Channel;
 
+use self::gpu_log::{Choice, GpuLog, Problem, What};
 use self::question::SizeUnitsDto;
 use crate::commands::cleanup::Question;
 use crate::commands::rules::UserVerdictDto;
@@ -92,11 +100,53 @@ pub struct AdvisorOptionsDto {
     /// message leaves it out or says `false`. Never sent anywhere.
     #[serde(default = "log_questions_by_default")]
     pub log_questions: bool,
+    /// "Use the graphics card": on unless the message leaves it out or says `false`.
+    #[serde(default = "use_gpu_by_default")]
+    pub use_gpu: bool,
 }
 
 fn log_questions_by_default() -> bool {
     true
 }
+
+fn use_gpu_by_default() -> bool {
+    true
+}
+
+/// Where the loaded model runs. Sent only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeviceKindDto {
+    Gpu,
+    Cpu,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceDto {
+    pub kind: DeviceKindDto,
+    /// The driver's description of the graphics card; only for `gpu`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl From<&Device> for DeviceDto {
+    fn from(device: &Device) -> Self {
+        match device {
+            Device::Cpu => Self {
+                kind: DeviceKindDto::Cpu,
+                name: None,
+            },
+            Device::Gpu { name } => Self {
+                kind: DeviceKindDto::Gpu,
+                name: Some(name.clone()),
+            },
+        }
+    }
+}
+
+/// Whether this build can run the model on a graphics card.
+const GPU_SUPPORTED: bool = cfg!(feature = "gpu-vulkan");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -130,11 +180,83 @@ pub struct AdvisorStatusDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ram_bytes: Option<u64>,
     pub ram_total: u64,
+    /// This build can run the model on a graphics card.
+    pub gpu_supported: bool,
+    /// Where the model runs, while it is loaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceDto>,
+    /// Video memory the model takes, while it is loaded on a graphics card.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_per_second: Option<f64>,
     /// Set while folders are being labelled: the scan they belong to and how far the job has come.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labelling: Option<LabellingDto>,
+    /// A problem on the graphics card that waits for the user's answer (`answer_gpu_problem`): the model ran
+    /// on the card and it crashed, hung or reported an error, and the job finished on the processor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_problem: Option<GpuProblemDto>,
+    /// The last problem on the graphics card in the log, answered or not (until the log is cleared).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_gpu_problem: Option<GpuProblemDto>,
+}
+
+/// What went wrong on the graphics card. Sent only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GpuProblemWhatDto {
+    Crash,
+    Hang,
+    Error,
+}
+
+/// A problem on the graphics card. Sent only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuProblemDto {
+    /// Names the problem when it is answered (Unix milliseconds, unique).
+    pub id: u64,
+    /// When it happened (Unix milliseconds).
+    pub at: u64,
+    /// The driver's description of the card, when one was chosen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub card: Option<String>,
+    pub what: GpuProblemWhatDto,
+}
+
+impl From<&Problem> for GpuProblemDto {
+    fn from(problem: &Problem) -> Self {
+        Self {
+            id: problem.id,
+            at: problem.at,
+            card: problem.card.clone(),
+            what: match problem.what {
+                What::Crash => GpuProblemWhatDto::Crash,
+                What::Hang => GpuProblemWhatDto::Hang,
+                What::Error => GpuProblemWhatDto::Error,
+            },
+        }
+    }
+}
+
+/// What the user chose to do about a graphics card problem. The only other advisor type the web view sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GpuChoiceDto {
+    /// Use the processor from now on (the web view also saves the switch and configures the advisor).
+    UseCpu,
+    /// Try the graphics card again at the next load.
+    TryAgain,
+}
+
+impl From<GpuChoiceDto> for Choice {
+    fn from(choice: GpuChoiceDto) -> Self {
+        match choice {
+            GpuChoiceDto::UseCpu => Self::UseCpu,
+            GpuChoiceDto::TryAgain => Self::TryAgain,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -183,6 +305,7 @@ impl From<AdvisorOptionsDto> for Options {
         Self {
             enabled: options.enabled,
             unload_after: options.unload_after.into(),
+            use_gpu: options.use_gpu,
         }
     }
 }
@@ -194,6 +317,7 @@ impl AdvisorOptionsDto {
             enabled: options.enabled,
             unload_after: options.unload_after.into(),
             log_questions,
+            use_gpu: options.use_gpu,
         }
     }
 }
@@ -239,6 +363,8 @@ struct Claim {
 /// worker's callback.
 struct View {
     model: ModelSpec,
+    /// What went wrong on the graphics card, and the user's answer to it.
+    gpu_log: Arc<GpuLog>,
     claim: Mutex<Option<Claim>>,
     /// The question log's switch (`AdvisorOptionsDto::log_questions`). Kept here, with the status, so
     /// every status the web view gets shows it.
@@ -246,9 +372,10 @@ struct View {
 }
 
 impl View {
-    fn new(model: ModelSpec) -> Arc<Self> {
+    fn new(model: ModelSpec, gpu_log: Arc<GpuLog>) -> Arc<Self> {
         Arc::new(Self {
             model,
+            gpu_log,
             claim: Mutex::new(None),
             log_questions: AtomicBool::new(true),
         })
@@ -280,8 +407,13 @@ impl View {
             problem: status.problem.clone(),
             ram_bytes: status.ram_bytes,
             ram_total: status.ram_total,
+            gpu_supported: GPU_SUPPORTED,
+            device: status.device.as_ref().map(DeviceDto::from),
+            video_bytes: status.video_bytes,
             tokens_per_second: status.tokens_per_second,
             labelling,
+            gpu_problem: self.gpu_log.pending().as_ref().map(GpuProblemDto::from),
+            last_gpu_problem: self.gpu_log.last().as_ref().map(GpuProblemDto::from),
         }
     }
 }
@@ -406,17 +538,23 @@ impl AdvisorService {
     /// The real advisor: the model in the app's data folder, the llama.cpp runtime, and the network
     /// client for the one download. `unavailable` when the build has no runtime, the OS cannot run it
     /// safely, or there is no home folder to keep the model in.
+    ///
+    /// The model runs in a helper process: this very binary started again with `--advisor-runtime` (see
+    /// [`crate::advisor_runtime`]). The graphics card problem log is read here: a problem the user has not
+    /// answered blocks the card until they do.
     pub fn production() -> Self {
-        #[cfg(feature = "advisor")]
+        #[cfg(all(feature = "advisor", unix))]
         {
             if platter_platform::model_runtime_supported()
                 && let Some(data) = platter_platform::data_dir()
+                && let Ok(spawner) = RealSpawner::current_exe()
             {
                 let config = WorkerConfig::new(MODEL, data.join("models"));
-                let engine = Box::new(platter_ai::llama::LlamaEngine::new());
+                let engine = Box::new(ProcessEngine::new(spawner));
                 let fetch = Arc::new(platter_ai::UreqFetch::new());
 
-                if let Ok(service) = Self::spawn(config, engine, fetch) {
+                if let Ok(service) = Self::spawn_logged(config, engine, fetch, Arc::new(GpuLog::production()))
+                {
                     return service;
                 }
             }
@@ -425,10 +563,23 @@ impl AdvisorService {
         Self::unavailable()
     }
 
+    /// What most tests of the app use: the real worker on the real models folder, with no model runtime (no
+    /// helper process is ever started) and no graphics card problem log (the user's own is never read).
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        let config = match platter_platform::data_dir() {
+            Some(data) => WorkerConfig::new(MODEL, data.join("models")),
+            None => return Self::unavailable(),
+        };
+        let fetch = Arc::new(platter_ai::UreqFetch::new());
+
+        Self::spawn(config, Box::new(NoRuntime), fetch).unwrap_or_else(|_| Self::unavailable())
+    }
+
     /// An advisor that is not there.
     pub fn unavailable() -> Self {
         Self {
-            view: View::new(MODEL),
+            view: View::new(MODEL, Arc::new(GpuLog::new(None))),
             worker: None,
             watcher: Arc::default(),
             options: Mutex::new(Options::default()),
@@ -444,12 +595,26 @@ impl AdvisorService {
         self
     }
 
-    /// An advisor on the given parts (tests give it fakes). Without the `advisor` feature only tests
-    /// build one.
-    #[cfg_attr(not(feature = "advisor"), allow(dead_code))]
+    /// An advisor on the given parts (tests give it fakes), with no graphics card problem log.
+    #[cfg(test)]
     pub fn spawn(config: WorkerConfig, engine: Box<dyn Engine>, fetch: Arc<dyn Fetch>) -> io::Result<Self> {
-        let view = View::new(config.spec);
+        Self::spawn_logged(config, engine, fetch, Arc::new(GpuLog::new(None)))
+    }
+
+    /// [`spawn`](Self::spawn) with the log the graphics card problems are written to. What the log says is
+    /// waiting for an answer starts with the card blocked, and every incident the worker tells is written to it.
+    pub fn spawn_logged(
+        mut config: WorkerConfig,
+        engine: Box<dyn Engine>,
+        fetch: Arc<dyn Fetch>,
+        gpu_log: Arc<GpuLog>,
+    ) -> io::Result<Self> {
+        let view = View::new(config.spec, Arc::clone(&gpu_log));
         let watcher: Arc<Mutex<Option<Sink>>> = Arc::default();
+
+        config.gpu_blocked = gpu_log.pending().is_some();
+        let recorder = Arc::clone(&gpu_log);
+        config.on_gpu_incident = Some(Arc::new(move |incident| recorder.record(incident)));
 
         let pushed = (Arc::clone(&watcher), Arc::clone(&view));
         let on_status = Arc::new(move |status: &Status| {
@@ -518,7 +683,38 @@ impl AdvisorService {
             return Ok(self.unavailable_status());
         };
 
+        // The settings already say to use the processor: a problem on the card that waits for an answer
+        // has its answer, and the user is not asked (at start the web view sends the saved options before it
+        // shows anything).
+        if !options.use_gpu {
+            self.view.gpu_log.answer_for_cpu_only();
+        }
+
         Ok(self.view.dto(&worker.configure(options)?))
+    }
+
+    /// Writes the user's answer to the graphics card problem `id` (`invalid` when that is not the problem that
+    /// waits, so an answer is never applied twice or to a newer problem). `tryAgain` lets the next load try the
+    /// card; `useCpu` changes nothing here (the web view saves the switch and configures the advisor).
+    pub fn answer_gpu_problem(&self, id: u64, choice: GpuChoiceDto) -> CommandResult<AdvisorStatusDto> {
+        let worker = self.worker()?;
+
+        self.view.gpu_log.answer(id, choice.into())?;
+        if choice == GpuChoiceDto::TryAgain {
+            worker.retry_gpu();
+        }
+        self.announce();
+
+        Ok(self.view.dto(&worker.status()))
+    }
+
+    /// Deletes the graphics card problem log and forgets the last problem. A problem that waits for an
+    /// answer still waits.
+    pub fn clear_gpu_log(&self) -> CommandResult<()> {
+        self.view.gpu_log.clear()?;
+        self.announce();
+
+        Ok(())
     }
 
     /// What the user is asked before the download starts, and the ticket of the state it was asked in
@@ -803,8 +999,13 @@ impl AdvisorService {
             problem: None,
             ram_bytes: None,
             ram_total: platter_platform::total_memory_bytes().unwrap_or(0),
+            gpu_supported: false,
+            device: None,
+            video_bytes: None,
             tokens_per_second: None,
             labelling: None,
+            gpu_problem: None,
+            last_gpu_problem: None,
         }
     }
 }
@@ -1619,9 +1820,65 @@ pub async fn clear_question_log_for(state: &AppState) -> CommandResult<()> {
     tauri::async_runtime::spawn_blocking(move || log.clear()).await?
 }
 
+/// What the user chose to do about the graphics card problem `id` of the status (`gpuProblem`): `useCpu` or
+/// `tryAgain`. `invalid` when that problem is not the one that waits for an answer. Returns the new status.
+#[tauri::command]
+pub async fn answer_gpu_problem(
+    state: State<'_, AppState>,
+    id: u64,
+    choice: GpuChoiceDto,
+) -> CommandResult<AdvisorStatusDto> {
+    let advisor = Arc::clone(&state.advisor);
+
+    tauri::async_runtime::spawn_blocking(move || advisor.answer_gpu_problem(id, choice)).await?
+}
+
+/// Deletes the graphics card problem log (`advisor-gpu.log`) and with it `lastGpuProblem`. Succeeds when there
+/// is none. A link or a folder at its name is left alone (`io`). A problem that waits for an answer still does.
+#[tauri::command]
+pub async fn clear_gpu_log(state: State<'_, AppState>) -> CommandResult<()> {
+    let advisor = Arc::clone(&state.advisor);
+
+    tauri::async_runtime::spawn_blocking(move || advisor.clear_gpu_log()).await?
+}
+
+/// The advisor of the tests of the app that need a worker but no model: it can load nothing.
+#[cfg(test)]
+struct NoRuntime;
+
+#[cfg(test)]
+impl Engine for NoRuntime {
+    fn load(
+        &mut self,
+        _model: &platter_ai::VerifiedModel,
+        _threads: u32,
+        _placement: platter_ai::Placement,
+    ) -> Result<platter_ai::LoadInfo, platter_ai::AiError> {
+        Err(platter_ai::AiError::Load(
+            "There is no model runtime in this test.".to_owned(),
+        ))
+    }
+
+    fn unload(&mut self) {}
+
+    fn judge(
+        &mut self,
+        _prompt: &str,
+        _grammar: &str,
+        _max_tokens: u32,
+        _cancel: &AtomicBool,
+    ) -> Result<platter_ai::Generation, platter_ai::AiError> {
+        Err(platter_ai::AiError::NotLoaded)
+    }
+}
+
 mod folder;
+pub mod gpu_log;
+mod jsonl;
 pub mod log;
 pub mod question;
 
+#[cfg(test)]
+mod gpu_tests;
 #[cfg(test)]
 mod tests;

@@ -77,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let threads = platter_ai::default_threads();
     let before = platter_platform::resident_bytes();
     let mut engine = LlamaEngine::new();
-    let info = engine.load(&verified, threads)?;
+    let info = engine.load(&verified, threads, platter_ai::Placement::Cpu)?;
     println!(
         "loaded in {} ms with {} threads; resident {} -> {}",
         info.millis,

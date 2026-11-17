@@ -35,6 +35,27 @@ describe('SettingsStore', () => {
     expect(new SettingsStore(new MemoryStorage()).advisorLogQuestions).toBe(true);
   });
 
+  it('has the graphics card on by default, also for a save from before the option existed', () => {
+    expect(new SettingsStore(new MemoryStorage()).advisorUseGpu).toBe(true);
+
+    const storage = new MemoryStorage();
+
+    storage.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({ advisorEnabled: true, advisorUnloadAfter: 'oneMinute', advisorLogQuestions: false }),
+    );
+
+    const settings = new SettingsStore(storage);
+
+    expect(settings.advisorUseGpu).toBe(true);
+    expect(settings.advisorEnabled).toBe(true);
+    expect(settings.advisorLogQuestions).toBe(false);
+
+    settings.set('reduceMotion', true);
+
+    expect(JSON.parse(storage.getItem(SETTINGS_KEY) ?? '{}')).toMatchObject({ advisorUseGpu: true });
+  });
+
   it('saves a change and restores it in a new store', () => {
     const storage = new MemoryStorage();
     const first = new SettingsStore(storage);
@@ -47,6 +68,7 @@ describe('SettingsStore', () => {
     first.set('advisorEnabled', true);
     first.set('advisorUnloadAfter', 'windowClose');
     first.set('advisorLogQuestions', false);
+    first.set('advisorUseGpu', false);
 
     const second = new SettingsStore(storage);
 
@@ -58,6 +80,7 @@ describe('SettingsStore', () => {
     expect(second.advisorEnabled).toBe(true);
     expect(second.advisorUnloadAfter).toBe('windowClose');
     expect(second.advisorLogQuestions).toBe(false);
+    expect(second.advisorUseGpu).toBe(false);
   });
 
   it('ignores values of the wrong type and keeps the defaults for them', () => {
@@ -73,6 +96,7 @@ describe('SettingsStore', () => {
         advisorEnabled: 'yes',
         advisorUnloadAfter: 'never',
         advisorLogQuestions: 'no',
+        advisorUseGpu: 'no',
         extra: 1,
       }),
     );
@@ -86,6 +110,7 @@ describe('SettingsStore', () => {
     expect(settings.advisorEnabled).toBe(false);
     expect(settings.advisorUnloadAfter).toBe('fiveMinutes');
     expect(settings.advisorLogQuestions).toBe(true);
+    expect(settings.advisorUseGpu).toBe(true);
   });
 
   it('ignores the model choice an older version saved, and does not write it back', () => {

@@ -131,13 +131,15 @@ describe('an answer to a command and a status pushed meanwhile', () => {
 
   it('switches the model on when the answer of a command is the first to carry the finished download', async () => {
     const answers: AdvisorStatusDto[] = [
-      statusOf('onDisk', { options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true } }),
+      statusOf('onDisk', {
+        options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true },
+      }),
     ];
     const api = {
       watchAdvisor: async (onEvent: (status: AdvisorStatusDto) => void) =>
         onEvent(
           statusOf('downloading', {
-            options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true },
+            options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true },
           }),
         ),
       configureAdvisor: async () => answers.shift() ?? statusOf('onDisk'),
@@ -153,7 +155,7 @@ describe('an answer to a command and a status pushed meanwhile', () => {
   });
 
   it('syncs the backend when the finished download arrives and the setting is on but the backend is off', async () => {
-    const off = { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true } as const;
+    const off = { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true } as const;
     const configure = vi.fn(async () => statusOf('onDisk'));
     let push: (status: AdvisorStatusDto) => void = () => undefined;
     const api = {
@@ -175,6 +177,7 @@ describe('an answer to a command and a status pushed meanwhile', () => {
       enabled: true,
       unloadAfter: 'fiveMinutes',
       logQuestions: true,
+      useGpu: true,
     });
   });
 });
@@ -262,6 +265,25 @@ describe('watch and configure', () => {
     expect(store.status?.options.logQuestions).toBe(false);
   });
 
+  it('sends the graphics card option of the settings, and the mock unloads the model when it changes', async () => {
+    const { store, settings, api } = setup({ state: 'loaded' });
+    const configure = vi.spyOn(api, 'configureAdvisor');
+
+    settings.set('advisorEnabled', true);
+    await store.watch();
+    await store.configure();
+    expect(configure).toHaveBeenLastCalledWith(expect.objectContaining({ useGpu: true }));
+    expect(store.status?.device?.kind).toBe('gpu');
+
+    await store.setUseGpu(false);
+
+    expect(settings.advisorUseGpu).toBe(false);
+    expect(configure).toHaveBeenLastCalledWith(expect.objectContaining({ useGpu: false }));
+    expect(store.status?.options.useGpu).toBe(false);
+    expect(store.status?.state).toBe('onDisk');
+    expect(store.status?.device).toBeUndefined();
+  });
+
   it('clears the question log, and keeps the refusal of a log it cannot remove', async () => {
     const ok = setup({ state: 'disk' });
 
@@ -284,11 +306,13 @@ describe('watch and configure', () => {
       enabled: false,
       unloadAfter: 'fiveMinutes',
       logQuestions: true,
+      useGpu: true,
     });
     expect(store.status?.options).toEqual({
       enabled: false,
       unloadAfter: 'fiveMinutes',
       logQuestions: true,
+      useGpu: true,
     });
 
     await store.setEnabled(true);
@@ -298,6 +322,7 @@ describe('watch and configure', () => {
       enabled: true,
       unloadAfter: 'windowClose',
       logQuestions: true,
+      useGpu: true,
     });
     expect(settings.advisorEnabled).toBe(true);
     expect(JSON.parse(storage.getItem(SETTINGS_KEY) ?? '{}')).toMatchObject({
@@ -1054,5 +1079,145 @@ describe('the one model', () => {
     await store.configure();
 
     expect(store.failure).toBe('The advisor options are not valid.');
+  });
+});
+
+describe('graphics card problems', () => {
+  const incident: MockAdvisorOptions = { state: 'loaded', gpuIncident: { what: 'crash', pending: true } };
+
+  /** The store after the first status: the mock model is loaded and a problem waits. */
+  async function waiting(wrap?: (api: Api) => Api) {
+    const setUp = setup(incident, wrap);
+
+    setUp.settings.set('advisorEnabled', true);
+    await setUp.store.watch();
+
+    return setUp;
+  }
+
+  it('offers the problem that waits, and the last one of the log', async () => {
+    const { store } = await waiting();
+
+    expect(store.gpuProblem).toMatchObject({ what: 'crash' });
+    expect(store.lastGpuProblem).toEqual(store.gpuProblem);
+  });
+
+  it('answers "use the processor", then saves the card off and configures; the problem is gone', async () => {
+    const calls: string[] = [];
+    const { store, settings } = await waiting((api) => ({
+      ...api,
+      answerGpuProblem: async (id, choice) => {
+        calls.push(`answer:${choice}:${settings.advisorUseGpu}`);
+
+        return api.answerGpuProblem(id, choice);
+      },
+      configureAdvisor: async (options) => {
+        calls.push(`configure:${options.useGpu}`);
+
+        return api.configureAdvisor(options);
+      },
+    }));
+    const id = store.gpuProblem?.id;
+
+    await store.answerGpuProblem('useCpu');
+
+    expect(calls).toEqual(['answer:useCpu:true', 'configure:false']);
+    expect(settings.advisorUseGpu).toBe(false);
+    expect(store.gpuProblem).toBeUndefined();
+    expect(store.lastGpuProblem?.id).toBe(id);
+    expect(store.status?.state).toBe('loaded');
+    expect(store.failure).toBeUndefined();
+  });
+
+  it('answers "try again" and nothing else: the option and the options sent stay as they are', async () => {
+    const { store, settings, api } = await waiting();
+    const answer = vi.spyOn(api, 'answerGpuProblem');
+    const configure = vi.spyOn(api, 'configureAdvisor');
+    const id = store.gpuProblem?.id;
+
+    await store.answerGpuProblem('tryAgain');
+
+    expect(answer).toHaveBeenCalledExactlyOnceWith(id, 'tryAgain');
+    expect(configure).not.toHaveBeenCalled();
+    expect(settings.advisorUseGpu).toBe(true);
+    expect(store.gpuProblem).toBeUndefined();
+  });
+
+  it('answers once when the button is pressed twice', async () => {
+    const { store, api } = await waiting();
+    const answer = vi.spyOn(api, 'answerGpuProblem');
+
+    await Promise.all([store.answerGpuProblem('tryAgain'), store.answerGpuProblem('tryAgain')]);
+
+    expect(answer).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers nothing when closed: it does not come back this session, and the backend still waits for the answer', async () => {
+    const { store, api } = await waiting();
+    const answer = vi.spyOn(api, 'answerGpuProblem');
+
+    store.dismissGpuProblem();
+
+    expect(store.gpuProblem).toBeUndefined();
+    expect(answer).not.toHaveBeenCalled();
+
+    // Other pushes of the status do not bring it back.
+    await store.refresh();
+    await store.setLogQuestions(false);
+
+    expect(store.gpuProblem).toBeUndefined();
+    expect(store.status?.gpuProblem).toBeDefined();
+  });
+
+  it('asks again about a new problem after one was closed', async () => {
+    const { store } = await waiting();
+    const first = store.gpuProblem?.id as number;
+
+    store.dismissGpuProblem();
+
+    store.status = {
+      ...(store.status as AdvisorStatusDto),
+      gpuProblem: { id: first + 1, at: first + 1, what: 'hang' },
+    };
+
+    expect(store.gpuProblem).toMatchObject({ id: first + 1, what: 'hang' });
+  });
+
+  it('shows the refusal of a problem that was answered elsewhere, and does not ask about it again', async () => {
+    const { store, settings } = await waiting((api) => ({
+      ...api,
+      answerGpuProblem: async () => {
+        throw new ApiRequestError('invalid', 'That graphics card problem is not waiting for an answer.');
+      },
+    }));
+
+    await store.answerGpuProblem('useCpu');
+
+    expect(store.failure).toBe('That graphics card problem is not waiting for an answer.');
+    expect(store.gpuProblem).toBeUndefined();
+    expect(settings.advisorUseGpu).toBe(true);
+  });
+
+  it('clears the log: the last problem goes, a waiting one stays', async () => {
+    const { store, api } = await waiting();
+    const clear = vi.spyOn(api, 'clearGpuLog');
+
+    expect(await store.clearGpuLog()).toBe(true);
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(store.lastGpuProblem).toBeUndefined();
+    expect(store.gpuProblem).toBeDefined();
+  });
+
+  it('says why the log was not cleared', async () => {
+    const { store } = await waiting((api) => ({
+      ...api,
+      clearGpuLog: async () => {
+        throw new ApiRequestError('io', 'The graphics card problem log could not be removed.');
+      },
+    }));
+
+    expect(await store.clearGpuLog()).toBe(false);
+    expect(store.failure).toBe('The graphics card problem log could not be removed.');
+    expect(store.lastGpuProblem).toBeDefined();
   });
 });

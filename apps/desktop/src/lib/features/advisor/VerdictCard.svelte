@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { delayed } from '../../state/delayed.svelte';
   import type { AdvisorLabelsDto, StepDto } from '../../api/types';
   import Button from '../../components/ui/Button.svelte';
   import Card from '../../components/ui/Card.svelte';
@@ -64,12 +65,15 @@
 
   /** Shown only once the model has labelled something in this scan: a dash said nothing. */
   const modelTime = $derived(labels && labels.labelled > 0 ? formatDuration(labels.modelMs) : undefined);
+
+  // A spinner that appeared stays at least a second, so the content does not replace it after a flash.
+  const shown = delayed(() => !labels && loading);
 </script>
 
 <Card title="How a verdict is made" hint="LAST SCAN">
   {#if !hasScan}
     <p class="empty">{noScanText(scanning)}</p>
-  {:else if labels}
+  {:else if labels && !shown.value}
     <ol class="pipe">
       {#each steps as step, index (step.title)}
         <li class="st">
@@ -104,8 +108,8 @@
         {/if}
       </div>
     </div>
-  {:else if loading}
-    <Loading when={loading} label="Reading the scan…" />
+  {:else if loading || shown.value}
+    <div class="wait"><Loading when={loading || shown.value} label="Reading the scan…" /></div>
   {:else}
     <div class="retry" role="alert">
       <p class="empty">The counts could not be read.</p>
@@ -238,5 +242,12 @@
 
   .sp {
     flex: 1;
+  }
+
+  /* The spinner fills its positioned parent: this box, below the title, as tall as the card's usual content, so
+     it stays inside the card even while the card holds nothing else. */
+  .wait {
+    position: relative;
+    min-height: 200px;
   }
 </style>

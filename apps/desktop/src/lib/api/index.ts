@@ -1,6 +1,7 @@
 import { hooks } from '../hooks';
 import type { Api } from './client';
 import { createMockApi, MOCK_VOLUMES_WITH_SUBVOLUMES } from './mock';
+import type { MockAdvisorOptions } from './mock-advisor';
 import { DEMO_USER_RULES } from './mock-user-rules';
 
 /** `tauri.ts` is written by the desktop backend package; until it exists the glob is empty. */
@@ -33,6 +34,8 @@ function lazyApi(load: () => Promise<Api>): Api {
     watchAdvisor: async (onEvent) => (await impl()).watchAdvisor(onEvent),
     configureAdvisor: async (options) => (await impl()).configureAdvisor(options),
     clearQuestionLog: async () => (await impl()).clearQuestionLog(),
+    answerGpuProblem: async (id, choice) => (await impl()).answerGpuProblem(id, choice),
+    clearGpuLog: async () => (await impl()).clearGpuLog(),
     startModelDownload: async () => (await impl()).startModelDownload(),
     cancelModelDownload: async () => (await impl()).cancelModelDownload(),
     loadModel: async () => (await impl()).loadModel(),
@@ -50,6 +53,23 @@ function lazyApi(load: () => Promise<Api>): Api {
     openInFileManager: async (scan, node) => (await impl()).openInFileManager(scan, node),
     openExternal: async (link) => (await impl()).openExternal(link),
   };
+}
+
+/** The advisor mock's options the URL asks for: the graphics card, and an incident on it. */
+function advisorHooks(): MockAdvisorOptions | undefined {
+  const options: MockAdvisorOptions = {};
+
+  if (hooks.gpu) {
+    options.gpu = hooks.gpu;
+  }
+
+  if (hooks.gpuProblem) {
+    options.gpuIncident = { what: hooks.gpuProblem, pending: true };
+  } else if (hooks.gpuLast) {
+    options.gpuIncident = { what: 'crash', pending: false };
+  }
+
+  return Object.keys(options).length > 0 ? options : undefined;
 }
 
 function selectApi(): Api {
@@ -70,6 +90,7 @@ function selectApi(): Api {
     holdAt: hooks.view === 'scanning' ? 0.62 : undefined,
     dominant: hooks.dominant,
     warnings: hooks.warn ? ['mountTableUnavailable'] : undefined,
+    advisor: advisorHooks(),
     userRules:
       hooks.rules === 'broken'
         ? { broken: true }

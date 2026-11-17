@@ -23,8 +23,9 @@ export function statusOf(
       bytes: MODEL_BYTES,
       host: 'huggingface.co',
     },
-    options: { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true },
+    options: { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true },
     ramTotal: 32 * GIB,
+    gpuSupported: true,
     ...extra,
   };
 }

@@ -8,6 +8,16 @@ export type HookView = 'start' | 'scanning' | 'overview' | 'explorer' | 'cleanup
 /** Where the advisor mock starts: not downloaded, a download held at 40%, a download that failed at 40%, on disk, or loaded into RAM. */
 export type HookAdvisor = 'none' | 'downloading' | 'failed' | 'disk' | 'loaded';
 
+/**
+ * The graphics card of the advisor mock: `fallback` has a card that cannot run the model, so the loaded model runs on
+ * the processor and says so; `none` is a build without graphics card support (no switch in Settings). Without the
+ * hook the card works.
+ */
+export type HookGpu = 'fallback' | 'none';
+
+/** What went wrong on the graphics card in the `gpuProblem` hook: see `GpuProblemWhat`. */
+export type HookGpuProblem = 'crash' | 'hang' | 'error';
+
 export interface TestHooks {
   /**
    * Jump to a view; `overview`, `scanning`, `explorer` and `cleanup` start a scan on the mock first, and so does
@@ -44,6 +54,15 @@ export interface TestHooks {
   cleanup: boolean;
   /** The state the advisor mock starts in; the model is also switched on in the settings (not saved). */
   advisor: HookAdvisor | null;
+  /** The graphics card of the advisor mock (`gpu=fallback`, `gpu=none`); with `advisor=loaded` it shows where the model runs. */
+  gpu: HookGpu | null;
+  /**
+   * An incident on the graphics card that is waiting for an answer at start (`gpuProblem=crash`, `hang` or `error`):
+   * the model is loaded and runs on the processor, and the dialog is open. It is also the last problem in Settings.
+   */
+  gpuProblem: HookGpuProblem | null;
+  /** The graphics card problem log has a last problem (a crash) that was answered: the row in Settings, no dialog (`gpuLast=1`). */
+  gpuLast: boolean;
   /** With `view=advisor`: scan, and let the mock model label the folders before the page opens. */
   labels: boolean;
   /**
@@ -92,6 +111,9 @@ const NO_HOOKS: TestHooks = {
   warn: false,
   cleanup: false,
   advisor: null,
+  gpu: null,
+  gpuProblem: null,
+  gpuLast: false,
   labels: false,
   ask: null,
   chat: null,
@@ -127,6 +149,8 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
   const view = params.get('view');
   const ex = params.get('ex');
   const advisor = params.get('advisor');
+  const gpu = params.get('gpu');
+  const gpuProblem = params.get('gpuProblem');
 
   return {
     view: view !== null && VIEWS.includes(view) ? (view as HookView) : null,
@@ -145,6 +169,9 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
     warn: params.has('warn'),
     cleanup: params.has('cleanup'),
     advisor: advisor !== null && ADVISOR_STATES.includes(advisor) ? (advisor as HookAdvisor) : null,
+    gpu: gpu === 'fallback' || gpu === 'none' ? gpu : null,
+    gpuProblem: gpuProblem === 'crash' || gpuProblem === 'hang' || gpuProblem === 'error' ? gpuProblem : null,
+    gpuLast: params.has('gpuLast'),
     labels: params.has('labels'),
     ask: params.get('ask')?.trim() || null,
     chat: wholeNumber(params.get('chat')),

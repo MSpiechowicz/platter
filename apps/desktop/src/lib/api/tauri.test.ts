@@ -83,7 +83,7 @@ describe('the Tauri advisor commands', () => {
   });
 
   it('sends the advisor options, and no model', async () => {
-    const options = { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true } as const;
+    const options = { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true } as const;
 
     await createTauriApi().configureAdvisor(options);
 
@@ -91,7 +91,7 @@ describe('the Tauri advisor commands', () => {
   });
 
   it('sends the log option with the advisor options, and clears the log without arguments', async () => {
-    const options = { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: false } as const;
+    const options = { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: false, useGpu: true } as const;
     const api = createTauriApi();
 
     await api.configureAdvisor(options);
@@ -100,6 +100,25 @@ describe('the Tauri advisor commands', () => {
     expect(invoke.mock.calls).toEqual([
       ['configure_advisor', { options }],
       ['clear_question_log', undefined],
+    ]);
+  });
+
+  it('answers a graphics card problem by its id and the choice, and clears the log with no arguments', async () => {
+    const status = { state: 'loaded' };
+
+    invoke.mockResolvedValueOnce(status);
+
+    const api = createTauriApi();
+
+    expect(await api.answerGpuProblem(1_760_000_000_123, 'useCpu')).toBe(status);
+
+    await api.answerGpuProblem(1_760_000_000_123, 'tryAgain');
+    await api.clearGpuLog();
+
+    expect(invoke.mock.calls).toEqual([
+      ['answer_gpu_problem', { id: 1_760_000_000_123, choice: 'useCpu' }],
+      ['answer_gpu_problem', { id: 1_760_000_000_123, choice: 'tryAgain' }],
+      ['clear_gpu_log', {}],
     ]);
   });
 

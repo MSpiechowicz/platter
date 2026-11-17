@@ -300,3 +300,26 @@ fn the_rules_commands_answer_over_ipc_and_take_ids_only() {
         "nothing to start over from"
     );
 }
+
+#[test]
+fn the_advisor_helper_is_the_binary_started_with_exactly_one_argument() {
+    use crate::is_advisor_runtime;
+
+    let args = |list: &[&str]| list.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+
+    assert!(is_advisor_runtime(args(&["platter", "--advisor-runtime"])));
+    assert!(is_advisor_runtime(args(&["/proc/self/exe", "--advisor-runtime"])));
+
+    for other in [
+        &["platter"][..],
+        &[],
+        &["platter", "--advisor-runtime", "extra"],
+        &["platter", "extra", "--advisor-runtime"],
+        &["platter", "--advisor-runtime=1"],
+        &["platter", "--advisor"],
+        &["platter", "advisor-runtime"],
+        &["platter", ""],
+    ] {
+        assert!(!is_advisor_runtime(args(other)), "{other:?}");
+    }
+}

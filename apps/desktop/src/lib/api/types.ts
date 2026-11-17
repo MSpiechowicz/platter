@@ -226,6 +226,14 @@ export interface AdvisorOptionsDto {
   unloadAfter: UnloadAfter;
   /** Keep a local log of the questions and how they were read. The backend keeps this in memory only. */
   logQuestions: boolean;
+  /** Run the model on a graphics card when one with enough memory is there (default on); otherwise, or when it fails, on the processor. */
+  useGpu: boolean;
+}
+
+/** Where the loaded model runs. `name` is the driver's description of the card, for `gpu` only. */
+export interface DeviceDto {
+  kind: 'gpu' | 'cpu';
+  name?: string;
 }
 
 /** The one local model: Qwen3.5-4B. */
@@ -234,6 +242,22 @@ export interface AdvisorModelDto {
   format: string;
   bytes: number;
   host: string;
+}
+
+/** What went wrong on the graphics card: the helper process died, stopped answering, or the card reported an error. */
+export type GpuProblemWhat = 'crash' | 'hang' | 'error';
+
+/** The user's answer to a graphics card problem: never use the card again, or try it at the next load. */
+export type GpuProblemChoice = 'useCpu' | 'tryAgain';
+
+/** One graphics card incident. `id` is its Unix time in ms, unique; it names the incident when answering. */
+export interface GpuProblemDto {
+  id: number;
+  /** Unix ms. */
+  at: number;
+  /** The driver's description of the card, when it is known. */
+  card?: string;
+  what: GpuProblemWhat;
 }
 
 export interface AdvisorStatusDto {
@@ -248,9 +272,19 @@ export interface AdvisorStatusDto {
   ramBytes?: number;
   /** Memory of the machine. */
   ramTotal: number;
+  /** This build can run the model on a graphics card; when false the switch for it is not shown. */
+  gpuSupported: boolean;
+  /** Where the loaded model runs, while loaded. */
+  device?: DeviceDto;
+  /** Video memory the model takes, while loaded on a graphics card. */
+  videoBytes?: number;
   /** After the first generation. */
   tokensPerSecond?: number;
   labelling?: { scan: ScanId; done: number; total: number };
+  /** An incident on the graphics card that the user has not answered yet; the job was finished on the processor. */
+  gpuProblem?: GpuProblemDto;
+  /** The last incident in the graphics card problem log, answered or not. */
+  lastGpuProblem?: GpuProblemDto;
 }
 
 /** The model's verdict on a folder: never `safe`. Anything it does not call `keep` is `review`. */

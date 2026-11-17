@@ -46,14 +46,15 @@ describe('the Advisor view without a scan', () => {
     advisor.failure = undefined;
     advisor.labelFailure = undefined;
     settings.set('units', 'GB');
+    settings.set('advisorUseGpu', true);
   });
 
-  it('shows a loaded model: pill, Unload button, real values and the RAM it holds', async () => {
+  it('shows a loaded model: pill, Unload button, real values and the video memory it holds', async () => {
     await openWith('loaded');
 
     expect(screen.getByText('ADVISOR')).toBeTruthy();
     expect(pill()).toBe('Model loaded');
-    expect(screen.getByRole('button', { name: 'Unload from RAM' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Unload model' })).toBeTruthy();
 
     const model = card('Model');
 
@@ -61,7 +62,9 @@ describe('the Advisor view without a scan', () => {
     expect(within(model).getByText('GGUF · Q4_K_M')).toBeTruthy();
     expect(within(model).getByText('2.7 GB')).toBeTruthy();
     expect(within(model).getByText('5 min idle')).toBeTruthy();
-    expect(within(model).getByText('2.1 GB of 34 GB RAM in use')).toBeTruthy();
+    expect(within(model).getByText('GPU · AMD Radeon RX 7900 XTX')).toBeTruthy();
+    expect(within(model).getByText('3.2 GB video memory in use')).toBeTruthy();
+    expect(within(model).queryByRole('meter')).toBeNull();
     expect(within(model).getByText("The model download is Platter's only network call.")).toBeTruthy();
   });
 
@@ -142,7 +145,7 @@ describe('the Advisor view without a scan', () => {
 
     expect(await screen.findByRole('region', { name: /^Model/ })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Download the local model to use the Advisor' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Load into RAM' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Load model' })).toBeTruthy();
   });
 
   it('loads a model that is on disk when the button is pressed', async () => {
@@ -151,11 +154,23 @@ describe('the Advisor view without a scan', () => {
     expect(pill()).toBe('Model on disk, not loaded');
     expect(within(card('Model')).queryByRole('meter')).toBeNull();
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Load into RAM' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Load model' }));
 
     await waitFor(() => expect(pill()).toBe('Model loaded'));
-    expect(within(card('Model')).getByRole('meter')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Unload from RAM' })).toBeTruthy();
+    expect(within(card('Model')).getByText('3.2 GB video memory in use')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Unload model' })).toBeTruthy();
+  });
+
+  it('shows the processor and the RAM it holds when the graphics card is switched off', async () => {
+    settings.set('advisorUseGpu', false);
+    await openWith('loaded');
+
+    const model = card('Model');
+
+    expect(within(model).getByText('CPU')).toBeTruthy();
+    expect(within(model).getByText('2.1 GB of 34 GB RAM in use')).toBeTruthy();
+    expect(within(model).getByRole('meter')).toBeTruthy();
+    expect(within(model).queryByText(/video memory/)).toBeNull();
   });
 
   it('does not offer to load a model that is switched off in the settings, and says so', async () => {
@@ -163,7 +178,7 @@ describe('the Advisor view without a scan', () => {
     await advisor.setEnabled(false);
 
     await waitFor(() => {
-      const button = screen.getByRole('button', { name: 'Load into RAM' }) as HTMLButtonElement;
+      const button = screen.getByRole('button', { name: 'Load model' }) as HTMLButtonElement;
 
       expect(button.disabled).toBe(true);
       expect(button.title).toBe('The local model is switched off in Settings.');

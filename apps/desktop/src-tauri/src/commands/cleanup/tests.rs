@@ -513,6 +513,7 @@ fn switch(state: &AppState, enabled: bool) {
             enabled,
             unload_after: UnloadAfterDto::FiveMinutes,
             log_questions: true,
+            use_gpu: true,
         })
         .unwrap();
 }
@@ -745,7 +746,7 @@ fn state_with_rules() -> (AppState, tempfile::TempDir, PathBuf) {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("platter/rules.json");
     let state = AppState::with_parts(
-        crate::commands::advisor::AdvisorService::production(),
+        crate::commands::advisor::AdvisorService::for_test(),
         crate::user_rules::UserRulesStore::new(Some(path.clone())),
     );
     switch(&state, true);

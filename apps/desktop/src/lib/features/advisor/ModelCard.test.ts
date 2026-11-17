@@ -31,8 +31,60 @@ describe('ModelCard', () => {
     expect(screen.getByText('GGUF · Q4_K_M')).toBeTruthy();
     expect(screen.getByText('2.7 GB')).toBeTruthy();
     expect(screen.getByText('5 min idle')).toBeTruthy();
-    expect(screen.getByText('—')).toBeTruthy();
+    // The speed and where it runs are dashes while the model is not in memory.
+    expect(screen.getAllByText('—')).toHaveLength(2);
     expect(meter()).toBeNull();
+  });
+
+  it('shows the graphics card and its video memory in place of the RAM line while loaded on it', () => {
+    setup(
+      statusOf('loaded', {
+        ramBytes: 2 * GIB,
+        device: { kind: 'gpu', name: 'AMD Radeon RX 7900 XTX (RADV NAVI31)' },
+        videoBytes: 3_200_000_000,
+      }),
+    );
+
+    expect(screen.getByText('Runs on')).toBeTruthy();
+    // The row drops the driver's bracket so the name fits; the tooltip has all of it.
+    expect(screen.getByText('GPU · AMD Radeon RX 7900 XTX').getAttribute('title')).toBe(
+      'GPU · AMD Radeon RX 7900 XTX (RADV NAVI31)',
+    );
+    expect(screen.getByText('3.2 GB video memory in use')).toBeTruthy();
+    expect(screen.queryByText(/RAM in use/)).toBeNull();
+    expect(meter()).toBeNull();
+  });
+
+  it('shows the processor and the RAM line while loaded on the CPU', () => {
+    setup(statusOf('loaded', { ramBytes: 2 * GIB, device: { kind: 'cpu' } }));
+
+    expect(screen.getByText('CPU')).toBeTruthy();
+    expect(screen.getByText('2.1 GB of 34 GB RAM in use')).toBeTruthy();
+    expect(meter()).not.toBeNull();
+  });
+
+  it('says only GPU when the driver gave no name, and shows no control character of the name', () => {
+    setup(statusOf('loaded', { device: { kind: 'gpu' }, videoBytes: 3_200_000_000 }));
+    expect(screen.getByText('GPU')).toBeTruthy();
+
+    cleanup();
+    setup(statusOf('loaded', { device: { kind: 'gpu', name: 'Card\u202Eevil' }, videoBytes: 3_200_000_000 }));
+    expect(screen.getByText('GPU · Card\\u{202E}evil')).toBeTruthy();
+  });
+
+  it('shows the fallback line as a problem, and the processor with its RAM', () => {
+    setup(
+      statusOf('loaded', {
+        ramBytes: 2 * GIB,
+        device: { kind: 'cpu' },
+        problem: 'The graphics card could not run the model; it runs on the processor.',
+      }),
+    );
+
+    expect(screen.getByRole('alert').textContent).toContain(
+      'The graphics card could not run the model; it runs on the processor.',
+    );
+    expect(screen.getByText('CPU')).toBeTruthy();
   });
 
   it('shows the speed once it is known, and the RAM bar only while loaded', () => {
@@ -41,6 +93,14 @@ describe('ModelCard', () => {
     expect(screen.getByText('37 tokens/s')).toBeTruthy();
     expect(screen.getByText('2.1 GB of 34 GB RAM in use')).toBeTruthy();
     expect(meter()?.getAttribute('aria-valuenow')).toBe('6');
+  });
+
+  it('shows a moving bar in place of the RAM bar while the model loads', () => {
+    setup(statusOf('loading'));
+
+    const bar = screen.getByRole('progressbar', { name: 'Loading the model' });
+    expect(bar.getAttribute('aria-valuenow')).toBeNull();
+    expect(meter()).toBeNull();
   });
 
   it('shows the progress of a download with Cancel', async () => {

@@ -11,6 +11,42 @@ use std::sync::Arc;
 use state::AppState;
 use tauri::Manager;
 
+/// Whether this process was started as the advisor's helper: its arguments are the program and exactly
+/// `--advisor-runtime`.
+pub fn is_advisor_runtime(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
+    let mut args = args.into_iter();
+
+    args.next().is_some()
+        && args
+            .next()
+            .is_some_and(|arg| arg == platter_platform::ADVISOR_RUNTIME_ARG)
+        && args.next().is_none()
+}
+
+/// The advisor's helper process: serves the model runtime to the app that started it, over the socket it was
+/// handed (see [`platter_ai::runtime::serve`]). Returns the exit code of the process. Nothing of the app
+/// (windows, scans, the web view) is started in it. Without the runtime in this build, or where the helper
+/// cannot be started, it fails (2).
+pub fn advisor_runtime() -> i32 {
+    #[cfg(all(feature = "advisor", unix))]
+    {
+        let Ok((socket, model)) = platter_platform::advisor_runtime_child() else {
+            return 2;
+        };
+
+        platter_ai::runtime::serve(
+            platter_ai::llama::LlamaEngine::new(),
+            socket,
+            model,
+            platter_ai::MODEL.bytes,
+        )
+    }
+    #[cfg(not(all(feature = "advisor", unix)))]
+    {
+        2
+    }
+}
+
 pub fn run() {
     // Deep scans keep many directories open at once; raise the descriptor limit once, before any scan.
     // The reader copes with a low limit anyway, so a failure is not worth reporting.
@@ -56,6 +92,8 @@ pub fn run() {
             commands::advisor::ask_advisor,
             commands::advisor::question::ask_scan,
             commands::advisor::clear_question_log,
+            commands::advisor::answer_gpu_problem,
+            commands::advisor::clear_gpu_log,
             commands::advisor::find_folders,
             commands::rules::list_user_rules,
             commands::rules::add_user_rule,

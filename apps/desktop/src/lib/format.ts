@@ -89,6 +89,26 @@ export function formatDate(unixSeconds: number): string {
   return Number.isNaN(date.getTime()) ? UNKNOWN : DATE_FORMAT.format(date);
 }
 
+const DATE_TIME_FORMAT = new Intl.DateTimeFormat('en-GB', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+/** "12 Mar 2025, 14:05" in the local time zone, from unix seconds. "—" for a time that is not a date, as `formatDate`. */
+export function formatDateTime(unixSeconds: number): string {
+  if (!Number.isFinite(unixSeconds) || unixSeconds <= 0) {
+    return UNKNOWN;
+  }
+
+  const date = new Date(unixSeconds * 1000);
+
+  return Number.isNaN(date.getTime()) ? UNKNOWN : DATE_TIME_FORMAT.format(date);
+}
+
 /** "74%" from a fraction. */
 export function formatPercent(fraction: number): string {
   return `${Math.round(fraction * 100)}%`;

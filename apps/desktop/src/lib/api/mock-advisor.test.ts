@@ -73,8 +73,9 @@ describe('advisor mock: status', () => {
         bytes: MODEL_BYTES,
         host: 'huggingface.co',
       },
-      options: { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true },
+      options: { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true },
       ramTotal: 32 * GIB,
+      gpuSupported: true,
     });
   });
 
@@ -325,7 +326,12 @@ describe('advisor mock: invalid transitions', () => {
   it('rejects a load while the model is switched off', async () => {
     const { api } = setup({ state: 'disk' });
 
-    await api.configureAdvisor({ enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true });
+    await api.configureAdvisor({
+      enabled: false,
+      unloadAfter: 'fiveMinutes',
+      logQuestions: true,
+      useGpu: true,
+    });
 
     await expectInvalid(api.loadModel());
     expect((await api.advisorStatus()).state).toBe('onDisk');
@@ -351,13 +357,28 @@ describe('advisor mock: invalid transitions', () => {
     const { api } = setup();
 
     await expectInvalid(
-      api.configureAdvisor({ enabled: true, unloadAfter: 'never' as never, logQuestions: true }),
+      api.configureAdvisor({
+        enabled: true,
+        unloadAfter: 'never' as never,
+        logQuestions: true,
+        useGpu: true,
+      }),
     );
     await expectInvalid(
-      api.configureAdvisor({ enabled: 'yes' as never, unloadAfter: 'oneMinute', logQuestions: true }),
+      api.configureAdvisor({
+        enabled: 'yes' as never,
+        unloadAfter: 'oneMinute',
+        logQuestions: true,
+        useGpu: true,
+      }),
     );
     await expectInvalid(
-      api.configureAdvisor({ enabled: true, unloadAfter: 'oneMinute', logQuestions: 'yes' as never }),
+      api.configureAdvisor({
+        enabled: true,
+        unloadAfter: 'oneMinute',
+        logQuestions: 'yes' as never,
+        useGpu: true,
+      }),
     );
     await expectInvalid(api.configureAdvisor({ enabled: true, unloadAfter: 'oneMinute' } as never));
 
@@ -365,6 +386,7 @@ describe('advisor mock: invalid transitions', () => {
       enabled: true,
       unloadAfter: 'fiveMinutes',
       logQuestions: true,
+      useGpu: true,
     });
   });
 
@@ -386,20 +408,32 @@ describe('advisor mock: configure', () => {
       enabled: true,
       unloadAfter: 'oneMinute',
       logQuestions: true,
+      useGpu: true,
     });
 
-    expect(status.options).toEqual({ enabled: true, unloadAfter: 'oneMinute', logQuestions: true });
+    expect(status.options).toEqual({
+      enabled: true,
+      unloadAfter: 'oneMinute',
+      logQuestions: true,
+      useGpu: true,
+    });
     expect((await api.advisorStatus()).options).toEqual({
       enabled: true,
       unloadAfter: 'oneMinute',
       logQuestions: true,
+      useGpu: true,
     });
   });
 
   it('pushes a change of the question log option alone', async () => {
     const { api, events } = setup();
 
-    await api.configureAdvisor({ enabled: true, unloadAfter: 'fiveMinutes', logQuestions: false });
+    await api.configureAdvisor({
+      enabled: true,
+      unloadAfter: 'fiveMinutes',
+      logQuestions: false,
+      useGpu: true,
+    });
 
     expect(events.map((status) => status.options.logQuestions)).toEqual([false]);
   });
@@ -411,6 +445,7 @@ describe('advisor mock: configure', () => {
       enabled: false,
       unloadAfter: 'fiveMinutes',
       logQuestions: true,
+      useGpu: true,
     });
 
     expect(status).toMatchObject({ state: 'onDisk', options: { enabled: false } });
@@ -422,7 +457,12 @@ describe('advisor mock: configure', () => {
 
     const loading = api.loadModel();
 
-    await api.configureAdvisor({ enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true });
+    await api.configureAdvisor({
+      enabled: false,
+      unloadAfter: 'fiveMinutes',
+      logQuestions: true,
+      useGpu: true,
+    });
 
     const ended = await loading;
 
@@ -441,6 +481,7 @@ describe('advisor mock: configure', () => {
       enabled: false,
       unloadAfter: 'fiveMinutes',
       logQuestions: true,
+      useGpu: true,
     });
 
     expect(status.state).toBe('onDisk');
@@ -450,7 +491,12 @@ describe('advisor mock: configure', () => {
   it('pushes nothing when the options do not change', async () => {
     const { api, events } = setup({ state: 'disk' });
 
-    await api.configureAdvisor({ enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true });
+    await api.configureAdvisor({
+      enabled: true,
+      unloadAfter: 'fiveMinutes',
+      logQuestions: true,
+      useGpu: true,
+    });
 
     expect(events).toEqual([]);
   });
@@ -478,12 +524,12 @@ describe('advisor mock: idle unload', () => {
   it('follows the configured time; the same options again do not restart the wait', async () => {
     const { api, timers } = setup({ state: 'loaded' });
 
-    await api.configureAdvisor({ enabled: true, unloadAfter: 'oneMinute', logQuestions: true });
+    await api.configureAdvisor({ enabled: true, unloadAfter: 'oneMinute', logQuestions: true, useGpu: true });
     timers.advance(59_999);
 
     expect((await api.advisorStatus()).state).toBe('loaded');
 
-    await api.configureAdvisor({ enabled: true, unloadAfter: 'oneMinute', logQuestions: true });
+    await api.configureAdvisor({ enabled: true, unloadAfter: 'oneMinute', logQuestions: true, useGpu: true });
     timers.advance(1);
 
     expect((await api.advisorStatus()).state).toBe('onDisk');
@@ -492,7 +538,7 @@ describe('advisor mock: idle unload', () => {
   it('never unloads by itself on windowClose', async () => {
     const { api, timers } = setup({
       state: 'loaded',
-      options: { enabled: true, unloadAfter: 'windowClose', logQuestions: true },
+      options: { enabled: true, unloadAfter: 'windowClose', logQuestions: true, useGpu: true },
     });
 
     timers.advance(24 * 60 * 60_000);

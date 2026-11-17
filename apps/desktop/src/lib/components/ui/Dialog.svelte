@@ -5,6 +5,8 @@
     open: boolean;
     title: string;
     description?: string;
+    /** Room for buttons with long labels: 520 px instead of 480. */
+    wide?: boolean;
     /** Body between the description and the buttons. */
     children?: Snippet;
     /** The buttons. Mark the safe default with `data-autofocus` so it gets the focus. */
@@ -12,7 +14,15 @@
     onclose?: () => void;
   }
 
-  let { open = $bindable(false), title, description, children, actions, onclose }: Props = $props();
+  let {
+    open = $bindable(false),
+    title,
+    description,
+    wide = false,
+    children,
+    actions,
+    onclose,
+  }: Props = $props();
 
   let dialog: HTMLDialogElement | undefined = $state();
 
@@ -45,7 +55,14 @@
   }
 </script>
 
-<dialog class="dlg" bind:this={dialog} aria-labelledby={titleId} onclose={handleClose} onclick={handleClick}>
+<dialog
+  class="dlg"
+  class:wide
+  bind:this={dialog}
+  aria-labelledby={titleId}
+  onclose={handleClose}
+  onclick={handleClick}
+>
   {#if open}
     <h2 id={titleId}>{title}</h2>
     {#if description}<p>{description}</p>{/if}
@@ -64,6 +81,10 @@
     width: min(480px, calc(100vw - 32px));
     margin: auto;
     box-shadow: 0 24px 80px #000c;
+  }
+
+  .dlg.wide {
+    width: min(520px, calc(100vw - 32px));
   }
 
   .dlg::backdrop {

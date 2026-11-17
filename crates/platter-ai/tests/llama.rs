@@ -2,14 +2,17 @@
 //! default: `PLATTER_MODEL=/path/to/Qwen3.5-4B-Q4_K_M.gguf`
 //! `cargo test --release -p platter-ai --features llama --test llama -- --ignored --test-threads=1`
 //! (one test at a time: three models loaded together are too slow for the time of one folder).
+//! `PLATTER_DEVICE=gpu` (with `--features gpu-vulkan`) loads on the graphics card with the most free video
+//! memory, the discrete one first; anything else, or no card, is the CPU.
 #![cfg(feature = "llama")]
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+use platter_ai::Placement;
 use platter_ai::grammar::VERDICT_GRAMMAR;
-use platter_ai::llama::LlamaEngine;
+use platter_ai::llama::{LlamaEngine, gpus};
 use platter_ai::{AiError, Budget, Engine, FolderFacts, MODEL, ModelSpec, label, verify};
 use platter_core::{ModelVerdict, NodeId};
 
@@ -17,6 +20,61 @@ fn model_path() -> PathBuf {
     std::env::var_os("PLATTER_MODEL")
         .map(PathBuf::from)
         .expect("set PLATTER_MODEL to the model file")
+}
+
+/// The engine on the device `PLATTER_DEVICE` names, and a line saying which it is.
+fn engine() -> (LlamaEngine, Placement) {
+    if std::env::var("PLATTER_DEVICE").as_deref() != Ok("gpu") {
+        eprintln!("device: CPU");
+        return (LlamaEngine::new(), Placement::Cpu);
+    }
+    let cards = gpus().unwrap();
+    for card in &cards {
+        eprintln!(
+            "seen: {} {} integrated={} free {:.0} of {:.0} MiB",
+            card.name,
+            card.description,
+            card.integrated,
+            card.free_bytes as f64 / 1_048_576.0,
+            card.total_bytes as f64 / 1_048_576.0
+        );
+    }
+    let card = cards
+        .iter()
+        .max_by_key(|card| (!card.integrated, card.free_bytes))
+        .expect("PLATTER_DEVICE=gpu but no graphics card is seen");
+    eprintln!("device: {} {}", card.name, card.description);
+    (LlamaEngine::new(), Placement::Gpu { index: card.index })
+}
+
+/// Graphics memory in system RAM (GTT) of every DRM card and `MemAvailable`, in MiB (Linux, amdgpu): what
+/// a driver pins in system memory, which the resident size does not show.
+fn system_side() -> (Vec<u64>, Option<u64>) {
+    let gtt = (0..4)
+        .filter_map(|n| {
+            std::fs::read_to_string(format!("/sys/class/drm/card{n}/device/mem_info_gtt_used")).ok()
+        })
+        .filter_map(|text| text.trim().parse::<u64>().ok())
+        .map(|bytes| bytes >> 20)
+        .collect();
+    (
+        gtt,
+        platter_platform::available_memory_bytes().map(|bytes| bytes >> 20),
+    )
+}
+
+/// Video memory in use on every card, in MiB, as the driver reports it.
+fn video_memory_used() -> Vec<(String, f64)> {
+    gpus()
+        .unwrap()
+        .into_iter()
+        .map(|card| {
+            (
+                card.name,
+                card.total_bytes.saturating_sub(card.free_bytes) as f64 / 1_048_576.0,
+            )
+        })
+        .collect()
 }
 
 /// The pinned spec the file is checked against.
@@ -36,7 +94,7 @@ fn the_real_model_answers_inside_the_grammar_and_can_be_cancelled_and_unloaded()
         Err(AiError::NotLoaded)
     ));
 
-    engine.load(&verified, 4).unwrap();
+    engine.load(&verified, 4, Placement::Cpu).unwrap();
     let answer = engine
         .judge(prompt, VERDICT_GRAMMAR, 96, &AtomicBool::new(false))
         .unwrap();
@@ -348,8 +406,10 @@ fn labelled_set() -> Vec<(FolderFacts, Option<ModelVerdict>)> {
 #[ignore = "needs the real model: set PLATTER_MODEL"]
 fn the_real_model_labels_three_folders_through_the_prompt() {
     let verified = verify(&spec(), &model_path()).unwrap();
-    let mut engine = LlamaEngine::new();
-    engine.load(&verified, platter_ai::default_threads()).unwrap();
+    let (mut engine, placement) = engine();
+    engine
+        .load(&verified, platter_ai::default_threads(), placement)
+        .unwrap();
     let items: Vec<_> = labelled_set()
         .into_iter()
         .map(|(facts, _)| facts)
@@ -395,8 +455,19 @@ fn the_real_model_labels_three_folders_through_the_prompt() {
 #[ignore = "needs the real model: set PLATTER_MODEL"]
 fn the_tuned_prompt_still_gets_the_labelled_set_right() {
     let verified = verify(&spec(), &model_path()).unwrap();
-    let mut engine = LlamaEngine::new();
-    engine.load(&verified, platter_ai::default_threads()).unwrap();
+    let (mut engine, placement) = engine();
+    let before = (platter_platform::resident_bytes(), video_memory_used());
+    let info = engine
+        .load(&verified, platter_ai::default_threads(), placement)
+        .unwrap();
+    eprintln!(
+        "loaded in {} ms; resident {:?} -> {:?} bytes; video memory used {:?} -> {:?} MiB",
+        info.millis,
+        before.0,
+        platter_platform::resident_bytes(),
+        before.1,
+        video_memory_used()
+    );
     let set = labelled_set();
     let items: Vec<_> = set
         .iter()
@@ -413,6 +484,11 @@ fn the_tuned_prompt_still_gets_the_labelled_set_right() {
         &|_, _| {},
     );
     let seconds = started.elapsed().as_secs_f64();
+    eprintln!(
+        "after the run: resident {:?} bytes; video memory used {:?} MiB",
+        platter_platform::resident_bytes(),
+        video_memory_used()
+    );
 
     let (mut right, mut review_to_keep, mut keep_to_review, mut unread) = (0, 0, 0, 0);
     for (n, (facts, expected)) in set.iter().enumerate() {
@@ -441,4 +517,45 @@ fn the_tuned_prompt_still_gets_the_labelled_set_right() {
     assert!(right >= 19, "only {right} of 20 right");
     assert_eq!(keep_to_review, 0, "a folder to keep was sent to review");
     assert_eq!(unread, 0);
+}
+
+/// Memory after the largest answer: a prompt that fills the 4096-token context with the answer. Prints the
+/// figures the spec's `min_free_bytes` (CPU) and `gpu_min_free_bytes` / `gpu_video_bytes` (card) come from.
+#[test]
+#[ignore = "needs the real model: set PLATTER_MODEL"]
+fn memory_after_the_largest_answer() {
+    let verified = verify(&spec(), &model_path()).unwrap();
+    let (mut engine, placement) = engine();
+    let before = (platter_platform::resident_bytes(), video_memory_used());
+    let side = system_side();
+    engine
+        .load(&verified, platter_ai::default_threads(), placement)
+        .unwrap();
+
+    let max_tokens = 96;
+    let mut body = String::new();
+    let wrap = |body: &str| {
+        format!("<|im_start|>user\n{body}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
+    };
+    while engine.count_tokens(&wrap(&body)).unwrap() + max_tokens as usize + 40 < 4096 {
+        body.push_str("{\"path\":\"~/.cache/some-tool/build\",\"size\":\"700 MiB\",\"files\":9031}\n");
+    }
+    let prompt = wrap(&body);
+    eprintln!("prompt tokens: {}", engine.count_tokens(&prompt).unwrap());
+
+    let answer = engine
+        .judge(&prompt, VERDICT_GRAMMAR, max_tokens, &AtomicBool::new(false))
+        .unwrap();
+    eprintln!(
+        "answer {} tokens; resident {:?} -> {:?} bytes; video memory used {:?} -> {:?} MiB",
+        answer.tokens,
+        before.0,
+        platter_platform::resident_bytes(),
+        before.1,
+        video_memory_used()
+    );
+    eprintln!(
+        "GTT MiB per card and MemAvailable MiB: {side:?} -> {:?}",
+        system_side()
+    );
 }

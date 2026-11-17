@@ -232,6 +232,7 @@ pub(super) fn options(enabled: bool) -> AdvisorOptionsDto {
         enabled,
         unload_after: UnloadAfterDto::FiveMinutes,
         log_questions: true,
+        use_gpu: true,
     }
 }
 

@@ -7,6 +7,7 @@
   import TooltipHost from './lib/components/ui/TooltipHost.svelte';
   import { bootstrap } from './lib/bootstrap';
   import AdvisorPage from './lib/features/advisor/AdvisorPage.svelte';
+  import GpuProblemDialog from './lib/features/advisor/GpuProblemDialog.svelte';
   import CleanupPage from './lib/features/cleanup/CleanupPage.svelte';
   import Explorer from './lib/features/explorer/Explorer.svelte';
   import OverviewPage from './lib/features/overview/OverviewPage.svelte';
@@ -132,5 +133,6 @@
   {/if}
 </AppShell>
 
+<GpuProblemDialog />
 <ToastHost />
 <TooltipHost />

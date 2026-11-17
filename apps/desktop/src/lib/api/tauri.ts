@@ -12,6 +12,7 @@ import type {
   CleanupPlanDto,
   ExternalLink,
   FolderMatchDto,
+  GpuProblemChoice,
   LodNode,
   NodeDto,
   NodeId,
@@ -130,6 +131,11 @@ export function createTauriApi(): Api {
       call<AdvisorStatusDto>('configure_advisor', { options }),
 
     clearQuestionLog: () => callVoid('clear_question_log'),
+
+    answerGpuProblem: (id: number, choice: GpuProblemChoice) =>
+      call<AdvisorStatusDto>('answer_gpu_problem', { id, choice }),
+
+    clearGpuLog: () => callVoid('clear_gpu_log', {}),
 
     startModelDownload: () => callVoid('start_model_download'),
 

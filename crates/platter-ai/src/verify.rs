@@ -1,4 +1,5 @@
-//! The check a model file must pass before it is loaded, and the only way to get a [`VerifiedModel`].
+//! The check a model file must pass before it is loaded, and the only way to get a [`VerifiedModel`] (a
+//! helper process that was handed a file the parent checked takes it over with [`VerifiedModel::inherited`]).
 //!
 //! The file is opened once, without following a link. Size and SHA-256 are checked through that
 //! descriptor, and the model is loaded from the same descriptor (`/proc/self/fd/N`), so the name cannot
@@ -26,6 +27,33 @@ impl VerifiedModel {
     /// A path that names exactly the file that was checked, as long as this value lives.
     pub fn path(&self) -> PathBuf {
         platter_platform::pinned_path(&self.file).unwrap_or_default()
+    }
+
+    /// Another handle on the checked file (the same open file, not a new look at its name), to hand to a
+    /// helper process that loads the model.
+    pub fn share(&self) -> io::Result<File> {
+        self.file.try_clone()
+    }
+
+    /// The model file the helper process was given by the process that checked it. That process hashed this
+    /// very open file before it handed it over, so only what it cannot know is looked at here: a regular
+    /// file of exactly `bytes`. Never used for a file that was opened by name.
+    pub(crate) fn inherited(file: File, bytes: u64) -> Result<Self, VerifyError> {
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(VerifyError::NotRegular);
+        }
+        if meta.len() != bytes {
+            return Err(VerifyError::WrongSize {
+                expected: bytes,
+                found: meta.len(),
+            });
+        }
+        if platter_platform::pinned_path(&file).is_none() {
+            return Err(VerifyError::Unsupported);
+        }
+
+        Ok(Self { file })
     }
 }
 

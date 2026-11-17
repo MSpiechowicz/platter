@@ -2,12 +2,15 @@ import type {
   AdvisorAnswerDto,
   AdvisorLabelsDto,
   AdvisorStatusDto,
+  GpuProblemDto,
+  GpuProblemWhat,
   LabelDto,
   ModelState,
   StepDto,
   UnloadAfter,
   Verdict,
 } from '../../api/types';
+import { formatDateTime } from '../../format';
 
 /** Formats bytes the way the rest of the interface does (it follows the size-unit setting). */
 export type SizeFormat = (bytes: number) => string;
@@ -89,14 +92,15 @@ export function primaryAction(
     case 'onDisk':
       return {
         kind: 'load',
-        label: 'Load into RAM',
+        label: 'Load model',
         disabled: !enabled,
         hint: enabled ? undefined : SWITCHED_OFF_HINT,
       };
     case 'loaded':
-      return { kind: 'unload', label: 'Unload from RAM' };
+      return { kind: 'unload', label: 'Unload model' };
     case 'loading':
-      return { kind: 'busy', label: 'Loading…' };
+      // The pill beside it says the model is loading; the button keeps its place and its name.
+      return { kind: 'busy', label: 'Load model' };
     default:
       return undefined;
   }
@@ -146,6 +150,69 @@ export function ramText(status: AdvisorStatusDto, size: SizeFormat): string | un
   }
 
   return `${size(status.ramBytes)} of ${size(status.ramTotal)} RAM in use`;
+}
+
+/**
+ * "GPU · AMD Radeon RX 7900 XTX (RADV NAVI31)" or "CPU" for the "Runs on" row; a dash while the model is not in
+ * memory. `short` leaves off the driver's closing "(…)" so the card's name fits the row.
+ */
+export function deviceText(status: AdvisorStatusDto, short = false): string {
+  if (status.state !== 'loaded' || !status.device) {
+    return '—';
+  }
+
+  if (status.device.kind === 'cpu') {
+    return 'CPU';
+  }
+
+  if (!status.device.name) {
+    return 'GPU';
+  }
+
+  return `GPU · ${short ? shortCardName(status.device.name) : status.device.name}`;
+}
+
+/** The card's name without the driver's closing "(RADV NAVI31)"; the whole name when nothing else is left. */
+export function shortCardName(name: string): string {
+  return name.replace(/\s*\([^()]*\)\s*$/, '') || name;
+}
+
+/** What the dialog says about a graphics card problem, to be shown with hidden characters made visible. */
+export function gpuProblemText(problem: GpuProblemDto): string {
+  const card = problem.card === undefined ? undefined : shortCardName(problem.card);
+  const where = card ?? 'the graphics card';
+
+  const what = {
+    crash: `The advisor crashed on ${where}.`,
+    hang: `The advisor stopped responding on ${where}.`,
+    // Without a name the card is already named: "(the graphics card)" would say it twice.
+    error:
+      card === undefined
+        ? 'The graphics card reported an error.'
+        : `The graphics card reported an error (${card}).`,
+  }[problem.what];
+
+  return `${what} Platter switched to the processor and finished the job there.`;
+}
+
+const GPU_PROBLEM_WORDS: Record<GpuProblemWhat, string> = {
+  crash: 'crashed',
+  hang: 'stopped responding',
+  error: 'error',
+};
+
+/** "12 Mar 2025, 14:05 · crashed": the value of the "Last graphics card problem" row. */
+export function gpuProblemSummary(problem: GpuProblemDto): string {
+  return `${formatDateTime(problem.at / 1000)} · ${GPU_PROBLEM_WORDS[problem.what]}`;
+}
+
+/** "3.2 GB video memory in use"; undefined unless the model is loaded on a graphics card. */
+export function videoText(status: AdvisorStatusDto, size: SizeFormat): string | undefined {
+  if (status.device?.kind !== 'gpu' || status.videoBytes === undefined) {
+    return undefined;
+  }
+
+  return `${size(status.videoBytes)} video memory in use`;
 }
 
 /** The "On disk" row: the size once the file is there. */
@@ -253,8 +320,9 @@ export function labelReadiness(input: {
     return no(SWITCHED_OFF_HINT);
   }
 
+  // The page header's pill says the model is loading; the card does not say it again.
   if (status.state === 'loading') {
-    return no('The model is loading.');
+    return { ready: false };
   }
 
   if (outdated) {
@@ -312,8 +380,9 @@ export function askReadiness(input: {
     return no(SWITCHED_OFF_HINT);
   }
 
+  // The page header's pill says the model is loading; the card does not say it again.
   if (status.state === 'loading') {
-    return no('The model is loading.');
+    return { ready: false };
   }
 
   if (status.labelling) {

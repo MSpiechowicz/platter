@@ -30,7 +30,7 @@ describe('Loading', () => {
     expect(screen.queryByRole('status')).toBeNull();
   });
 
-  it('goes away when the wait is over', async () => {
+  it('goes away when the wait is over, after at least a second on screen', async () => {
     const { rerender } = render(Loading, { props: { when: true, label: 'Reading…' } });
 
     vi.advanceTimersByTime(400);
@@ -38,6 +38,11 @@ describe('Loading', () => {
     expect(screen.getByRole('status')).toBeTruthy();
 
     await rerender({ when: false, label: 'Reading…' });
+    flushSync();
+    // Once shown it stays at least a second, so it never flashes.
+    expect(screen.getByRole('status')).toBeTruthy();
+
+    vi.advanceTimersByTime(1000);
     flushSync();
     expect(screen.queryByRole('status')).toBeNull();
   });

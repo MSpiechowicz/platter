@@ -6,6 +6,8 @@ import type {
   AdvisorStatusDto,
   ChoiceDto,
   FolderMatchDto,
+  GpuProblemChoice,
+  GpuProblemDto,
   NodeId,
   ScanAnswerDto,
   ScanId,
@@ -22,7 +24,7 @@ import { settings as defaultSettings, type SettingsStore } from './settings.svel
 /** The settings the advisor reads and writes. */
 export type AdvisorSettings = Pick<
   SettingsStore,
-  'advisorEnabled' | 'advisorUnloadAfter' | 'advisorLogQuestions' | 'units' | 'set'
+  'advisorEnabled' | 'advisorUnloadAfter' | 'advisorLogQuestions' | 'advisorUseGpu' | 'units' | 'set'
 >;
 
 interface ExchangeBase {
@@ -86,6 +88,10 @@ export class AdvisorStore {
   asking = $state(false);
   /** A load or an unload is on its way. */
   switching = $state(false);
+  /** The graphics card problem the user closed the dialog on without answering; it is not shown again this session. */
+  #dismissedGpuProblem = $state<number | undefined>(undefined);
+  /** An answer to a graphics card problem is on its way. */
+  #answering = false;
 
   readonly #api: Api;
   readonly #settings: AdvisorSettings;
@@ -102,6 +108,18 @@ export class AdvisorStore {
 
   get loaded(): boolean {
     return this.status?.state === 'loaded';
+  }
+
+  /** The graphics card problem to ask the user about: waiting for an answer, and not closed unanswered this session. */
+  get gpuProblem(): GpuProblemDto | undefined {
+    const problem = this.status?.gpuProblem;
+
+    return problem?.id === this.#dismissedGpuProblem ? undefined : problem;
+  }
+
+  /** The last graphics card problem in the log, answered or not. */
+  get lastGpuProblem(): GpuProblemDto | undefined {
+    return this.status?.lastGpuProblem;
   }
 
   /** Some question is on its way, of either kind. */
@@ -181,6 +199,7 @@ export class AdvisorStore {
         enabled: this.#settings.advisorEnabled,
         unloadAfter: this.#settings.advisorUnloadAfter,
         logQuestions: this.#settings.advisorLogQuestions,
+        useGpu: this.#settings.advisorUseGpu,
       });
 
       this.failure = undefined;
@@ -205,6 +224,11 @@ export class AdvisorStore {
     await this.configure();
   }
 
+  async setUseGpu(useGpu: boolean): Promise<void> {
+    this.#settings.set('advisorUseGpu', useGpu);
+    await this.configure();
+  }
+
   /** Deletes the local question log. Whether it worked is the answer; a refusal is in `failure`. */
   async clearQuestionLog(): Promise<boolean> {
     this.failure = undefined;
@@ -218,6 +242,67 @@ export class AdvisorStore {
 
       return false;
     }
+  }
+
+  /**
+   * Answers the graphics card problem on screen. `useCpu` also saves "Use the graphics card" off and configures, so
+   * the card stays off from now on; `tryAgain` only answers (the card is tried at the next load). A refusal is in
+   * `failure`, and the dialog does not come back for that problem.
+   */
+  async answerGpuProblem(choice: GpuProblemChoice): Promise<void> {
+    const problem = this.gpuProblem;
+
+    if (!problem || this.#answering) {
+      return;
+    }
+
+    const since = this.#pushes;
+
+    this.#answering = true;
+    this.failure = undefined;
+
+    try {
+      this.#applyAnswer(await this.#api.answerGpuProblem(problem.id, choice), since);
+    } catch (error) {
+      this.#dismissedGpuProblem = problem.id;
+      this.failure = describeError(error);
+      await this.refresh();
+
+      return;
+    } finally {
+      this.#answering = false;
+    }
+
+    if (choice === 'useCpu') {
+      await this.setUseGpu(false);
+    }
+  }
+
+  /** The user closed the dialog without answering: the problem stays unanswered and is not shown again this session. */
+  dismissGpuProblem(): void {
+    const problem = this.status?.gpuProblem;
+
+    if (problem) {
+      this.#dismissedGpuProblem = problem.id;
+    }
+  }
+
+  /** Deletes the graphics card problem log. Whether it worked is the answer; a refusal is in `failure`. */
+  async clearGpuLog(): Promise<boolean> {
+    this.failure = undefined;
+
+    try {
+      await this.#api.clearGpuLog();
+    } catch (error) {
+      this.failure = describeError(error);
+
+      return false;
+    }
+
+    // The backend does not have to push for this: ask, so the last problem goes from the screen.
+    await this.refresh();
+
+    return true;
   }
 
   /**

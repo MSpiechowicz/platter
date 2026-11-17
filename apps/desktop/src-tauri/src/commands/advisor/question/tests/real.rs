@@ -15,6 +15,11 @@
 //! - `PLATTER_OUT`: the JSON lines file written, one object per question (default: none).
 //! - `PLATTER_ONE_FS`: `0` to scan across mount points too (default: stay on one file system, as the app's
 //!   scan of a disk does).
+//! - `PLATTER_DEVICE`: `gpu` (a build with `--features gpu-vulkan`) switches "Use the graphics card" on, so the
+//!   worker loads on a card as the app does; anything else is the CPU (default).
+//! - `PLATTER_RUNTIME_EXE`: the path of a built `platter` binary (`cargo build --release -p platter-desktop`): the
+//!   model then runs in that binary's helper process (`--advisor-runtime`), as in the app. Without it the model
+//!   runs inside the test.
 //! - `PLATTER_EVAL`: `0` to skip the score of the evaluation set (`reading.json`: 60 questions, 40 to tune on
 //!   and 20 held out), read by the model and by the words alone (default: scored, a model call each).
 //!
@@ -27,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use platter_ai::{MODEL, WorkerConfig};
+use platter_ai::{Engine, MODEL, ProcessEngine, RealSpawner, WorkerConfig};
 use serde_json::json;
 
 use super::super::super::tests::block_on;
@@ -80,6 +85,35 @@ fn questions() -> Vec<String> {
         .collect()
 }
 
+/// Whether `PLATTER_DEVICE` asks for the graphics card (the worker then chooses it as the app does).
+fn use_gpu() -> bool {
+    let use_gpu = std::env::var("PLATTER_DEVICE").as_deref() == Ok("gpu");
+    println!("use the graphics card: {use_gpu}");
+    use_gpu
+}
+
+/// Video memory in use on every card, in MiB, as the driver reports it.
+fn video_memory_used() -> Vec<(String, u64)> {
+    platter_ai::llama::gpus()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|card| (card.name, card.total_bytes.saturating_sub(card.free_bytes) >> 20))
+        .collect()
+}
+
+/// The model's runtime: in the helper process of the binary `PLATTER_RUNTIME_EXE` names, or else in this process.
+fn runtime() -> Box<dyn Engine> {
+    match std::env::var_os("PLATTER_RUNTIME_EXE") {
+        Some(program) => {
+            println!("the model runs in a helper process of {program:?}");
+            Box::new(ProcessEngine::new(RealSpawner {
+                program: PathBuf::from(program),
+            }))
+        }
+        None => Box::new(platter_ai::llama::LlamaEngine::new()),
+    }
+}
+
 /// The advisor on the given model file, on the app's worker and llama.cpp engine.
 fn advisor_on(model: &Path) -> AdvisorService {
     let file = model
@@ -90,15 +124,15 @@ fn advisor_on(model: &Path) -> AdvisorService {
     let dir = model.parent().expect("a models folder").to_path_buf();
 
     let config = WorkerConfig::new(MODEL, dir);
-    let engine = Box::new(platter_ai::llama::LlamaEngine::new());
     let fetch = Arc::new(platter_ai::UreqFetch::new());
-    let service = AdvisorService::spawn(config, engine, fetch).expect("the worker starts");
+    let service = AdvisorService::spawn(config, runtime(), fetch).expect("the worker starts");
 
     service
         .configure(AdvisorOptionsDto {
             enabled: true,
             unload_after: UnloadAfterDto::WindowClose,
             log_questions: true,
+            use_gpu: use_gpu(),
         })
         .expect("the advisor is switched on");
 
@@ -132,11 +166,29 @@ fn score_evaluation_set(state: &AppState, out: &mut Option<std::fs::File>) {
     let rules = platter_rules::RuleSet::builtin();
     let os = platter_core::Os::Linux;
 
+    let times = std::cell::RefCell::new(Vec::new());
     let with_model = super::eval::score(|question| {
+        let began = Instant::now();
         let model = state.advisor.interpret(question).ok();
+        times.borrow_mut().push(began.elapsed());
 
         read(question, model, &rules, os)
     });
+    let mut times = times.into_inner();
+    times.sort();
+    if !times.is_empty() {
+        let at = |share: usize| times[(times.len() * share / 100).min(times.len() - 1)];
+        println!(
+            "\nevaluation set, model reading ({} questions): p50 {:.2} s, p95 {:.2} s, max {:.2} s; model memory {:?} bytes; this process {:?} bytes; video memory used {:?} MiB",
+            times.len(),
+            at(50).as_secs_f64(),
+            at(95).as_secs_f64(),
+            times.last().map_or(0.0, |time| time.as_secs_f64()),
+            state.advisor.status().ram_bytes,
+            platter_platform::resident_bytes(),
+            video_memory_used()
+        );
+    }
     let words_only = super::eval::score(super::eval::words_only);
 
     for (name, score) in [("with the model", &with_model), ("words only", &words_only)] {
@@ -190,7 +242,14 @@ fn real_questions() {
 
     let began = Instant::now();
     state.advisor.load().expect("the model loads");
-    println!("model loaded in {:.1} s", began.elapsed().as_secs_f64());
+    println!(
+        "model loaded in {:.1} s on {:?}; model memory {:?} bytes (its helper's, when it runs in one); this process {:?} bytes; video memory used {:?} MiB",
+        began.elapsed().as_secs_f64(),
+        state.advisor.status().device,
+        state.advisor.status().ram_bytes,
+        platter_platform::resident_bytes(),
+        video_memory_used()
+    );
 
     let mut stage_a = Vec::new();
     let mut total = Vec::new();

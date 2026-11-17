@@ -13,9 +13,13 @@ workspace = true
 
 [features]
 # The advisor model (llama.cpp, built from source: needs cmake and clang). Without it the advisor
-# reports itself as `unavailable` and nothing else changes.
-default = ["advisor"]
+# reports itself as `unavailable` and nothing else changes. The default (the Linux release) also runs it
+# on a graphics card (`gpu-vulkan`: the binary links libvulkan.so.1, so packages depend on the Vulkan
+# loader; owner decision 2026-11-17). Windows and macOS builds choose their own features (P1, P2).
+default = ["advisor", "gpu-vulkan"]
 advisor = ["platter-ai/llama"]
+# The advisor on the graphics card too (Vulkan; needs the Vulkan headers and `glslc` to build).
+gpu-vulkan = ["advisor", "platter-ai/gpu-vulkan"]
 
 [lib]
 name = "platter_desktop_lib"

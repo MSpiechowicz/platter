@@ -8,6 +8,7 @@
   import type { AdvisorStore } from '../../state/advisor.svelte';
   import { visibleText } from '../overview/display';
   import {
+    deviceText,
     downloadShare,
     onDiskText,
     ramShare,
@@ -16,6 +17,7 @@
     SWITCHED_OFF_HINT,
     speedText,
     unloadAfterText,
+    videoText,
   } from './model';
 
   interface Props {
@@ -26,6 +28,10 @@
   let { status, store }: Props = $props();
 
   const ram = $derived(status ? ramText(status, fmt.size) : undefined);
+  /** On a graphics card the model is not in RAM: its video memory takes the RAM line's place. */
+  const video = $derived(status ? videoText(status, fmt.size) : undefined);
+  const device = $derived(status ? visibleText(deviceText(status)) : '—');
+  const deviceShown = $derived(status ? visibleText(deviceText(status, true)) : '—');
   const problem = $derived(store.failure ?? status?.problem);
   /** A download in progress keeps its Cancel button: the slot has no room for a problem next to it. */
   const showProblem = $derived(problem !== undefined && status?.state !== 'downloading');
@@ -34,11 +40,14 @@
 <Card title="Model">
   {#if status}
     <div class="kv">
-      <span>Name</span><span>{visibleText(status.model.name)}</span>
-      <span>Format</span><span>{visibleText(status.model.format)}</span>
-      <span>On disk</span><span class="num">{onDiskText(status, fmt.size)}</span>
-      <span>Speed</span><span class="num">{speedText(status.tokensPerSecond)}</span>
-      <span>Unloads after</span><span>{unloadAfterText(status.options.unloadAfter)}</span>
+      <div class="row"><span>Name</span><span>{visibleText(status.model.name)}</span></div>
+      <div class="row"><span>Format</span><span>{visibleText(status.model.format)}</span></div>
+      <div class="row"><span>On disk</span><span class="num">{onDiskText(status, fmt.size)}</span></div>
+      <div class="row"><span>Speed</span><span class="num">{speedText(status.tokensPerSecond)}</span></div>
+      <div class="row"><span>Runs on</span><span title={device}>{deviceShown}</span></div>
+      <div class="row">
+        <span>Unloads after</span><span>{unloadAfterText(status.options.unloadAfter)}</span>
+      </div>
     </div>
 
     <!-- One slot for what depends on the state, so the card keeps its height in every state, a problem included. -->
@@ -47,6 +56,8 @@
         <Notice kind="error"
           ><span class="clip" title={visibleText(problem)}>{visibleText(problem)}</span></Notice
         >
+      {:else if status.state === 'loaded' && video}
+        <p class="muted small">{video}</p>
       {:else if status.state === 'loaded' && ram}
         <div
           class="ram"
@@ -74,7 +85,8 @@
       {:else if status.state === 'notDownloaded'}
         <p class="muted small">The model is a one-time download of {fmt.size(status.model.bytes)}.</p>
       {:else if status.state === 'loading'}
-        <p class="muted small">Loading into RAM…</p>
+        <!-- Where the RAM bar goes once it is loaded: a segment slides along it while the model loads. -->
+        <div class="loadbar"><Bar indeterminate size="thick" label="Loading the model" /></div>
       {:else if status.state === 'onDisk'}
         <p class="muted small">
           {store.enabled ? 'Not in RAM. It loads when it is needed.' : SWITCHED_OFF_HINT}
@@ -92,18 +104,25 @@
 
 <style>
   .kv {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 7px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
     font-size: 13px;
   }
 
-  .kv span:nth-child(odd) {
-    color: var(--muted);
+  /* The label keeps its line and the value gives way (cut at the end), so a long card name moves nothing. */
+  .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
   }
 
-  .kv span:nth-child(even) {
-    text-align: right;
+  .row span:first-child {
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .row span:last-child {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -125,6 +144,14 @@
     background: var(--track);
     overflow: hidden;
     margin-bottom: 6px;
+  }
+
+  .loadbar {
+    margin-bottom: 6px;
+  }
+
+  .loadbar :global(.bar) {
+    height: 8px;
   }
 
   .ram i {

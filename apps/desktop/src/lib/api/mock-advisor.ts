@@ -10,6 +10,9 @@ import type {
   AdvisorOptionsDto,
   AdvisorStatusDto,
   FolderMatchDto,
+  GpuProblemChoice,
+  GpuProblemDto,
+  GpuProblemWhat,
   LabelDto,
   ModelState,
   ModelVerdict,
@@ -135,7 +138,32 @@ const holdsModel = (job: Job): boolean => job.kind === 'ask' && job.free === tru
 /** The longest question `askScan` takes, in characters after trimming. */
 const MAX_QUESTION_CHARS = 500;
 
-const DEFAULT_OPTIONS: AdvisorOptionsDto = { enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true };
+const DEFAULT_OPTIONS: AdvisorOptionsDto = {
+  enabled: true,
+  unloadAfter: 'fiveMinutes',
+  logQuestions: true,
+  useGpu: true,
+};
+
+/** The card and the video memory of the mock's graphics card (the owner's machine). */
+const GPU_NAME = 'AMD Radeon RX 7900 XTX (RADV NAVI31)';
+const VIDEO_LOADED = 3.2 * 1000 ** 3;
+
+/** The backend's problem line when the graphics card could not run the model. */
+const GPU_FALLBACK_PROBLEM = 'The graphics card could not run the model; it runs on the processor.';
+
+/**
+ * What the mock's build and graphics card do: `works` runs the model on the card; `fallback` has a card that fails,
+ * so the model runs on the processor and says so; `none` is a build without graphics card support.
+ */
+export type MockGpu = 'works' | 'fallback' | 'none';
+
+/** The mock's source of graphics card incidents: one that is there at start, pending or only in the log. */
+export interface MockGpuIncident {
+  what: GpuProblemWhat;
+  /** Waiting for the user's answer (the card is blocked, so the model runs on the processor); else only logged. */
+  pending: boolean;
+}
 
 /** What a URL hook can start the mock in. */
 export type MockAdvisorState = 'none' | 'downloading' | 'failed' | 'disk' | 'loaded';
@@ -154,6 +182,10 @@ export interface MockAdvisorOptions {
   /** Where the machine starts (default `none`). */
   state?: MockAdvisorState;
   options?: AdvisorOptionsDto;
+  /** The graphics card of the build (default `works`). */
+  gpu?: MockGpu;
+  /** A graphics card incident the mock starts with (default none). */
+  gpuIncident?: MockGpuIncident;
   /** Test hook: something that is not a file is at the log's path, so clearing the log fails with `io`. */
   questionLogBlocked?: boolean;
   /** Test hook: the answer of the download's confirmation dialog (default: confirmed). */
@@ -166,6 +198,8 @@ export type MockAdvisorApi = Pick<
   | 'watchAdvisor'
   | 'configureAdvisor'
   | 'clearQuestionLog'
+  | 'answerGpuProblem'
+  | 'clearGpuLog'
   | 'startModelDownload'
   | 'cancelModelDownload'
   | 'loadModel'
@@ -491,6 +525,8 @@ function validOptions(value: AdvisorOptionsDto): boolean {
     value !== null &&
     typeof value.enabled === 'boolean' &&
     typeof value.logQuestions === 'boolean' &&
+    // As the backend: `useGpu` may be left out (it is then on).
+    (value.useGpu === undefined || typeof value.useGpu === 'boolean') &&
     Object.hasOwn(IDLE_MS, value.unloadAfter)
   );
 }
@@ -560,6 +596,34 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
 
   let state: ModelState = 'notDownloaded';
   let options: AdvisorOptionsDto = { ...(init.options ?? DEFAULT_OPTIONS) };
+  const gpu = init.gpu ?? 'works';
+  /** The unanswered incident. */
+  let pendingGpu: GpuProblemDto | undefined;
+  /** The card is blocked from the incident until "try again": the model runs on the processor. */
+  let gpuBlocked = false;
+  /** The last incident of the log, answered or not; clearing the log removes it. */
+  let lastGpu: GpuProblemDto | undefined;
+  /** A model that stays on the processor after "try again" until it is unloaded; the card is tried at the next load. */
+  let heldOnCpu = false;
+  let lastIncidentId = 0;
+
+  /** As the backend: the id is the Unix time in ms, bumped when it equals the one before. */
+  const incident = (what: GpuProblemWhat): GpuProblemDto => {
+    lastIncidentId = Math.max(Date.now(), lastIncidentId + 1);
+
+    return { id: lastIncidentId, at: lastIncidentId, card: GPU_NAME, what };
+  };
+
+  if (init.gpuIncident) {
+    lastGpu = incident(init.gpuIncident.what);
+    pendingGpu = init.gpuIncident.pending ? lastGpu : undefined;
+    gpuBlocked = pendingGpu !== undefined;
+  }
+
+  /** Whether the option asks for the card, the build has it and nothing blocks it. */
+  const wantsCard = (): boolean => options.useGpu && gpu === 'works' && !gpuBlocked;
+  /** Whether a loaded model sits on the graphics card. */
+  const onCard = (): boolean => wantsCard() && !heldOnCpu;
   /** Bytes of the partial download. */
   let received = 0;
   let watcher: ((status: AdvisorStatusDto) => void) | null = null;
@@ -579,10 +643,16 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
       model: { ...MODEL },
       options: { ...options },
       ramTotal: RAM_TOTAL,
+      gpuSupported: gpu !== 'none',
     };
+
+    // A loaded model that had to leave the failing card says so; switching the card off clears the line.
+    const fallback = state === 'loaded' && options.useGpu && (gpu === 'fallback' || gpuBlocked || heldOnCpu);
 
     if (problem !== null) {
       dto.problem = problem;
+    } else if (fallback) {
+      dto.problem = GPU_FALLBACK_PROBLEM;
     }
 
     if (state === 'downloading' || (state === 'notDownloaded' && received > 0)) {
@@ -592,6 +662,13 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
     if (state === 'loaded') {
       dto.ramBytes = RAM_LOADED;
 
+      if (onCard()) {
+        dto.device = { kind: 'gpu', name: GPU_NAME };
+        dto.videoBytes = VIDEO_LOADED;
+      } else {
+        dto.device = { kind: 'cpu' };
+      }
+
       if (tokensPerSecond !== null) {
         dto.tokensPerSecond = tokensPerSecond;
       }
@@ -599,6 +676,14 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
 
     if (job?.kind === 'label') {
       dto.labelling = { scan: job.scan, done: job.done, total: job.candidates.length };
+    }
+
+    if (pendingGpu) {
+      dto.gpuProblem = { ...pendingGpu };
+    }
+
+    if (lastGpu) {
+      dto.lastGpuProblem = { ...lastGpu };
     }
 
     return dto;
@@ -675,6 +760,7 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
     idleTimer = stopTimer(idleTimer);
     state = 'onDisk';
     tokensPerSecond = null;
+    heldOnCpu = false;
     push();
   };
 
@@ -803,6 +889,35 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
       }
     },
 
+    async answerGpuProblem(id, choice: GpuProblemChoice) {
+      // As the backend: a closed choice, and only the problem that is waiting.
+      if (choice !== 'useCpu' && choice !== 'tryAgain') {
+        return invalid('The choice is not valid.');
+      }
+
+      if (pendingGpu === undefined || pendingGpu.id !== id) {
+        return invalid('That graphics card problem is not waiting for an answer.');
+      }
+
+      pendingGpu = undefined;
+
+      if (choice === 'tryAgain') {
+        // The card is tried at the next load; a model already on the processor stays there.
+        heldOnCpu = state === 'loaded';
+        gpuBlocked = false;
+      }
+
+      push();
+
+      return status();
+    },
+
+    async clearGpuLog() {
+      // As the backend: no log is fine; a problem that waits for an answer stays for this session.
+      lastGpu = undefined;
+      push();
+    },
+
     async configureAdvisor(next) {
       if (!validOptions(next)) {
         return invalid('The advisor options are not valid.');
@@ -811,9 +926,23 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
       const changed =
         next.enabled !== options.enabled ||
         next.unloadAfter !== options.unloadAfter ||
-        next.logQuestions !== options.logQuestions;
+        next.logQuestions !== options.logQuestions ||
+        (next.useGpu ?? true) !== options.useGpu;
+      const wasOnCard = onCard();
 
-      options = { enabled: next.enabled, unloadAfter: next.unloadAfter, logQuestions: next.logQuestions };
+      options = {
+        enabled: next.enabled,
+        unloadAfter: next.unloadAfter,
+        logQuestions: next.logQuestions,
+        useGpu: next.useGpu ?? true,
+      };
+
+      // As the backend: with the card switched off, a problem that waits for an answer is answered `useCpu`.
+      const answersPending = !options.useGpu && pendingGpu !== undefined;
+
+      if (answersPending) {
+        pendingGpu = undefined;
+      }
 
       // Switching the model off ends a labelling or a question in progress.
       if (!options.enabled) {
@@ -821,7 +950,7 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
       }
 
       // As the backend: a change of the options alone is pushed too.
-      if (changed) {
+      if (changed || answersPending) {
         push();
       }
 
@@ -835,6 +964,10 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
         unload();
         finish?.(status());
       } else if (!options.enabled && state === 'loaded') {
+        unload();
+      } else if (state === 'loaded' && wasOnCard !== wantsCard()) {
+        // As the backend: a model that is not where the options put it is unloaded; the next load chooses again.
+        dropJob(new ApiRequestError('cancelled', 'The model was unloaded to change where it runs.'));
         unload();
       } else if (state === 'loaded' && changed && job === null) {
         startIdleTimer();

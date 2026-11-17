@@ -228,7 +228,9 @@ fn run_model(path: PathBuf, sets: &[String], answers_prefix: Option<String>) {
     let verified = verify(&spec, &path).expect("the model file matches its pinned size and checksum");
     let verify_ms = started.elapsed().as_millis();
     let mut engine = LlamaEngine::new();
-    let info = engine.load(&verified, THREADS).expect("the model loads");
+    let info = engine
+        .load(&verified, THREADS, platter_ai::Placement::Cpu)
+        .expect("the model loads");
     let load_total_ms = started.elapsed().as_millis();
     let rss_loaded = proc_status_bytes("VmRSS");
     eprintln!(

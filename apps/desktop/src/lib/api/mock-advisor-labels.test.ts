@@ -139,7 +139,7 @@ describe('labelFolders: validation', () => {
 
     const off = setup({
       state: 'disk',
-      options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true },
+      options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true },
     });
 
     await expectCode(off.api.labelFolders(await off.scan), 'invalid');
@@ -304,7 +304,7 @@ describe('labelFolders: a run', () => {
     const { api, timers, scan } = setup({ state: 'loaded' });
     const id = await scan;
 
-    await api.configureAdvisor({ enabled: true, unloadAfter: 'oneMinute', logQuestions: true });
+    await api.configureAdvisor({ enabled: true, unloadAfter: 'oneMinute', logQuestions: true, useGpu: true });
     await labelAll(api, timers, id);
 
     expect((await api.advisorStatus()).state).toBe('loaded');
@@ -325,7 +325,12 @@ describe('labelFolders: a run', () => {
     await expect(api.labelFolders(id)).resolves.toBeUndefined();
     expect(events.at(-1)).toMatchObject({ state: 'loading', labelling: { scan: id } });
 
-    await api.configureAdvisor({ enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true });
+    await api.configureAdvisor({
+      enabled: false,
+      unloadAfter: 'fiveMinutes',
+      logQuestions: true,
+      useGpu: true,
+    });
 
     const status = await api.advisorStatus();
 
@@ -403,7 +408,12 @@ describe('cancelLabelling and ending early', () => {
 
     await api.unloadModel();
     await api.labelFolders(id);
-    await api.configureAdvisor({ enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true });
+    await api.configureAdvisor({
+      enabled: false,
+      unloadAfter: 'fiveMinutes',
+      logQuestions: true,
+      useGpu: true,
+    });
     timers.advance(LOAD_MS + LABEL_MS * 100);
 
     expect(await api.getAdvisorLabels(id)).toEqual(first);
@@ -477,6 +487,7 @@ describe('cancelLabelling and ending early', () => {
       enabled: false,
       unloadAfter: 'fiveMinutes',
       logQuestions: true,
+      useGpu: true,
     });
 
     expect(status.state).toBe('onDisk');
@@ -720,7 +731,12 @@ describe('suggestions and cleanup of the labels', () => {
 
     expect(advisorOf(on.suggestions)).toBeDefined();
 
-    await api.configureAdvisor({ enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true });
+    await api.configureAdvisor({
+      enabled: false,
+      unloadAfter: 'fiveMinutes',
+      logQuestions: true,
+      useGpu: true,
+    });
 
     const off = await api.getSuggestions(id);
 
@@ -734,7 +750,12 @@ describe('suggestions and cleanup of the labels', () => {
     expect((await api.planCleanup(id, ['trash'])).groups.map((group) => group.ruleId)).toEqual(['trash']);
     expect(await api.getAdvisorLabels(id)).toMatchObject({ labelled: labels.labelled });
 
-    await api.configureAdvisor({ enabled: true, unloadAfter: 'fiveMinutes', logQuestions: true });
+    await api.configureAdvisor({
+      enabled: true,
+      unloadAfter: 'fiveMinutes',
+      logQuestions: true,
+      useGpu: true,
+    });
 
     expect(advisorOf((await api.getSuggestions(id)).suggestions)).toBeDefined();
     expect((await api.planCleanup(id, ['advisor'])).groups[0]?.ruleId).toBe('advisor');
@@ -743,7 +764,7 @@ describe('suggestions and cleanup of the labels', () => {
   it('has no advisor group in a scan made while the advisor is switched off', async () => {
     const { api, scan } = setup({
       state: 'disk',
-      options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true },
+      options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true },
     });
     const id = await scan;
 
@@ -942,7 +963,10 @@ describe('askAdvisor: the answer comes from the rules alone', () => {
       { state: 'downloading' },
       { state: 'disk' },
       { state: 'loaded' },
-      { state: 'disk', options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true } },
+      {
+        state: 'disk',
+        options: { enabled: false, unloadAfter: 'fiveMinutes', logQuestions: true, useGpu: true },
+      },
     ] as const) {
       const { api, timers, events, scan } = setup(advisor);
       const id = await scan;
@@ -999,7 +1023,7 @@ describe('askAdvisor: the answer comes from the rules alone', () => {
     const { api, timers, scan } = setup({ state: 'loaded' });
     const id = await scan;
 
-    await api.configureAdvisor({ enabled: true, unloadAfter: 'oneMinute', logQuestions: true });
+    await api.configureAdvisor({ enabled: true, unloadAfter: 'oneMinute', logQuestions: true, useGpu: true });
     await api.askAdvisor(id, await folder(api, id, '/var/tmp'));
 
     timers.advance(60_000);

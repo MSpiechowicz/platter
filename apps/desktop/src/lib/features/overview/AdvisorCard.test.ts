@@ -169,8 +169,9 @@ describe('AdvisorCard', () => {
         bytes: 1,
         host: 'huggingface.co',
       },
-      options: { enabled: true, unloadAfter: 'fiveMinutes' as const, logQuestions: true },
+      options: { enabled: true, unloadAfter: 'fiveMinutes' as const, logQuestions: true, useGpu: true },
       ramTotal: 1,
+      gpuSupported: false,
     });
 
     advisor.status = hint('loaded');

@@ -107,14 +107,17 @@ function advisorScan(): boolean {
  */
 async function startAdvisor(): Promise<void> {
   // A model that is on disk is on in the settings; one that is not there yet is off, as for a user.
-  if (hooks.advisor === 'disk' || hooks.advisor === 'loaded') {
+  // A graphics card problem waiting at start is about a model that is running, so the mock starts loaded.
+  const target = hooks.advisor ?? (hooks.gpuProblem ? 'loaded' : null);
+
+  if (target === 'disk' || target === 'loaded') {
     settings.advisorEnabled = true;
   }
 
   await advisor.configure();
 
-  if (hooks.advisor !== null) {
-    setMockAdvisorState(hooks.advisor);
+  if (target !== null) {
+    setMockAdvisorState(target);
   }
 
   // No download prompt at start: the user downloads the model from the Advisor view or Settings when they want it.

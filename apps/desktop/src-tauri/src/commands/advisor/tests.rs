@@ -75,6 +75,7 @@ fn rig(on_disk: bool) -> Rig {
             enabled: true,
             unload_after: UnloadAfterDto::FiveMinutes,
             log_questions: true,
+            use_gpu: true,
         })
         .unwrap();
 
@@ -171,13 +172,24 @@ fn the_status_is_sent_in_the_contracts_shape() {
     assert_eq!(json["model"]["host"], "models.example");
     assert_eq!(
         json["options"],
-        json!({ "enabled": false, "unloadAfter": "fiveMinutes", "logQuestions": true })
+        json!({ "enabled": false, "unloadAfter": "fiveMinutes", "logQuestions": true, "useGpu": true })
     );
+    assert_eq!(json["gpuSupported"], cfg!(feature = "gpu-vulkan"));
     for gone in ["models", "recommended"] {
         assert!(json.get(gone).is_none(), "{gone} is not in the status");
     }
     assert!(json["ramTotal"].is_u64());
-    for absent in ["download", "problem", "ramBytes", "tokensPerSecond", "labelling"] {
+    for absent in [
+        "download",
+        "problem",
+        "ramBytes",
+        "tokensPerSecond",
+        "labelling",
+        "device",
+        "videoBytes",
+        "gpuProblem",
+        "lastGpuProblem",
+    ] {
         assert!(
             json.get(absent).is_none(),
             "{absent} is left out until it has a value"
@@ -304,6 +316,7 @@ fn the_options_are_kept_and_switching_off_unloads_and_refuses_a_load() {
             enabled: false,
             unload_after: UnloadAfterDto::WindowClose,
             log_questions: true,
+            use_gpu: true,
         })
         .unwrap();
 
@@ -314,6 +327,7 @@ fn the_options_are_kept_and_switching_off_unloads_and_refuses_a_load() {
             enabled: false,
             unload_after: UnloadAfterDto::WindowClose,
             log_questions: true,
+            use_gpu: true,
         }
     );
     assert_eq!(rig.service.status().options, off.options);
@@ -371,6 +385,7 @@ fn without_a_runtime_the_state_is_unavailable_and_only_the_options_work() {
             enabled: false,
             unload_after: UnloadAfterDto::OneMinute,
             log_questions: true,
+            use_gpu: true,
         })
         .unwrap();
     assert_eq!(kept.state, ModelStateDto::Unavailable);
@@ -381,7 +396,7 @@ fn without_a_runtime_the_state_is_unavailable_and_only_the_options_work() {
 
 // ---- Through Tauri's IPC: names of commands and arguments, and what the web view may send ----
 
-fn app(rig_service: AdvisorService) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
+pub(super) fn app(rig_service: AdvisorService) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
     app_asking(rig_service, Dialog::answering(true))
 }
 
@@ -409,6 +424,8 @@ fn app_asking(
             ask_advisor,
             find_folders,
             clear_question_log,
+            answer_gpu_problem,
+            clear_gpu_log,
             crate::commands::suggestions::get_suggestions,
         ])
         .build(tauri::generate_context!())
@@ -492,7 +509,12 @@ fn the_commands_work_over_ipc_with_the_contracts_names() {
     .unwrap();
     assert_eq!(
         configured["options"],
-        json!({ "enabled": true, "unloadAfter": "windowClose", "logQuestions": true })
+        json!({ "enabled": true, "unloadAfter": "windowClose", "logQuestions": true, "useGpu": true })
+    );
+    assert_eq!(
+        configured["device"],
+        json!({ "kind": "cpu" }),
+        "the fake has no card"
     );
     assert_eq!(
         invoke(&window, "unload_model", json!({})).unwrap()["state"],
@@ -614,6 +636,7 @@ fn the_options_are_enabled_unload_after_and_log_questions() {
         enabled: true,
         unload_after: UnloadAfterDto::OneMinute,
         log_questions: false,
+        use_gpu: true,
     };
 
     assert_eq!(
@@ -622,7 +645,18 @@ fn the_options_are_enabled_unload_after_and_log_questions() {
     );
     assert_eq!(
         serde_json::to_value(options).unwrap(),
-        json!({ "enabled": true, "unloadAfter": "oneMinute", "logQuestions": false })
+        json!({ "enabled": true, "unloadAfter": "oneMinute", "logQuestions": false, "useGpu": true })
+    );
+    assert!(
+        !sent(json!({ "enabled": true, "unloadAfter": "oneMinute", "useGpu": false }))
+            .unwrap()
+            .use_gpu
+    );
+    assert!(
+        sent(json!({ "enabled": true, "unloadAfter": "oneMinute" }))
+            .unwrap()
+            .use_gpu,
+        "the graphics card is used unless the options say otherwise"
     );
     assert!(
         sent(json!({ "enabled": true, "unloadAfter": "oneMinute" }))
@@ -634,6 +668,8 @@ fn the_options_are_enabled_unload_after_and_log_questions() {
     for refused in [
         json!({ "enabled": true }),
         json!({ "enabled": true, "unloadAfter": "oneMinute", "logQuestions": "yes" }),
+        json!({ "enabled": true, "unloadAfter": "oneMinute", "useGpu": "yes" }),
+        json!({ "enabled": true, "unloadAfter": "oneMinute", "useGpu": true, "device": 1 }),
         json!({ "enabled": true, "unloadAfter": "oneMinute", "model": "qwen3.5-4b" }),
         json!({ "enabled": true, "unloadAfter": "oneMinute", "model": "qwen3.5-2b" }),
         json!({ "enabled": true, "unloadAfter": "oneMinute", "path": "/tmp/x" }),
@@ -669,7 +705,7 @@ fn configuring_over_ipc_answers_without_a_model_choice_and_an_old_model_field_is
 
     assert_eq!(
         set["options"],
-        json!({ "enabled": true, "unloadAfter": "oneMinute", "logQuestions": false })
+        json!({ "enabled": true, "unloadAfter": "oneMinute", "logQuestions": false, "useGpu": true })
     );
     assert_eq!(set["state"], "onDisk");
     assert!(set["model"].get("id").is_none());
@@ -885,6 +921,7 @@ fn an_approved_download_that_was_cancelled_asks_again() {
             enabled: true,
             unload_after: UnloadAfterDto::FiveMinutes,
             log_questions: true,
+            use_gpu: true,
         })
         .unwrap();
     let dialog = Dialog::answering(true);
@@ -1169,6 +1206,7 @@ fn switch_service(service: &AdvisorService, enabled: bool) {
             enabled,
             unload_after: UnloadAfterDto::FiveMinutes,
             log_questions: true,
+            use_gpu: true,
         })
         .unwrap();
 }
@@ -2145,4 +2183,19 @@ fn a_folder_kept_through_a_link_is_no_label_candidate_and_no_label_in_it_is_list
     );
     assert!(plan.refused.is_empty(), "{plan:#?}");
     assert_eq!(plan.targets().count(), 1, "{plan:#?}");
+}
+
+#[test]
+fn where_the_model_runs_is_sent_as_a_closed_kind_and_the_cards_name() {
+    assert_eq!(
+        serde_json::to_value(DeviceDto::from(&Device::Gpu {
+            name: "AMD Radeon RX 7900 XTX (RADV NAVI31)".to_owned()
+        }))
+        .unwrap(),
+        json!({ "kind": "gpu", "name": "AMD Radeon RX 7900 XTX (RADV NAVI31)" })
+    );
+    assert_eq!(
+        serde_json::to_value(DeviceDto::from(&Device::Cpu)).unwrap(),
+        json!({ "kind": "cpu" })
+    );
 }

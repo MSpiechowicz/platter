@@ -69,10 +69,11 @@ impl AppState {
         Self::with_parts(advisor, UserRulesStore::new(None))
     }
 
-    /// What most tests use: the production advisor and no rules file (the user's real rules are never read).
+    /// What most tests use: an advisor with no model runtime and no graphics card problem log, and no rules
+    /// file (the user's real rules and logs are never read, and no helper process is ever started).
     #[cfg(test)]
     pub fn for_test() -> Self {
-        Self::with_parts(AdvisorService::production(), UserRulesStore::new(None))
+        Self::with_parts(AdvisorService::for_test(), UserRulesStore::new(None))
     }
 
     /// The state with another advisor and another place for the user's rules, and no question log (a test

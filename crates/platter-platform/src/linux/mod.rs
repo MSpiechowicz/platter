@@ -38,6 +38,7 @@ mod open;
 pub mod pinned;
 pub mod probe;
 pub mod remove;
+pub(crate) mod runtime;
 #[cfg(test)]
 mod tests;
 pub mod tools;

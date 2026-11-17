@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { delayed } from '../../state/delayed.svelte';
   import { api } from '../../api';
   import { baseName, formatCount, formatDuration } from '../../format';
   import PageHeader from '../../components/layout/PageHeader.svelte';
@@ -72,6 +73,9 @@
       ? `${baseName(wholeVolume.device)} · ${wholeVolume.fsType} · mounted at ${wholeVolume.mountPoint}`
       : options.root;
   });
+
+  // A spinner that appeared stays at least a second, so the content does not replace it after a flash.
+  const shown = delayed(() => !overview.data && !overview.error && overview.loading);
 </script>
 
 <div class="overview">
@@ -89,7 +93,7 @@
     </div>
   </PageHeader>
 
-  {#if overview.data}
+  {#if overview.data && !shown.value}
     {@const data = overview.data}
     <div class="grid">
       <div class="col l">
@@ -139,11 +143,11 @@
         />
       </div>
     </div>
-  {:else if overview.error}
+  {:else if overview.error && !shown.value}
     <Notice kind="error">The scan could not be read: {describeError(overview.error)}</Notice>
   {:else}
     <Card class="waiting" aria-busy="true">
-      <Loading when={overview.loading} label="Reading the scan…" />
+      <Loading when={overview.loading || shown.value} label="Reading the scan…" />
     </Card>
   {/if}
 </div>
