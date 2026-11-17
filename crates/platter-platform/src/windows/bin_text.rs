@@ -20,7 +20,13 @@
 //!   volume's total size. That is the low end of what Windows documents (Windows has used 10% of the first
 //!   40 GB and 5% of the rest, and 5% for the whole volume), so the default can only refuse more.
 //! - A size is counted as whole [`CLUSTER`]-byte blocks per file, because the shell may count what the
-//!   file takes on the disk, not its length.
+//!   file takes on the disk, not its length. [`CLUSTER`] is 64 KiB, the largest cluster NTFS and ReFS
+//!   use, so a volume formatted with big clusters is never undercounted (over-counting only refuses more).
+//!   Reading the real cluster size needs a system call that has no safe API in the project.
+//! - A folder moved to the bin is renamed to `<drive>:\$Recycle.Bin\<SID>\$Rxxxxxx`, and everything below
+//!   it keeps its relative path, so a path that is short where it is can be longer than `MAX_PATH` (260)
+//!   in the bin, and then the shell asks whether to delete it for good. [`fits_bin_path`] refuses an item
+//!   when [`BIN_PREFIX_UNITS`] plus its name plus the longest path below it reaches [`MAX_PATH_UNITS`].
 //!
 //! What cannot be read is not guessed: a value that is not a `REG_DWORD` is an error.
 
@@ -29,8 +35,34 @@ use std::fmt::Write as _;
 /// The share of the volume's size the bin is taken to hold when the volume's key has no `MaxCapacity`.
 pub const DEFAULT_PERCENT: u64 = 5;
 
-/// A file is counted in whole blocks of this many bytes.
-pub const CLUSTER: u64 = 4096;
+/// A file is counted in whole blocks of this many bytes: the largest cluster size of NTFS and ReFS.
+pub const CLUSTER: u64 = 64 * 1024;
+
+/// The UTF-16 units of `MAX_PATH`, the terminating NUL included: a path in the bin has to be shorter.
+pub const MAX_PATH_UNITS: usize = 260;
+
+/// An upper bound for what comes before the name of an item in the bin, `C:\$Recycle.Bin\S-1-5-21-a-b-c-d\`
+/// and the `\$Rxxxxxx` of the item: 3 + 12 + 1 + at most 61 for a SID (`S-1-5-21-` and four numbers of at
+/// most 10 digits) + 1 + 8 = 86, and some room.
+pub const BIN_PREFIX_UNITS: usize = 100;
+
+/// Whether an item whose name is `name_units` UTF-16 units long, and whose longest path below it
+/// (each name with the separator before it, `\a\b`) is `longest_below_units` long, keeps a path shorter
+/// than `MAX_PATH` in the bin. The name is counted in whole (the bin names it `$R` and six characters
+/// plus the extension, which is not longer).
+pub fn fits_bin_path(name_units: usize, longest_below_units: usize) -> Result<(), String> {
+    let longest = BIN_PREFIX_UNITS
+        .saturating_add(name_units)
+        .saturating_add(longest_below_units);
+    if longest < MAX_PATH_UNITS {
+        return Ok(());
+    }
+
+    Err(format!(
+        "its path in the Recycle Bin would reach {longest} characters (Windows allows {}), so Windows would ask to delete it for good",
+        MAX_PATH_UNITS - 1
+    ))
+}
 
 /// One value that `reg query` printed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -401,9 +433,21 @@ mod tests {
     #[test]
     fn a_file_counts_in_whole_blocks() {
         assert_eq!(charged(0), 0);
-        assert_eq!(charged(1), 4096);
-        assert_eq!(charged(4096), 4096);
-        assert_eq!(charged(4097), 8192);
+        assert_eq!(charged(1), 65536);
+        assert_eq!(charged(65536), 65536);
+        assert_eq!(charged(65537), 131072);
         assert_eq!(charged(u64::MAX), u64::MAX, "it saturates");
+    }
+
+    #[test]
+    fn a_path_that_would_pass_max_path_in_the_bin_is_refused() {
+        // 100 + name + below must stay under 260.
+        assert!(fits_bin_path(20, 0).is_ok());
+        assert!(fits_bin_path(20, 139).is_ok(), "159 + 100 = 259");
+        assert!(fits_bin_path(20, 140).is_err(), "260 is too long");
+        assert!(fits_bin_path(160, 0).is_err(), "a file with a long name alone");
+        assert!(fits_bin_path(159, 0).is_ok());
+        assert!(fits_bin_path(usize::MAX, usize::MAX).is_err(), "it saturates");
+        assert!(fits_bin_path(160, 0).unwrap_err().contains("259"));
     }
 }

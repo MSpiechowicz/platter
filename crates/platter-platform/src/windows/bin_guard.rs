@@ -12,6 +12,7 @@
 //! key that always exists answers: a `reg` that fails for another reason is an error, not "no setting".
 
 use std::io::{self, Read};
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -20,20 +21,24 @@ use std::time::{Duration, Instant};
 
 use known_folders::{KnownFolder, get_known_folder_path};
 
-use super::bin_text::{RegValue, Rules, Settings, charged, dword, has, parse_reg_values, parse_volume_guid};
+use super::bin_text::{
+    RegValue, Rules, Settings, charged, dword, fits_bin_path, has, parse_reg_values, parse_volume_guid,
+};
 
 /// `CREATE_NO_WINDOW`.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-/// `FILE_ATTRIBUTE_REPARSE_POINT`: a link of any kind, which is never entered.
+/// `FILE_ATTRIBUTE_REPARSE_POINT`: a link or another kind of reparse point.
 const REPARSE_POINT: u32 = 0x400;
 /// How long one of the tools may take.
 const TOOL_LIMIT: Duration = Duration::from_secs(15);
 /// How much of a tool's output is read.
 const TOOL_OUTPUT_BYTES: u64 = 1024 * 1024;
 
-/// How many entries of a folder are looked at to measure it, and for how long.
+/// How many entries of a folder are looked at to measure it, and for how long. Emptying a folder measures
+/// each child, all of them together within [`MEASURE_TARGET_LIMIT`].
 const MEASURE_ENTRIES: usize = 200_000;
 const MEASURE_LIMIT: Duration = Duration::from_secs(30);
+pub(super) const MEASURE_TARGET_LIMIT: Duration = Duration::from_secs(60);
 
 const HKCU_BASE: &str = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion";
 const HKLM_BASE: &str = "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion";
@@ -62,37 +67,73 @@ pub(super) fn refused(why: &str) -> io::Error {
 }
 
 /// Whether the bin takes the item at `path`: a file of `file_length` bytes, or a folder, which is measured
-/// (links are not entered, a file counts in whole blocks). A folder with more than [`MEASURE_ENTRIES`]
-/// entries, or one that takes more than [`MEASURE_LIMIT`] to look at, is refused: it cannot be known to fit.
-pub(super) fn takes(rules: &Rules, path: &Path, is_dir: bool, file_length: u64) -> Result<(), String> {
+/// (a file counts in whole blocks). The item is also refused when its path in the bin would be longer than
+/// the shell allows (see [`fits_bin_path`]): its own name for a file, the longest path below it for a
+/// folder. Below a folder:
+///
+/// - a link to a folder (a junction, a symbolic link, a mount point) is not entered and counts for its name:
+///   the shell moves a link as itself, which is what the trash crate (`FOF_ALLOWUNDO`) and Explorer do and
+///   is not something that can be checked here without the shell;
+/// - any other folder with a reparse point on it (cloud files, say) is refused, because the shell may enter
+///   it and what it holds cannot be measured;
+/// - a file with a reparse point (compressed with WOF, deduplicated, a cloud placeholder, an app link)
+///   counts for its length: that is at least what it takes, and a larger count only refuses more.
+///
+/// A folder with more than [`MEASURE_ENTRIES`] entries, or that is still being looked at when `until`
+/// passes (`None`: no earlier limit; in any case after [`MEASURE_LIMIT`]), is refused: it cannot be known to fit.
+pub(super) fn takes(
+    rules: &Rules,
+    path: &Path,
+    is_dir: bool,
+    file_length: u64,
+    until: Option<Instant>,
+) -> Result<(), String> {
+    let name_units = path.file_name().map_or(0, |name| name.encode_wide().count());
     if !is_dir {
+        fits_bin_path(name_units, 0)?;
+
         return rules.takes(charged(file_length));
     }
 
     let started = Instant::now();
+    let stop = until.map_or(started + MEASURE_LIMIT, |until| {
+        until.min(started + MEASURE_LIMIT)
+    });
     let mut total = 0u64;
     let mut seen = 0usize;
-    let mut pending = vec![path.to_path_buf()];
+    let mut longest_below = 0usize;
+    // Each folder with the length of its path below the item (`\a\b`).
+    let mut pending = vec![(path.to_path_buf(), 0usize)];
 
-    while let Some(folder) = pending.pop() {
+    while let Some((folder, depth)) = pending.pop() {
         let unreadable = |error: io::Error| format!("it could not be measured ({error})");
         for entry in std::fs::read_dir(&folder).map_err(unreadable)? {
             let entry = entry.map_err(unreadable)?;
 
             seen += 1;
-            if seen > MEASURE_ENTRIES || started.elapsed() > MEASURE_LIMIT {
+            if seen > MEASURE_ENTRIES || Instant::now() > stop {
                 return Err(format!(
-                    "it holds too much to measure (over {MEASURE_ENTRIES} items, or more than {} s)",
-                    MEASURE_LIMIT.as_secs()
+                    "it holds too much to measure (over {MEASURE_ENTRIES} items, or it took too long)"
                 ));
             }
 
+            let below = depth
+                .saturating_add(1)
+                .saturating_add(entry.file_name().encode_wide().count());
+            longest_below = longest_below.max(below);
+            fits_bin_path(name_units, longest_below)?;
+
             let meta = entry.metadata().map_err(unreadable)?;
-            if meta.file_attributes() & REPARSE_POINT != 0 {
-                continue;
-            }
             if meta.is_dir() {
-                pending.push(entry.path());
+                // `is_dir` is false for a link to a folder (junction, symbolic link, mount point: the
+                // standard library reads those as links), so a folder with a reparse point here is another kind.
+                if meta.file_attributes() & REPARSE_POINT != 0 {
+                    return Err(
+                        "it holds a folder that is not an ordinary folder or link (cloud files, say), which Windows may enter"
+                            .to_owned(),
+                    );
+                }
+                pending.push((entry.path(), below));
                 continue;
             }
 

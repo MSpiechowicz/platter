@@ -158,6 +158,28 @@ fn an_entry_that_is_gone_without_a_restorable_item_is_recorded_as_deleted_never_
     );
 }
 
+#[test]
+fn an_entry_whose_fate_is_unknown_is_not_recorded_nor_counted_as_freed() {
+    let groups = [("win-temp", CleanupAction::TrashChildren)];
+    let unknown = result(
+        "win-temp",
+        "C:\\Users\\u\\AppData\\Local\\Temp\\huge.bin",
+        900,
+        TargetOutcome::Unconfirmed("it may be waiting on a prompt".to_owned()),
+    );
+
+    assert!(
+        describe_run(&groups, std::slice::from_ref(&unknown), None, 1).is_none(),
+        "nothing is known to have happened"
+    );
+
+    let mixed = [removed("win-temp", 100), unknown];
+    let described = describe_run(&groups, &mixed, None, 1).unwrap();
+
+    assert!(described.items.is_empty());
+    assert_eq!(described.freed, 100, "only what is known to be gone counts");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_run_lists_each_group_that_did_something_once() {

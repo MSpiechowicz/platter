@@ -111,7 +111,10 @@ fn is_clean(outcome: &TargetOutcome) -> bool {
     match outcome {
         TargetOutcome::Removed(removed) => !removed.has_errors() && removed.skipped_mounts == 0,
         TargetOutcome::Trashed(_) | TargetOutcome::ByTool(_) => true,
-        TargetOutcome::NotRecycled(_) | TargetOutcome::Skipped(_) | TargetOutcome::Failed(_) => false,
+        TargetOutcome::NotRecycled(_)
+        | TargetOutcome::Unconfirmed(_)
+        | TargetOutcome::Skipped(_)
+        | TargetOutcome::Failed(_) => false,
     }
 }
 
@@ -222,7 +225,10 @@ fn render_report(report: &CleanupReport, os: Os) -> String {
                 }
             }
             TargetOutcome::Trashed(_) | TargetOutcome::ByTool(_) => {}
-            TargetOutcome::NotRecycled(why) | TargetOutcome::Skipped(why) | TargetOutcome::Failed(why) => {
+            TargetOutcome::NotRecycled(why)
+            | TargetOutcome::Unconfirmed(why)
+            | TargetOutcome::Skipped(why)
+            | TargetOutcome::Failed(why) => {
                 problems.push(format!("  {path}: {}", format::display(why)));
             }
         }

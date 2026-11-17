@@ -1411,6 +1411,9 @@ fn outcome_dto(outcome: &TargetOutcome) -> OutcomeDto {
         // Gone from its place with nothing to put back (deleted for good, or it may be in the Recycle Bin):
         // it is told as removed, with the reason and one problem, never as trashed.
         TargetOutcome::NotRecycled(why) => (OutcomeKind::Removed, Some(why.clone()), 1),
+        // Not known what happened (the Recycle Bin did not answer): shown as a problem, not as removed,
+        // and its size is not counted as freed.
+        TargetOutcome::Unconfirmed(why) => (OutcomeKind::Failed, Some(why.clone()), 0),
         TargetOutcome::Trashed(_) => (OutcomeKind::Trashed, None, 0),
         TargetOutcome::ByTool(command) => (OutcomeKind::ByTool, Some(command.clone()), 0),
         TargetOutcome::Skipped(why) => (OutcomeKind::Skipped, Some(why.clone()), 0),

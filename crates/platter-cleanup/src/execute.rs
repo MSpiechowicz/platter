@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use platter_core::ports::{ChildTrashed, not_recycled};
+use platter_core::ports::{ChildTrashed, not_recycled, unconfirmed};
 use platter_core::{
     CancelToken, EntryKind, EntryProbe, EntryRemover, ExpectedEntry, Os, RemoveMode, Removed, ToolCommand,
     ToolFailure, ToolRunner,
@@ -28,6 +28,10 @@ pub enum TargetOutcome {
     /// it for good (too large for the Recycle Bin, say), or it may be in the trash and cannot be told from
     /// other items, or could not be checked afterwards. The reason. Never recorded as trashed.
     NotRecycled(String),
+    /// The system did not answer, so it is not known whether the entry was moved (it may be waiting on a
+    /// prompt nobody sees). Not a removal: nothing is counted as freed and nothing is offered for restoring.
+    /// The reason.
+    Unconfirmed(String),
     /// Moved to the trash, to this exact path.
     Trashed(Vec<u8>),
     /// Cleaned by the tool that owns it (the command that ran).
@@ -300,9 +304,10 @@ fn act<P: EntryProbe, R: EntryRemover>(
             };
             let outcome = match disk.remover.trash(target.path(), &expected, trash_dir) {
                 Ok(to) => TargetOutcome::Trashed(to),
-                Err(error) => match not_recycled(&error) {
-                    Some(why) => TargetOutcome::NotRecycled(why.to_owned()),
-                    None => TargetOutcome::Failed(error.to_string()),
+                Err(error) => match (not_recycled(&error), unconfirmed(&error)) {
+                    (Some(why), _) => TargetOutcome::NotRecycled(why.to_owned()),
+                    (None, Some(why)) => TargetOutcome::Unconfirmed(why.to_owned()),
+                    (None, None) => TargetOutcome::Failed(error.to_string()),
                 },
             };
             return vec![own(outcome)];
@@ -378,6 +383,7 @@ fn trash_children<P: EntryProbe, R: EntryRemover>(
             let outcome = match child.outcome {
                 ChildTrashed::To(to) => TargetOutcome::Trashed(to),
                 ChildTrashed::NotRecycled(why) => TargetOutcome::NotRecycled(why),
+                ChildTrashed::Unconfirmed(why) => TargetOutcome::Unconfirmed(why),
                 ChildTrashed::Left(why) => TargetOutcome::Skipped(why),
             };
 
@@ -528,7 +534,7 @@ mod tests {
     use std::io;
     use std::sync::Mutex;
 
-    use platter_core::ports::{NotRecycled, TrashedChild, TrashedChildren};
+    use platter_core::ports::{NotRecycled, TrashedChild, TrashedChildren, Unconfirmed};
     use platter_core::{EntryMeta, ProbedEntry};
 
     use super::*;
@@ -785,6 +791,15 @@ mod tests {
         assert_eq!(
             report.results[0].outcome,
             TargetOutcome::NotRecycled("deleted for good".to_owned())
+        );
+
+        let bin = Bin::default();
+        *bin.single.lock().unwrap() = Some(Err(Unconfirmed("it may be waiting".to_owned()).into_error()));
+        let report = run(&plan, &bin);
+        assert_eq!(
+            report.results[0].outcome,
+            TargetOutcome::Unconfirmed("it may be waiting".to_owned()),
+            "an unknown result is neither a removal nor a plain failure"
         );
 
         let bin = Bin::default();

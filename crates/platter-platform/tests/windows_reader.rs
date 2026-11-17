@@ -156,7 +156,7 @@ fn a_junction_is_a_link_and_is_never_entered() {
     fs::write(dir.path().join("target/inside.txt"), vec![7u8; 3000]).unwrap();
     junction(&dir.path().join("link"), &dir.path().join("target"));
     // A junction back to the folder above it: entering it would never end.
-    junction(&dir.path().join("target/loop"), dir.path());
+    junction(&dir.path().join("target").join("loop"), dir.path());
 
     let tree = scan_tree(dir.path());
 

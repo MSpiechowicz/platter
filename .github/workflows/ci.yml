@@ -60,14 +60,12 @@ jobs:
       - name: Test
         run: cargo test --locked --workspace
 
-  # The Windows port (P1). Not required yet: `continue-on-error` keeps a red run from blocking merges until the
-  # first green run. Remove it then, and this job is required like `rust`.
+  # The Windows port (P1), required like `rust`: a red Windows run makes no release (version.yml waits for CI).
   # Clippy and the tests run as two jobs side by side: almost all of the time is compiling (llama.cpp with
   # MSVC among it), so splitting the tests further would only compile the same things more often.
   windows:
     name: Windows (${{ matrix.check }})
     runs-on: windows-latest
-    continue-on-error: true
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -114,6 +112,9 @@ jobs:
       - name: Test
         if: matrix.check == 'test'
         # A test that waits on Windows (a hidden prompt of the shell) fails the step instead of the whole job's hour.
+        # The Recycle Bin tests change the bin's settings in the registry: only on this thrown-away runner.
+        env:
+          PLATTER_TEST_CHANGE_RECYCLE_BIN: '1'
         timeout-minutes: 25
         run: cargo test --locked --workspace --no-fail-fast
 

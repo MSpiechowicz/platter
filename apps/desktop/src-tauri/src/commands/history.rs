@@ -593,6 +593,8 @@ fn clamp(value: u64) -> u64 {
 
 // ---- What a run is recorded as ----
 
+/// Whether the outcome is known to have changed something. `Unconfirmed` (the Recycle Bin did not
+/// answer) is not: nothing is recorded for it, nothing is offered for restoring and nothing is freed.
 fn did_something(outcome: &TargetOutcome) -> bool {
     matches!(
         outcome,

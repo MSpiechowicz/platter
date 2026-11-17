@@ -186,6 +186,9 @@ jobs:
       # (the sign job needs this job). It runs after the build, which made the frontend that the desktop crate
       # embeds. This job sees no secret, and the tests run the code of the workspace and its dependencies.
       - name: Test
+        # The Recycle Bin tests change the bin's settings in the registry: only on this thrown-away runner.
+        env:
+          PLATTER_TEST_CHANGE_RECYCLE_BIN: '1'
         run: cargo test --locked --workspace
 
       - name: Collect the setup

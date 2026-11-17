@@ -1,6 +1,13 @@
 //! The Recycle Bin remover and the probe on a real Windows volume. Run in CI only (`windows-latest`): they
 //! use the Recycle Bin of the runner's system drive and a tiny temporary tree. Every one that uses the bin
 //! runs under a watchdog (see `watched`), so a shell that waits for an answer fails the test and not the job.
+//!
+//! The tests that change the Recycle Bin's settings in the registry (`NukeOnDelete`, `MaxCapacity`, the
+//! policies) change the settings of whoever runs them, and a test that is killed would leave them changed
+//! (a bin that deletes at once, a bin of 1 MB that may purge what is in it). So they run only when
+//! `PLATTER_TEST_CHANGE_RECYCLE_BIN=1` is set (the CI jobs set it, on a runner that is thrown away), and
+//! even then the values are written to a marker file first, which the next run restores from if this one
+//! was killed (see `Marker`).
 
 #![cfg(windows)]
 
@@ -60,6 +67,8 @@ fn watched(body: impl FnOnce() + Send + 'static) {
     let (done, ended) = mpsc::channel();
     let thread = std::thread::spawn(move || {
         let _bin = bin();
+        // With the bin to itself, what is in the marker was left by a run that was killed.
+        restore_leftovers();
         body();
         let _ = done.send(());
     });
@@ -70,11 +79,79 @@ fn watched(body: impl FnOnce() + Send + 'static) {
             Err(panic) => std::panic::resume_unwind(panic),
             Ok(()) => unreachable!("the test ended without saying so"),
         },
-        Err(mpsc::RecvTimeoutError::Timeout) => panic!(
-            "the test did not end in {} s: the shell is probably waiting on a question nobody can answer",
-            WATCHDOG.as_secs()
-        ),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // The stuck thread may never reach its own restore: the marker has what it changed.
+            restore_leftovers();
+            panic!(
+                "the test did not end in {} s: the shell is probably waiting on a question nobody can answer",
+                WATCHDOG.as_secs()
+            )
+        }
     }
+}
+
+/// Whether the tests that change the Recycle Bin's settings may run: only when asked for explicitly.
+fn registry_tests_enabled() -> bool {
+    let enabled = std::env::var("PLATTER_TEST_CHANGE_RECYCLE_BIN").is_ok_and(|value| value == "1");
+    if !enabled {
+        eprintln!(
+            "skipped: this test changes the Recycle Bin's settings in the registry, set PLATTER_TEST_CHANGE_RECYCLE_BIN=1 to run it"
+        );
+        return false;
+    }
+
+    true
+}
+
+/// Where the settings that are changed are kept until they are put back.
+fn marker_path() -> PathBuf {
+    std::env::temp_dir().join("platter-test-recycle-bin-settings.txt")
+}
+
+/// The settings a test changed and has not put back yet, one per line: `key|name|value` (`value` empty
+/// when there was none). Written before a setting is changed and rewritten when one is put back.
+fn read_marker() -> Vec<(String, String, String)> {
+    let text = fs::read_to_string(marker_path()).unwrap_or_default();
+
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '|');
+            Some((
+                parts.next()?.to_owned(),
+                parts.next()?.to_owned(),
+                parts.next()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+fn write_marker(entries: &[(String, String, String)]) {
+    if entries.is_empty() {
+        let _ = fs::remove_file(marker_path());
+        return;
+    }
+
+    let text: String = entries
+        .iter()
+        .map(|(key, name, value)| format!("{key}|{name}|{value}\n"))
+        .collect();
+    fs::write(marker_path(), text).expect("the marker of the changed settings could not be written");
+}
+
+/// Puts back every setting that is in the marker: what an earlier run that was killed (or timed out) left
+/// changed. Also run by the watchdog before it fails a test, whose thread may never get to put its own back.
+fn restore_leftovers() {
+    for (key, name, value) in read_marker() {
+        put_back(&key, &name, (!value.is_empty()).then_some(value.as_str()));
+    }
+    let _ = fs::remove_file(marker_path());
+}
+
+fn put_back(key: &str, name: &str, before: Option<&str>) {
+    let _ = match before {
+        Some(value) => reg(&["add", key, "/v", name, "/t", "REG_DWORD", "/d", value, "/f"]),
+        None => reg(&["delete", key, "/v", name, "/f"]),
+    };
 }
 
 /// The key of the Recycle Bin's settings of the volume of `on`.
@@ -114,6 +191,11 @@ impl BinSetting {
             .filter(|text| text.contains(name))
             .and_then(|text| text.split_whitespace().last().map(str::to_owned));
 
+        // Written down before it is changed: a run that is killed from here on is put right by the next.
+        let mut marker = read_marker();
+        marker.push((key.clone(), name.to_owned(), before.clone().unwrap_or_default()));
+        write_marker(&marker);
+
         let done = reg(&[
             "add",
             &key,
@@ -133,20 +215,16 @@ impl BinSetting {
 
 impl Drop for BinSetting {
     fn drop(&mut self) {
-        let _ = match &self.before {
-            Some(value) => reg(&[
-                "add",
-                &self.key,
-                "/v",
-                self.name,
-                "/t",
-                "REG_DWORD",
-                "/d",
-                value,
-                "/f",
-            ]),
-            None => reg(&["delete", &self.key, "/v", self.name, "/f"]),
-        };
+        put_back(&self.key, self.name, self.before.as_deref());
+
+        let mut marker = read_marker();
+        if let Some(at) = marker
+            .iter()
+            .position(|(key, name, _)| *key == self.key && name == self.name)
+        {
+            marker.remove(at);
+        }
+        write_marker(&marker);
     }
 }
 
@@ -454,7 +532,43 @@ fn assert_refused_before_the_shell(result: io::Result<Vec<u8>>, needle: &str) {
 }
 
 #[test]
+fn what_would_pass_max_path_in_the_bin_is_not_asked_and_stays() {
+    watched(|| {
+        let (_guard, root) = scratch();
+
+        // Short where it is (under 260), but in the bin the folder is named `C:\$Recycle.Bin\<SID>\$R...`
+        // and what is below keeps its path: 100 + 4 + 8 levels of 21 is over 260.
+        let deep = root.join("deep");
+        let mut inner = deep.clone();
+        for _ in 0..8 {
+            inner = inner.join("a".repeat(20));
+        }
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("f.txt"), b"inside").unwrap();
+        let seen = expected(&deep, &root);
+
+        let refused = WindowsEntryRemover.trash(&bytes(&deep), &seen, Path::new(""));
+
+        assert_refused_before_the_shell(refused, "characters");
+        assert_eq!(fs::read(inner.join("f.txt")).unwrap(), b"inside");
+
+        // A file whose own name is too long for the bin.
+        let long = root.join("n".repeat(170));
+        fs::write(&long, b"long").unwrap();
+        let seen = expected(&long, &root);
+
+        let refused = WindowsEntryRemover.trash(&bytes(&long), &seen, Path::new(""));
+
+        assert_refused_before_the_shell(refused, "characters");
+        assert_eq!(fs::read(&long).unwrap(), b"long");
+    });
+}
+
+#[test]
 fn a_bin_set_to_delete_at_once_is_not_asked_and_the_item_stays() {
+    if !registry_tests_enabled() {
+        return;
+    }
     watched(|| {
         let (_guard, root) = scratch();
         let file = root.join("keep.txt");
@@ -483,6 +597,9 @@ fn a_bin_set_to_delete_at_once_is_not_asked_and_the_item_stays() {
 
 #[test]
 fn an_item_larger_than_the_bin_is_not_asked_and_stays_where_it_is() {
+    if !registry_tests_enabled() {
+        return;
+    }
     watched(|| {
         let (_guard, root) = scratch();
         let file = root.join("big.bin");
@@ -510,6 +627,9 @@ fn an_item_larger_than_the_bin_is_not_asked_and_stays_where_it_is() {
 
 #[test]
 fn an_item_below_the_bins_size_is_still_moved() {
+    if !registry_tests_enabled() {
+        return;
+    }
     watched(|| {
         let (_guard, root) = scratch();
         let file = root.join("small.bin");
@@ -532,6 +652,9 @@ fn an_item_below_the_bins_size_is_still_moved() {
 
 #[test]
 fn a_policy_against_the_bin_is_not_asked_and_the_item_stays() {
+    if !registry_tests_enabled() {
+        return;
+    }
     watched(|| {
         let (_guard, root) = scratch();
         let file = root.join("keep.txt");
@@ -555,6 +678,9 @@ fn a_policy_against_the_bin_is_not_asked_and_the_item_stays() {
 
 #[test]
 fn children_the_bin_will_not_take_are_left_in_place_and_said_so() {
+    if !registry_tests_enabled() {
+        return;
+    }
     watched(|| {
         let (_guard, root) = scratch();
         let folder = root.join("Temp");
@@ -584,6 +710,9 @@ fn children_the_bin_will_not_take_are_left_in_place_and_said_so() {
 
 #[test]
 fn a_child_larger_than_the_bin_is_left_and_the_others_are_moved() {
+    if !registry_tests_enabled() {
+        return;
+    }
     watched(|| {
         let (_guard, root) = scratch();
         let folder = root.join("Temp");

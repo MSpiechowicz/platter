@@ -1372,6 +1372,16 @@ fn an_entry_the_system_took_away_without_recycling_it_says_so_and_counts_as_a_pr
 }
 
 #[test]
+fn an_entry_the_recycle_bin_did_not_answer_for_is_a_problem_and_not_a_removal() {
+    let dto = outcome_dto(&TargetOutcome::Unconfirmed(
+        "it may be waiting on a prompt".to_owned(),
+    ));
+
+    assert_eq!(dto.kind, OutcomeKind::Failed);
+    assert_eq!(dto.detail.as_deref(), Some("it may be waiting on a prompt"));
+}
+
+#[test]
 fn a_removal_tells_no_detail_whatever_went_wrong_inside_so_linux_is_as_it_was() {
     let mut removed = platter_core::Removed::default();
     removed.note(b"/x/inner".to_vec(), "permission denied".to_owned());

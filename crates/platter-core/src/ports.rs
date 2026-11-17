@@ -260,6 +260,36 @@ pub fn not_recycled(error: &io::Error) -> Option<&str> {
         .map(|inner| inner.0.as_str())
 }
 
+/// What [`EntryRemover::trash`] reports (as the payload of its `io::Error`, see [`unconfirmed`]) when it
+/// is not known what became of the entry: the system did not answer in time (it may be waiting on a prompt
+/// nobody sees), so the entry may still be where it was, or on its way to the trash. It is neither a
+/// removal nor a failure, is never counted as freed space, and is never offered for restoring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unconfirmed(pub String);
+
+impl std::fmt::Display for Unconfirmed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unconfirmed {}
+
+impl Unconfirmed {
+    /// The `io::Error` a remover returns for it.
+    pub fn into_error(self) -> io::Error {
+        io::Error::other(self)
+    }
+}
+
+/// Why the error of a trash call says "not known what happened", when it does (see [`Unconfirmed`]).
+pub fn unconfirmed(error: &io::Error) -> Option<&str> {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<Unconfirmed>())
+        .map(|inner| inner.0.as_str())
+}
+
 /// What happened to one direct child of a folder in [`EntryRemover::trash_children`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChildTrashed {
@@ -267,6 +297,8 @@ pub enum ChildTrashed {
     To(Vec<u8>),
     /// Gone from its place but not found in the trash (see [`NotRecycled`]): the reason.
     NotRecycled(String),
+    /// It is not known what became of it (see [`Unconfirmed`]): the reason.
+    Unconfirmed(String),
     /// Left where it was, with the reason (a link, in use, changed since it was looked at).
     Left(String),
 }

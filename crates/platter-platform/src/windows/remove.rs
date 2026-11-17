@@ -15,8 +15,9 @@
 //! What is not closed: the last name can be swapped between the walk and the shell's move (the shell opens
 //! it by name). The identity of the item in the bin is checked after, so a lost race is told, and the item
 //! is in the Recycle Bin where the user can put it back. An entry the shell took away but that is not in
-//! the bin afterwards (deleted for good, say) is reported as [`NotRecycled`], never as trashed. So is one
-//! that cannot be looked at after the shell ran (it may be in the bin): neither failed nor restorable.
+//! the bin afterwards (deleted for good, say) is reported as [`NotRecycled`], never as trashed. One
+//! that cannot be looked at after the shell ran (it may be in the bin) is [`Unconfirmed`]: neither failed,
+//! removed nor restorable.
 //!
 //! The shell is called with `FOF_ALLOWUNDO | FOF_WANTNUKEWARNING | FOF_NO_UI`. For an item the Recycle Bin
 //! will not take (too large for it, a drive set to delete at once) it raises a "delete for good?" question
@@ -24,16 +25,17 @@
 //! move the bin's settings are read (`bin_guard`, rules and defaults in `bin_text`) and an item the bin
 //! would not keep is refused, untouched, with the reason (a child of `trash_children` is left and said so).
 //! A setting that cannot be read is a refusal too. The shell call is also under a time limit
-//! ([`SHELL_LIMIT`], `time_limit`) as a backstop: when it passes, the outcome is [`NotRecycled`] with a
-//! text that says the item may be waiting on a Windows prompt or in the bin, never a success, and no
-//! further call is made while that one has not come back.
+//! ([`SHELL_LIMIT`], `time_limit`) as a backstop: when it passes, the outcome is [`Unconfirmed`]: it is
+//! not known what happened, the text says whether the entry was still in its place when looked at and that
+//! it may be waiting on a Windows prompt. It is not reported as removed, not counted as freed and never
+//! offered for restoring, and no further call is made while that one has not come back.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use platter_core::ports::{ChildTrashed, NotRecycled, TrashedChild, TrashedChildren};
+use platter_core::ports::{ChildTrashed, NotRecycled, TrashedChild, TrashedChildren, Unconfirmed};
 use platter_core::{EntryKind, EntryRemover, ExpectedEntry, RemoveMode, Removed};
 
 use super::bin_guard;
@@ -81,7 +83,7 @@ impl EntryRemover for WindowsEntryRemover {
         // The shell is only asked when the bin is known to take it: see `bin_guard`.
         let rules = bin_guard::rules_for(&parts[0], volume_total)?;
         let length = looked.identities.last().map_or(0, |identity| identity.size);
-        bin_guard::takes(&rules, &original, expected.is_dir, length)
+        bin_guard::takes(&rules, &original, expected.is_dir, length, None)
             .map_err(|why| bin_guard::refused(&why))?;
 
         let wanted = wanted(expected);
@@ -96,7 +98,11 @@ impl EntryRemover for WindowsEntryRemover {
         let since = now_seconds();
         let moved = match shell_delete(vec![original.clone()], SHELL_LIMIT)? {
             Ended::Returned(moved) => moved,
-            Ended::TimedOut => return Err(NotRecycled(timed_out(SHELL_LIMIT)).into_error()),
+            Ended::TimedOut => {
+                let state = recycle_state(&original, &wanted);
+
+                return Err(Unconfirmed(timed_out(SHELL_LIMIT, &state)).into_error());
+            }
         };
 
         // Still there as planned: it was not moved, whatever the shell said. When that cannot be told
@@ -109,7 +115,7 @@ impl EntryRemover for WindowsEntryRemover {
                 });
             }
             Ok(State::Gone) => {}
-            Err(error) => return Err(NotRecycled(unknown_after_move(&error)).into_error()),
+            Err(error) => return Err(Unconfirmed(unknown_after_move(&error)).into_error()),
         }
 
         let why = match &moved {
@@ -158,12 +164,17 @@ impl EntryRemover for WindowsEntryRemover {
 
         // A child goes to the shell only when the bin is known to take it (see `bin_guard`): when it is not,
         // the child is left where it is, and says why. The bin's settings are read once, for all of them.
+        // All of them are measured within [`bin_guard::MEASURE_TARGET_LIMIT`]: what is not measured by
+        // then is left, and says so.
         let rules = bin_guard::rules_for(&parts[0], volume_total);
+        let measure_until = Instant::now() + bin_guard::MEASURE_TARGET_LIMIT;
         let mut eligible = Vec::with_capacity(listed.len());
         for child in listed {
             let verdict = match &rules {
-                Ok(rules) => bin_guard::takes(rules, &child.path, child.is_dir, child.size)
-                    .map_err(|why| bin_guard::refusal_text(&why)),
+                Ok(rules) => {
+                    bin_guard::takes(rules, &child.path, child.is_dir, child.size, Some(measure_until))
+                        .map_err(|why| bin_guard::refusal_text(&why))
+                }
                 Err(error) => Err(error.to_string()),
             };
 
@@ -191,7 +202,8 @@ impl EntryRemover for WindowsEntryRemover {
                 // What the shell did, if anything, is not known: none of them is offered for restoring.
                 let mut children = left;
                 for child in &eligible {
-                    children.push(child.reported(ChildTrashed::NotRecycled(timed_out(wait))));
+                    let state = recycle_state(&child.path, &child.wanted());
+                    children.push(child.reported(ChildTrashed::Unconfirmed(timed_out(wait, &state))));
                 }
 
                 return Ok(TrashedChildren { children, more });
@@ -209,7 +221,7 @@ impl EntryRemover for WindowsEntryRemover {
                     "it could not be moved to the Recycle Bin (it may be in use by a program)".to_owned(),
                 ))),
                 Err(error) => {
-                    unknown.push(child.reported(ChildTrashed::NotRecycled(unknown_after_move(&error))));
+                    unknown.push(child.reported(ChildTrashed::Unconfirmed(unknown_after_move(&error))));
                 }
             }
         }
@@ -282,10 +294,18 @@ fn shell_delete(paths: Vec<PathBuf>, limit: Duration) -> io::Result<Ended> {
     })
 }
 
-/// What is reported when the shell did not come back in `limit`.
-fn timed_out(limit: Duration) -> String {
+/// What is reported when the shell did not come back in `limit`, with what a look at the entry (`state`)
+/// afterwards says. The shell may still be working (or waiting on a prompt), so none of it is more than a
+/// guess: the entry is neither reported as removed nor offered for restoring.
+fn timed_out(limit: Duration, state: &io::Result<State>) -> String {
+    let seen = match state {
+        Ok(State::Still) => "it was still in its place when looked at",
+        Ok(State::Gone) => "it was no longer in its place when looked at, and may be in the Recycle Bin",
+        Err(_) => "it could not be looked at afterwards",
+    };
+
     format!(
-        "the Recycle Bin did not answer in {} s, so it is not known what happened: it may be waiting on a Windows prompt or still moving it, look in the Recycle Bin before cleaning again",
+        "the Recycle Bin did not answer in {} s, so it is not known what happened ({seen}): it may be waiting on a Windows prompt, look at it and in the Recycle Bin before cleaning again",
         limit.as_secs()
     )
 }
