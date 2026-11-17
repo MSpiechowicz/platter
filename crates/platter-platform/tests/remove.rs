@@ -4,6 +4,8 @@
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use platter_core::{BirthTime, EntryKind, EntryProbe, EntryRemover, ExpectedEntry, RemoveMode};
 use platter_platform::linux::probe::LinuxEntryProbe;
@@ -134,12 +136,18 @@ fn another_folder_with_the_same_name_is_refused() {
     let target = root.join("target");
     let plan = expected(&target, &root);
 
+    // In use the planned folder is older than the scan. Here it is not, so the new one is made a little
+    // later: past the coarse clock (a few milliseconds) that ext4 stamps creation times with.
+    thread::sleep(Duration::from_millis(50));
     fs::remove_dir_all(&target).unwrap();
     write(&root.join("target/new"));
-    let error = LinuxEntryRemover
-        .remove(&bytes(&target), &plan, RemoveMode::Whole)
-        .unwrap_err();
+    let again = expected(&target, &root);
+    let outcome = LinuxEntryRemover.remove(&bytes(&target), &plan, RemoveMode::Whole);
 
+    let error = outcome.expect_err(&format!(
+        "removed: inode {} then {}, created {:?} then {:?}",
+        plan.ino, again.ino, plan.birth, again.birth
+    ));
     assert!(error.to_string().contains("another entry"), "{error}");
     assert!(root.join("target/new").exists());
 }
