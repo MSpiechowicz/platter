@@ -289,6 +289,10 @@ jobs:
           mkdir release
           cp linux/*.AppImage linux/*.AppImage.sig linux/*.deb linux/*.rpm release/
           cp windows/*-setup.exe windows/*-setup.exe.sig release/
+          # The deb and the rpm once more under names without the version, so that
+          # releases/latest/download/<name> always names the newest one (the install commands in README.md).
+          cp linux/*.deb release/platter_amd64.deb
+          cp linux/*.rpm release/platter.x86_64.rpm
           ls -l release
 
       # The release notes are the message of the annotated tag (git tag -a v0.2.0 -m "..."), one line each.
@@ -308,7 +312,7 @@ jobs:
           fi
           cat notes.md
 
-          cp install.sh release/
+          cp install.sh install.ps1 release/
           set -- release/*.AppImage
           [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::Expected exactly one AppImage."; exit 1; }
           appimage=${1#release/}
@@ -381,8 +385,10 @@ jobs:
           if [ -z "$draft" ]; then
             latest=--latest
           fi
-          highest=$( (gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \
-            --limit 100 --json tagName --jq '.[].tagName'; echo "$TAG") | sort -V | tail -n 1)
+          # A failed lookup stops here: it must not make this release latest by mistake.
+          published=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \
+            --limit 100 --json tagName --jq '.[].tagName')
+          highest=$(printf '%s\n%s\n' "$published" "$TAG" | sed '/^$/d' | sort -V | tail -n 1)
           if [ -n "$latest" ] && [ "$highest" != "$TAG" ]; then
             latest=--latest=false
           fi

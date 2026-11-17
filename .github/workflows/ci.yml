@@ -115,6 +115,33 @@ jobs:
         if: matrix.check == 'test'
         run: cargo test --locked --workspace --no-fail-fast
 
+      # install.ps1 against a release folder on disk, without running the setup: a matching setup passes, a
+      # changed one is refused. Once in PowerShell 7 and once in the Windows PowerShell 5.1 most PCs have.
+      - name: Install script (PowerShell 7 and 5.1)
+        if: matrix.check == 'test'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $env:RUNNER_TEMP 'fake-release'
+          New-Item -ItemType Directory -Force -Path $release | Out-Null
+          Set-Content -LiteralPath (Join-Path $release 'Platter_9.9.9_x64-setup.exe') -Value 'not a real setup'
+          $hash = (Get-FileHash -LiteralPath (Join-Path $release 'Platter_9.9.9_x64-setup.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath (Join-Path $release 'SHA256SUMS') -Value "$hash  Platter_9.9.9_x64-setup.exe"
+          $env:PLATTER_RELEASE_URL = $release
+          $env:PLATTER_INSTALL_DRY_RUN = '1'
+
+          foreach ($shell in 'pwsh', 'powershell') {
+            & $shell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+            if ($LASTEXITCODE -ne 0) { throw "$($shell): a matching setup was refused." }
+          }
+
+          Add-Content -LiteralPath (Join-Path $release 'Platter_9.9.9_x64-setup.exe') -Value 'changed'
+          foreach ($shell in 'pwsh', 'powershell') {
+            & $shell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+            if ($LASTEXITCODE -eq 0) { throw "$($shell): a changed setup was accepted." }
+          }
+          Write-Host 'install.ps1: checked in both shells.'
+
   web:
     name: Web (lint, check, test, build)
     runs-on: ubuntu-22.04
