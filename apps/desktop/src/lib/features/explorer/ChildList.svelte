@@ -241,6 +241,8 @@
           return 'system folder';
         case 'duplicate':
           return 'counted elsewhere';
+        case 'excluded':
+          return 'left out by you';
         case 'unknown':
           return 'not read';
         default:
@@ -699,11 +701,11 @@
   .item:hover::before,
   .item.hot::before,
   .item.sel::before {
-    background: #ffffff0a;
+    background: var(--wash-3);
   }
 
   .item:has(.row:focus-visible)::before {
-    background: #ffffff0a;
+    background: var(--wash-3);
     box-shadow: 0 0 0 1.5px var(--accent);
   }
 
@@ -788,7 +790,7 @@
   /* What was searched for: bold, and underlined in the accent colour. No background. */
   .nm mark {
     background: none;
-    color: #fff;
+    color: var(--strong);
     font-weight: 700;
     text-decoration: underline;
     text-decoration-color: var(--accent);
@@ -817,7 +819,7 @@
   .item:hover .nm,
   .item.hot .nm,
   .item.sel .nm {
-    color: #fff;
+    color: var(--strong);
   }
 
   .foot {

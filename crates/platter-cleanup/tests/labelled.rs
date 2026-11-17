@@ -4,7 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use platter_cleanup::{
-    ADVISOR, CleanupAction, CleanupPlan, MARKED, Refusal, plan_cleanup, plan_labelled, plan_marked,
+    ADVISOR, CleanupAction, CleanupOptions, CleanupPlan, MARKED, Refusal, plan_cleanup, plan_labelled,
+    plan_marked,
 };
 use platter_core::dto::Verdict;
 use platter_core::testing::{FakeFs, NOW};
@@ -102,7 +103,14 @@ fn review_labels_are_planned_as_one_review_group_that_goes_to_the_trash() {
         label(&tree, "home/u/code", ModelVerdict::Keep),
     ];
 
-    let plan = plan_labelled(&tree, &env(), &RuleSet::builtin(), &labels, &fs);
+    let plan = plan_labelled(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &labels,
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert_eq!(plan.groups().len(), 1);
     let group = &plan.groups()[0];
@@ -121,13 +129,21 @@ fn only_keep_labels_or_none_plan_nothing() {
     let fs = fs();
     let tree = scan_at(&fs, "/");
 
-    let none = plan_labelled(&tree, &env(), &RuleSet::builtin(), &[], &fs);
+    let none = plan_labelled(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &[],
+        &fs,
+        &CleanupOptions::default(),
+    );
     let only_keep = plan_labelled(
         &tree,
         &env(),
         &RuleSet::builtin(),
         &[label(&tree, "home/u/stuff/big", ModelVerdict::Keep)],
         &fs,
+        &CleanupOptions::default(),
     );
 
     for plan in [none, only_keep] {
@@ -148,7 +164,14 @@ fn a_label_that_is_kept_holds_something_kept_or_lies_inside_it_is_refused() {
         review(&tree, "home/u/stuff/other"),
     ];
 
-    let plan = plan_labelled(&tree, &env(), &RuleSet::builtin(), &labels, &fs);
+    let plan = plan_labelled(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &labels,
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert_eq!(paths(&plan), ["/home/u/stuff/other"]);
     for path in [
@@ -166,7 +189,14 @@ fn a_label_that_is_kept_holds_something_kept_or_lies_inside_it_is_refused() {
 fn a_scan_inside_a_kept_folder_refuses_every_label() {
     let fs = fs();
     let tree = scan_at(&fs, "/home/u/Documents/thesis");
-    let plan = plan_labelled(&tree, &env(), &RuleSet::builtin(), &[], &fs);
+    let plan = plan_labelled(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &[],
+        &fs,
+        &CleanupOptions::default(),
+    );
     assert!(plan.refused.is_empty());
 
     let mut fs = fs;
@@ -178,6 +208,7 @@ fn a_scan_inside_a_kept_folder_refuses_every_label() {
         &RuleSet::builtin(),
         &[review(&tree, "figures")],
         &fs,
+        &CleanupOptions::default(),
     );
 
     assert!(plan.groups().is_empty());
@@ -204,7 +235,14 @@ fn the_guard_refuses_protected_places_links_unreadable_folders_and_the_scan_root
         },
     ];
 
-    let plan = plan_labelled(&tree, &env(), &RuleSet::builtin(), &labels, &fs);
+    let plan = plan_labelled(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &labels,
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert!(matches!(why(&plan, "/home/u/.ssh"), Some(Refusal::Protected(_))));
     assert_eq!(why(&plan, "/home/u/stuff/link"), Some(Refusal::Symlink));
@@ -224,7 +262,14 @@ fn the_scan_root_is_refused() {
         reason: "x".into(),
     };
 
-    let plan = plan_labelled(&tree, &env(), &RuleSet::builtin(), &[root], &fs);
+    let plan = plan_labelled(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &[root],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert!(plan.groups().is_empty());
     assert_eq!(why(&plan, "/home/u/stuff/other"), Some(Refusal::ScanRoot));
@@ -241,6 +286,7 @@ fn without_a_home_directory_every_label_is_refused() {
         &RuleSet::builtin(),
         &[review(&tree, "home/u/stuff/big")],
         &fs,
+        &CleanupOptions::default(),
     );
 
     assert!(plan.groups().is_empty());
@@ -258,7 +304,14 @@ fn a_label_swapped_for_a_link_or_removed_after_the_scan_is_refused() {
     fs.swap_for_symlink("/home/u/stuff/big");
     fs.remove("/home/u/stuff/other");
 
-    let plan = plan_labelled(&tree, &env(), &RuleSet::builtin(), &labels, &fs);
+    let plan = plan_labelled(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &labels,
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert!(plan.groups().is_empty());
     assert_eq!(why(&plan, "/home/u/stuff/big"), Some(Refusal::Symlink));
@@ -275,7 +328,14 @@ fn a_folder_on_the_way_swapped_for_a_link_is_refused() {
     let labels = [review(&tree, "home/u/stuff/big")];
     fs.swap_for_symlink("/home/u/stuff");
 
-    let plan = plan_labelled(&tree, &env(), &RuleSet::builtin(), &labels, &fs);
+    let plan = plan_labelled(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &labels,
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert!(plan.groups().is_empty());
     assert!(matches!(
@@ -294,7 +354,14 @@ fn a_label_inside_another_label_is_left_to_the_outer_one_and_duplicates_count_on
         review(&tree, "home/u/stuff/big"),
     ];
 
-    let plan = plan_labelled(&tree, &env(), &RuleSet::builtin(), &labels, &fs);
+    let plan = plan_labelled(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &labels,
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert_eq!(paths(&plan), ["/home/u/stuff/big"]);
     assert_eq!(why(&plan, "/home/u/stuff/big/inner"), Some(Refusal::Nested));
@@ -310,13 +377,21 @@ mod absorb {
         let tree = scan_at(&fs, "/");
         let rules = RuleSet::builtin();
 
-        let mut plan = plan_cleanup(&tree, &env(), &rules, &["rust-target", "no-such-rule"], &fs);
+        let mut plan = plan_cleanup(
+            &tree,
+            &env(),
+            &rules,
+            &["rust-target", "no-such-rule"],
+            &fs,
+            &CleanupOptions::default(),
+        );
         let labelled = plan_labelled(
             &tree,
             &env(),
             &rules,
             &[review(&tree, "home/u/stuff/big"), review(&tree, "home/u/.ssh")],
             &fs,
+            &CleanupOptions::default(),
         );
         plan.absorb(labelled);
 
@@ -338,7 +413,14 @@ mod absorb {
         let tree = scan_at(&fs, "/");
         let rules = RuleSet::builtin();
 
-        let mut plan = plan_labelled(&tree, &env(), &rules, &[review(&tree, "home/u/stuff/big")], &fs);
+        let mut plan = plan_labelled(
+            &tree,
+            &env(),
+            &rules,
+            &[review(&tree, "home/u/stuff/big")],
+            &fs,
+            &CleanupOptions::default(),
+        );
         let marked = plan_marked(
             &tree,
             &env(),
@@ -348,6 +430,7 @@ mod absorb {
                 node(&tree, "home/u/stuff/other"),
             ],
             &fs,
+            &CleanupOptions::default(),
         );
         plan.absorb(marked);
 
@@ -368,8 +451,22 @@ mod absorb {
         let rules = RuleSet::builtin();
         let big = node(&tree, "home/u/stuff/big");
 
-        let mut plan = plan_labelled(&tree, &env(), &rules, &[review(&tree, "home/u/stuff/big")], &fs);
-        plan.absorb(plan_marked(&tree, &env(), &rules, &[big], &fs));
+        let mut plan = plan_labelled(
+            &tree,
+            &env(),
+            &rules,
+            &[review(&tree, "home/u/stuff/big")],
+            &fs,
+            &CleanupOptions::default(),
+        );
+        plan.absorb(plan_marked(
+            &tree,
+            &env(),
+            &rules,
+            &[big],
+            &fs,
+            &CleanupOptions::default(),
+        ));
 
         assert_eq!(paths(&plan), ["/home/u/stuff/big"]);
         assert_eq!(plan.allocated, 1100);
@@ -390,6 +487,7 @@ mod absorb {
             &RuleSet::builtin(),
             &[review(&tree, "stuff/big")],
             &fs,
+            &CleanupOptions::default(),
         ));
 
         assert_eq!(plan.scan_root(), Path::new("/home/u"));

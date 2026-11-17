@@ -20,6 +20,7 @@ const marked = (paths: string[], items = paths.length): PlanGroupDto => ({
 const plan = (groups: PlanGroupDto[], extra: Partial<CleanupPlanDto> = {}): CleanupPlanDto => ({
   planId: 1,
   scanId: 1,
+  options: { keepPackageVersions: 2, askForAdmin: true },
   groups,
   refused: [],
   refusedMore: 0,

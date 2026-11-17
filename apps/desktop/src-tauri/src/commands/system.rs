@@ -71,6 +71,44 @@ pub async fn pick_folder(app: AppHandle, state: State<'_, AppState>) -> CommandR
     Ok(Some(picked))
 }
 
+/// Opens the system folder dialog to choose a folder the scans leave out. `None` when the user dismisses
+/// it.
+///
+/// Unlike [`pick_folder`] this pins nothing: an excluded folder is only skipped, it can never become a
+/// scan root, so the path it returns is sent back as plain text in `ScanOptions.excluded`. A folder whose
+/// path is not valid Unicode cannot be named in that list and is refused.
+#[tauri::command]
+pub async fn pick_excluded_folder(app: AppHandle) -> CommandResult<Option<String>> {
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Choose a folder to leave out of scans")
+            .blocking_pick_folder()
+    })
+    .await?;
+
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|error| {
+        CommandError::invalid(format!("the chosen location is not a local folder: {error}"))
+    })?;
+
+    excluded_wire_path(&path).map(Some)
+}
+
+/// The path of a folder to leave out as the UI receives it, or an error when it has no exact text form.
+fn excluded_wire_path(path: &Path) -> CommandResult<String> {
+    match path.to_str() {
+        Some(text) => Ok(text.to_owned()),
+        None => Err(CommandError::invalid(format!(
+            "the folder {} has a name that is not valid text, so it cannot be left out of scans. \
+             Choose a folder it lies in or another one instead",
+            path.display()
+        ))),
+    }
+}
+
 /// The path as the UI receives it, or an error when it has no exact text form.
 fn wire_path(path: &Path) -> CommandResult<String> {
     match path.to_str() {
@@ -141,6 +179,22 @@ mod tests {
             format!("{error:?}").contains("Choose its parent folder"),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn an_excluded_folder_with_a_valid_text_path_is_returned_unchanged() {
+        assert_eq!(
+            excluded_wire_path(Path::new("/home/me/Zdjęcia")).unwrap(),
+            "/home/me/Zdjęcia"
+        );
+    }
+
+    #[test]
+    fn an_excluded_folder_whose_name_is_not_valid_text_is_refused_with_a_clear_message() {
+        let error = excluded_wire_path(&non_utf8_path(Path::new("/home/me"))).unwrap_err();
+
+        assert_eq!(error.code(), ApiErrorCode::Invalid);
+        assert!(format!("{error:?}").contains("cannot be left out"), "{error:?}");
     }
 
     #[test]

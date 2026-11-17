@@ -10,8 +10,13 @@
 <!-- Fills its positioned parent. Use it through <Loading>, which applies the 300 ms rule. -->
 <div class="spin" role="status">
   <svg viewBox="0 0 48 48" aria-hidden="true">
-    <circle cx="24" cy="24" r="13.5" fill="none" stroke="#ffffff1f" stroke-width="13" />
-    <g><path d="M32.77,6.02A20,20 0 0 1 40.96,13.40L29.94,20.29A7,7 0 0 0 27.07,17.71Z" fill="#3ec5d8" /></g>
+    <circle cx="24" cy="24" r="13.5" fill="none" stroke="var(--ring)" stroke-width="13" />
+    <g
+      ><path
+        d="M32.77,6.02A20,20 0 0 1 40.96,13.40L29.94,20.29A7,7 0 0 0 27.07,17.71Z"
+        fill="var(--accent)"
+      /></g
+    >
   </svg>
   {#if label}<span>{label}</span>{/if}
 </div>

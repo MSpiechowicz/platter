@@ -2,6 +2,7 @@ import { COLLAPSED_NODE_ID } from '../../api/client';
 import type { NodeId } from '../../api/types';
 import { childColors } from '../../folderColor';
 import { SLATE } from '../../palette';
+import { theme } from '../../state/theme.svelte';
 import type { ChainedLod } from './layout/chains';
 import type { Tile } from './layout/treemap';
 
@@ -10,14 +11,38 @@ export { PALETTE, SLATE } from '../../palette';
 /** One top-level tile holding more than this share of the map shows its own children in colours of their own. */
 export const DOMINANT_MAP_SHARE = 0.6;
 
-/** The page background, `--bg` in app.css. Deeper levels are mixed towards it. */
+/** The dark theme's page background, `--bg` in app.css, and what `pageBackground` answers where the page has none. */
 export const BACKGROUND = '#0a0e17';
+
+/**
+ * The page background of the theme on screen, as `#rrggbb`. Deeper levels are mixed towards it. Read inside an effect
+ * or a derived value, it makes that run again when the theme changes.
+ */
+export function pageBackground(): string {
+  const background = theme.token('--bg');
+
+  return /^#[0-9a-f]{6}$/i.test(background) ? background : BACKGROUND;
+}
 
 /** Share of the folder colour (rest is background) for a flat tile at depth 0 to 3. */
 export const FLAT_MIX: readonly number[] = [0, 22, 38, 56];
 
 /** The same for a 3D column: top level, floor, part, and the lid. */
 export const COLUMN_MIX: readonly number[] = [0, 34, 52, 72];
+
+/** The same on the light theme: a tint over a light page needs more of the colour to stand out the way a dark one does. */
+export const FLAT_MIX_LIGHT: readonly number[] = [0, 32, 50, 68];
+export const COLUMN_MIX_LIGHT: readonly number[] = [0, 44, 62, 80];
+
+/** The flat map's mix for the theme on screen. Read inside an effect or a derived value, it follows the theme. */
+export function flatMix(): readonly number[] {
+  return theme.effective === 'light' ? FLAT_MIX_LIGHT : FLAT_MIX;
+}
+
+/** The 3D columns' mix for the theme on screen. */
+export function columnMix(): readonly number[] {
+  return theme.effective === 'light' ? COLUMN_MIX_LIGHT : COLUMN_MIX;
+}
 
 /**
  * How much quieter (percentage points of the folder colour, towards the background) the "smaller items" tile of a
@@ -35,10 +60,13 @@ function channels(hex: string): [number, number, number] {
 
 const toHex = (value: number): string => Math.round(value).toString(16).padStart(2, '0');
 
-/** `percent` of `color` over the background, as `#rrggbb`. Same result as CSS `color-mix(in srgb, color p%, bg)`. */
-export function blend(color: string, percent: number): string {
+/**
+ * `percent` of `color` over the background (the page's, or the one given), as `#rrggbb`. Same result as CSS
+ * `color-mix(in srgb, color p%, bg)`.
+ */
+export function blend(color: string, percent: number, background: string = pageBackground()): string {
   const share = Math.max(0, Math.min(100, percent)) / 100;
-  const from = channels(BACKGROUND);
+  const from = channels(background);
   const to = channels(color);
 
   return `#${to.map((channel, index) => toHex((from[index] as number) * (1 - share) + channel * share)).join('')}`;
@@ -126,7 +154,7 @@ export function tileColor(tile: Pick<Tile, 'node' | 'depth' | 'top' | 'inner'>, 
 export function tileStyle(tile: Pick<Tile, 'node' | 'depth' | 'top' | 'inner'>, colors: ColorMap): TileStyle {
   const color = tileColor(tile, colors);
   const merged = tile.node.id === COLLAPSED_NODE_ID;
-  const mix = FLAT_MIX[tile.depth] as number;
+  const mix = flatMix()[tile.depth] as number;
 
   return {
     fill: blend(color, merged && tile.depth > 1 ? mix - MERGED_STEP : mix),

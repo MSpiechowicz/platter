@@ -69,6 +69,7 @@ pub(crate) fn scanned(state: &AppState, root: &Path) -> ScanId {
         ScanOptions {
             root: root.to_string_lossy().into_owned(),
             one_file_system: false,
+            excluded: Vec::new(),
         },
         Arc::new(move |event| {
             let _ = sender.send(event);
@@ -110,10 +111,20 @@ pub(crate) fn project() -> (tempfile::TempDir, PathBuf) {
 }
 
 pub(crate) fn plan_of(state: &AppState, scan: ScanId, rules: &[&str]) -> CommandResult<CleanupPlanDto> {
+    plan_with(state, scan, rules, CleanupOptions::default())
+}
+
+pub(crate) fn plan_with(
+    state: &AppState,
+    scan: ScanId,
+    rules: &[&str],
+    options: CleanupOptions,
+) -> CommandResult<CleanupPlanDto> {
     tauri::async_runtime::block_on(plan(
         state,
         scan,
         rules.iter().map(|id| (*id).to_owned()).collect(),
+        options,
     ))
 }
 
@@ -472,7 +483,16 @@ fn every_plan_with_something_to_do_is_asked_about_and_the_question_is_safe_to_sh
         now: NOW,
         os: Os::Linux,
     };
-    let make = |ids: &[&str]| platter_cleanup::plan_cleanup(&tree, &env, &RuleSet::builtin(), ids, &fs);
+    let make = |ids: &[&str]| {
+        platter_cleanup::plan_cleanup(
+            &tree,
+            &env,
+            &RuleSet::builtin(),
+            ids,
+            &fs,
+            &CleanupOptions::default(),
+        )
+    };
 
     let trash_only = question(&make(&["old-downloads"])).expect("moving to the trash is asked about too");
     assert!(trash_only.text.contains("can be put back"), "{}", trash_only.text);
@@ -518,6 +538,177 @@ fn every_plan_with_something_to_do_is_asked_about_and_the_question_is_safe_to_sh
     assert_eq!(described.groups[0].command.as_deref(), Some("paccache -rk2"));
     assert!(described.groups[0].needs_elevation);
     assert!(described.needs_confirmation);
+}
+
+/// A plan of the rules `ids` over a small system disk (a package cache, the journal, a user cache).
+fn system_plan(ids: &[&str], options: CleanupOptions) -> CleanupPlan {
+    use platter_core::testing::{FakeFs, NOW};
+    use platter_core::{Environment, Os, ScanConfig};
+
+    let mut fs = FakeFs::new();
+    fs.file("/var/cache/pacman/pkg/a", 3)
+        .file("/var/log/journal/x", 4)
+        .file("/home/u/.cache/a", 5);
+    let config = ScanConfig {
+        now: Some(NOW),
+        ..ScanConfig::default()
+    };
+    let tree = platter_core::scan(&fs, Path::new("/"), &config, &CancelToken::new(), &|_| {}).unwrap();
+    let env = Environment {
+        home: Some(PathBuf::from("/home/u")),
+        user_dirs: Vec::new(),
+        now: NOW,
+        os: Os::Linux,
+    };
+
+    platter_cleanup::plan_cleanup(&tree, &env, &RuleSet::builtin(), ids, &fs, &options)
+}
+
+#[test]
+fn the_confirmation_and_the_description_name_the_versions_the_plan_keeps() {
+    let keep_three = CleanupOptions {
+        keep_package_versions: KeepVersions::Three,
+        ask_for_admin: true,
+    };
+    let plan = system_plan(&["pacman-cache"], keep_three);
+
+    let asked = question(&plan).unwrap();
+    let described = describe(&plan, 1, 2);
+
+    assert!(
+        asked.text.contains("• Run as administrator: paccache -rk3"),
+        "{}",
+        asked.text
+    );
+    assert_eq!(described.groups[0].command.as_deref(), Some("paccache -rk3"));
+    assert_eq!(
+        described.options,
+        CleanupOptionsDto {
+            keep_package_versions: 3,
+            ask_for_admin: true
+        }
+    );
+}
+
+#[test]
+fn a_default_plan_keeps_two_versions_and_asks_for_admin() {
+    let plan = system_plan(&["pacman-cache"], CleanupOptions::default());
+
+    let described = describe(&plan, 1, 2);
+
+    assert_eq!(described.groups[0].command.as_deref(), Some("paccache -rk2"));
+    assert_eq!(
+        described.options,
+        CleanupOptionsDto {
+            keep_package_versions: 2,
+            ask_for_admin: true
+        }
+    );
+    assert!(described.refused.is_empty());
+}
+
+#[test]
+fn a_plan_without_admin_lists_the_elevated_tools_it_left_out_with_the_reason() {
+    let without_admin = CleanupOptions {
+        keep_package_versions: KeepVersions::Two,
+        ask_for_admin: false,
+    };
+    let plan = system_plan(&["pacman-cache", "journal", "app-cache"], without_admin);
+
+    let described = describe(&plan, 1, 2);
+
+    assert_eq!(
+        described
+            .groups
+            .iter()
+            .map(|group| group.rule_id.as_str())
+            .collect::<Vec<_>>(),
+        ["app-cache"]
+    );
+    assert!(described.groups.iter().all(|group| !group.needs_elevation));
+    let mut left_out: Vec<_> = described
+        .refused
+        .iter()
+        .map(|item| (item.rule_id.as_str(), item.path.as_str(), item.reason.as_str()))
+        .collect();
+    left_out.sort_unstable();
+    let reason = "Needs administrator rights, which are turned off in Settings.";
+    assert_eq!(
+        left_out,
+        [
+            ("journal", "/var/log/journal", reason),
+            ("pacman-cache", "/var/cache/pacman/pkg", reason)
+        ]
+    );
+    assert!(!described.options.ask_for_admin);
+    assert!(!question(&plan).unwrap().text.contains("administrator"));
+}
+
+#[test]
+fn the_options_of_a_plan_command_are_checked_and_default_when_missing() {
+    let resolve = |wire: serde_json::Value| {
+        CleanupOptionsArg::resolve(Some(serde_json::from_value(wire).expect("an object of options")))
+    };
+
+    assert_eq!(
+        CleanupOptionsArg::resolve(None).unwrap(),
+        CleanupOptions::default()
+    );
+    assert_eq!(resolve(serde_json::json!({})).unwrap(), CleanupOptions::default());
+    assert_eq!(
+        resolve(serde_json::json!({ "keepPackageVersions": 3, "askForAdmin": false })).unwrap(),
+        CleanupOptions {
+            keep_package_versions: KeepVersions::Three,
+            ask_for_admin: false
+        }
+    );
+    assert_eq!(
+        resolve(serde_json::json!({ "keepPackageVersions": 1 })).unwrap(),
+        CleanupOptions {
+            keep_package_versions: KeepVersions::One,
+            ask_for_admin: true
+        }
+    );
+    for bad in [
+        serde_json::json!({ "keepPackageVersions": 0 }),
+        serde_json::json!({ "keepPackageVersions": 4 }),
+        serde_json::json!({ "keepPackageVersions": -1 }),
+        serde_json::json!({ "keepPackageVersions": 2.5 }),
+        serde_json::json!({ "keepPackageVersions": "2" }),
+        serde_json::json!({ "askForAdmin": "yes" }),
+        serde_json::json!({ "askForAdmin": 1 }),
+    ] {
+        let refused = resolve(bad.clone()).expect_err(&bad.to_string());
+        assert_eq!(refused.code(), ApiErrorCode::Invalid, "{bad}");
+    }
+}
+
+#[test]
+fn a_marked_plan_carries_the_options_it_was_made_with() {
+    let state = AppState::for_test();
+    let (_dir, root) = project();
+    let scan = scanned(&state, &root);
+    let tree = state.scans.tree(scan).unwrap();
+    let project_node = tree
+        .children(tree.root())
+        .find(|&child| tree.name(child) == b"p")
+        .unwrap();
+    let chosen = CleanupOptions {
+        keep_package_versions: KeepVersions::One,
+        ask_for_admin: false,
+    };
+
+    let plan =
+        tauri::async_runtime::block_on(plan_marked_nodes(&state, scan, vec![project_node], chosen)).unwrap();
+
+    assert_eq!(
+        plan.options,
+        CleanupOptionsDto {
+            keep_package_versions: 1,
+            ask_for_admin: false
+        }
+    );
+    assert!(plan.refused.is_empty());
 }
 
 #[test]
@@ -590,7 +781,13 @@ fn marked_items_are_planned_as_review_items_for_the_trash() {
         .find(|&child| tree.name(child) == b"p")
         .unwrap();
 
-    let plan = tauri::async_runtime::block_on(plan_marked_nodes(&state, scan, vec![project_node])).unwrap();
+    let plan = tauri::async_runtime::block_on(plan_marked_nodes(
+        &state,
+        scan,
+        vec![project_node],
+        CleanupOptions::default(),
+    ))
+    .unwrap();
 
     assert_eq!(plan.groups.len(), 1);
     let group = &plan.groups[0];
@@ -606,7 +803,9 @@ fn a_marked_plan_takes_known_node_ids_only() {
     let state = AppState::for_test();
     let (_dir, root) = project();
     let scan = scanned(&state, &root);
-    let marked = |nodes: Vec<NodeId>| tauri::async_runtime::block_on(plan_marked_nodes(&state, scan, nodes));
+    let marked = |nodes: Vec<NodeId>| {
+        tauri::async_runtime::block_on(plan_marked_nodes(&state, scan, nodes, CleanupOptions::default()))
+    };
 
     assert_eq!(marked(Vec::new()).unwrap_err().code(), ApiErrorCode::Invalid);
     assert_eq!(
@@ -851,6 +1050,7 @@ fn the_advisor_group_is_confirmed_in_words_that_name_the_model_and_the_trash() {
         &RuleSet::builtin(),
         &labelled,
         &state.platform.entry_probe,
+        &CleanupOptions::default(),
     );
 
     let asked = question(&plan).expect("a plan with a group is asked about");
@@ -937,7 +1137,13 @@ fn a_user_keep_refuses_marked_folders_inside_around_and_equal_to_it() {
     say(&state, scan, "p/target", KeepIt);
     let marked = ["p/target", "p/target/debug", "p"].map(|path| node_in(&state, scan, path));
 
-    let plan = tauri::async_runtime::block_on(plan_marked_nodes(&state, scan, marked.to_vec())).unwrap();
+    let plan = tauri::async_runtime::block_on(plan_marked_nodes(
+        &state,
+        scan,
+        marked.to_vec(),
+        CleanupOptions::default(),
+    ))
+    .unwrap();
 
     assert!(plan.groups.is_empty(), "{plan:?}");
     assert_eq!(plan.refused.len(), 3, "{plan:?}");
@@ -1015,7 +1221,12 @@ fn a_broken_rules_file_refuses_every_plan() {
     for refused in [
         plan_of(&state, scan, &["rust-target"]),
         plan_of(&state, scan, &["advisor"]),
-        tauri::async_runtime::block_on(plan_marked_nodes(&state, scan, vec![node])),
+        tauri::async_runtime::block_on(plan_marked_nodes(
+            &state,
+            scan,
+            vec![node],
+            CleanupOptions::default(),
+        )),
     ] {
         let error = refused.unwrap_err();
 

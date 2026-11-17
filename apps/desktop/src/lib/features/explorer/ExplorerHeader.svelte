@@ -72,7 +72,7 @@
   }
 
   .crumbs button:hover {
-    background: #3ec5d81a;
+    background: var(--accent-soft);
   }
 
   .crumbs button[aria-current='page'] {

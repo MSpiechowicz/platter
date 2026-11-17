@@ -242,7 +242,7 @@
     right: 12px;
     top: 0;
     border-radius: 7px;
-    background: #ffffff10;
+    background: var(--track);
     z-index: 0;
   }
 

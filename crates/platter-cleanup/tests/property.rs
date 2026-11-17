@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use platter_cleanup::plan_cleanup;
+use platter_cleanup::{CleanupOptions, plan_cleanup};
 use platter_core::testing::{FakeFs, NOW};
 use platter_core::{CancelToken, EntryKind, EntryProbe, Environment, Os, ScanConfig, scan};
 use platter_rules::RuleSet;
@@ -169,7 +169,7 @@ fn no_plan_holds_anything_outside_the_scan_root_or_in_a_protected_place() {
             continue;
         };
 
-        let plan = plan_cleanup(&tree, &env, &rules, &ids, &fs);
+        let plan = plan_cleanup(&tree, &env, &rules, &ids, &fs, &CleanupOptions::default());
         let root_parts = parts(&root);
         let targets: Vec<String> = plan.targets().map(|t| t.display_path()).collect();
         planned += targets.len();

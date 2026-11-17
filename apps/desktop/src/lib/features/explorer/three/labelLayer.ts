@@ -7,8 +7,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const DIM_BORDER = '55';
 const BORDER = 'cc';
 const DIM_LINK = 0.3;
-/** The dot's outline, the page background. */
-const DOT_OUTLINE = '#0a0e17';
+/** The dot's outline, the page background: a CSS variable, so the page's theme is picked up without a redraw. */
+const DOT_OUTLINE = 'var(--bg)';
 
 interface Link {
   group: SVGGElement;
@@ -130,7 +130,7 @@ export class LabelLayer {
     path.setAttribute('stroke-width', '1.5');
     path.setAttribute('stroke-linejoin', 'round');
     dot.setAttribute('r', '3.5');
-    dot.setAttribute('stroke', DOT_OUTLINE);
+    dot.style.stroke = DOT_OUTLINE;
     dot.setAttribute('stroke-width', '1.5');
     group.append(path, dot);
     this.#svg.append(group);

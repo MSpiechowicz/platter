@@ -4,11 +4,15 @@ import { hooks } from './hooks';
 import { advisor } from './state/advisor.svelte';
 import { scan } from './state/scan.svelte';
 import { settings } from './state/settings.svelte';
+import { applyThemeChoice } from './state/theme.svelte';
 import { ui } from './state/ui.svelte';
 import { updater } from './state/update.svelte';
 
 /** Applies the test hooks from the URL (see hooks.ts) and loads what the first screen needs. */
 export async function bootstrap(): Promise<void> {
+  // The saved choice, unless a test hook picks one for the page only (and is not saved).
+  applyThemeChoice(hooks.theme ?? settings.theme);
+
   if (hooks.mini) {
     // Assigned directly, so the choice is not saved.
     settings.sidebarCollapsed = true;
@@ -50,7 +54,7 @@ export async function bootstrap(): Promise<void> {
       ui.go('cleanup');
     }
 
-    await scan.start({ root, oneFileSystem: settings.oneFileSystem });
+    await scan.start({ root, oneFileSystem: settings.oneFileSystem, excluded: [...settings.excludedPaths] });
 
     // A finished scan opens its Overview, so the page is chosen after it.
     if (hooks.view === 'explorer' || hooks.view === 'cleanup' || hooks.view === 'advisor') {
@@ -77,6 +81,7 @@ export async function bootstrap(): Promise<void> {
     await scan.start({
       root: hooks.root ?? scan.volumes[0]?.mountPoint ?? '/',
       oneFileSystem: settings.oneFileSystem,
+      excluded: [...settings.excludedPaths],
     });
     await untilScanEnds();
     ui.go('scan');

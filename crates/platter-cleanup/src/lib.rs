@@ -27,7 +27,7 @@ mod path;
 mod plan;
 mod protect;
 
-pub use action::{CleanupAction, Tool, action_for};
+pub use action::{CleanupAction, CleanupOptions, KeepVersions, Tool, action_for};
 pub use candidates::{CandidateLimits, label_candidates};
 pub use execute::{
     CleanupEvent, CleanupReport, Disk, TargetOutcome, TargetResult, execute, restore_one, undo,
@@ -35,7 +35,7 @@ pub use execute::{
 pub use guard::{Refusal, VerifiedTarget};
 pub use kept::{KEPT_LEARNING_BUDGET, KeptFolders, with_real_keeps};
 pub use plan::{
-    ADVISOR, CleanupPlan, MARKED, PlanGroup, Refused, plan_cleanup, plan_cleanup_with, plan_labelled,
-    plan_labelled_with, plan_marked,
+    ADVISOR, CleanupPlan, LeftOut, MARKED, NEEDS_ADMIN_OFF, PlanGroup, Refused, plan_cleanup,
+    plan_cleanup_with, plan_labelled, plan_labelled_with, plan_marked,
 };
 pub use protect::{PROTECTED_LEARNING_BUDGET, Protected};

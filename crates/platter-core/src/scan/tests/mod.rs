@@ -1,6 +1,7 @@
 mod aggregate;
 mod budget;
 mod categories;
+mod excluded;
 mod progress;
 mod robustness;
 mod rules;

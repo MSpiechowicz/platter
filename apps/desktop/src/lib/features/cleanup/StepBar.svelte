@@ -95,7 +95,7 @@
   }
 
   .current {
-    background: #ffffff10;
+    background: var(--track);
     color: var(--text);
   }
 

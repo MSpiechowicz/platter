@@ -263,6 +263,7 @@ fn walk(fs: &impl DirSource<Handle = usize>, budget: &EntryBudget, threads: usiz
         cancel: &cancel,
         reporter: &reporter,
         budget,
+        excluded: &[],
     };
 
     let pool = rayon::ThreadPoolBuilder::new()

@@ -44,7 +44,7 @@
     width: 100%;
     height: 100%;
     border-radius: 10px;
-    background: #ffffff1c;
+    background: var(--toggle-off);
     transition: background 0.2s;
   }
 
@@ -55,7 +55,7 @@
     width: 16px;
     height: 16px;
     border-radius: 50%;
-    background: var(--text);
+    background: var(--knob);
     transition: transform 0.2s;
   }
 

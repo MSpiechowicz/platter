@@ -20,14 +20,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use platter_cleanup::{
-    ADVISOR, CleanupAction, CleanupEvent, CleanupPlan, CleanupReport, Disk, KeptFolders, TargetOutcome,
-    TargetResult, execute, plan_cleanup_with as make_plan, plan_labelled_with, plan_marked, undo,
+    ADVISOR, CleanupAction, CleanupEvent, CleanupOptions, CleanupPlan, CleanupReport, Disk, KeepVersions,
+    KeptFolders, TargetOutcome, TargetResult, execute, plan_cleanup_with as make_plan, plan_labelled_with,
+    plan_marked, undo,
 };
 use platter_core::dto::{ScanId, Verdict};
 use platter_core::{CancelToken, ModelLabel, ModelVerdict, NodeId};
 use platter_platform::environment::home_trash;
 use platter_rules::RuleSet;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri::ipc::Channel;
 
@@ -503,6 +504,58 @@ pub struct RefusedDto {
     pub reason: String,
 }
 
+/// The options a plan was made with, as the web view sees them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupOptionsDto {
+    /// 1, 2 or 3.
+    pub keep_package_versions: u8,
+    pub ask_for_admin: bool,
+}
+
+impl From<&CleanupOptions> for CleanupOptionsDto {
+    fn from(options: &CleanupOptions) -> Self {
+        Self {
+            keep_package_versions: options.keep_package_versions.count(),
+            ask_for_admin: options.ask_for_admin,
+        }
+    }
+}
+
+/// The options the web view may send with a plan command. A missing option has its default (keep 2
+/// versions, ask for administrator rights). Anything else than 1, 2 or 3 for the versions, or a value that
+/// is not true or false for the question, is `invalid`: the values are checked here, not trusted.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CleanupOptionsArg {
+    keep_package_versions: Option<serde_json::Value>,
+    ask_for_admin: Option<serde_json::Value>,
+}
+
+impl CleanupOptionsArg {
+    /// The options to plan with. `None`, a missing field and `null` each mean the default.
+    pub fn resolve(arg: Option<Self>) -> CommandResult<CleanupOptions> {
+        let mut options = CleanupOptions::default();
+        let Some(arg) = arg else {
+            return Ok(options);
+        };
+
+        if let Some(value) = arg.keep_package_versions {
+            options.keep_package_versions = value
+                .as_u64()
+                .and_then(KeepVersions::from_count)
+                .ok_or_else(|| CommandError::invalid("keep 1, 2 or 3 versions of each package"))?;
+        }
+        if let Some(value) = arg.ask_for_admin {
+            options.ask_for_admin = value
+                .as_bool()
+                .ok_or_else(|| CommandError::invalid("asking for administrator rights is on or off"))?;
+        }
+
+        Ok(options)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanupPlanDto {
@@ -514,6 +567,8 @@ pub struct CleanupPlanDto {
     pub refused_more: u64,
     pub not_found: Vec<String>,
     pub allocated: u64,
+    /// The options the plan was made with. The tools in `groups` were picked with them.
+    pub options: CleanupOptionsDto,
     /// Starting it asks the user first (something cannot be undone).
     pub needs_confirmation: bool,
 }
@@ -590,14 +645,16 @@ pub struct UndoDto {
 
 // ---- Commands ----
 
-/// Plans the cleanup of `suggestions` (rule ids from `get_suggestions`) of a finished scan.
+/// Plans the cleanup of `suggestions` (rule ids from `get_suggestions`) of a finished scan. The optional
+/// `options` (`{ keepPackageVersions: 1 | 2 | 3, askForAdmin: bool }`) are fixed into the plan.
 #[tauri::command]
 pub async fn plan_cleanup(
     state: State<'_, AppState>,
     scan: ScanId,
     suggestions: Vec<String>,
+    options: Option<CleanupOptionsArg>,
 ) -> CommandResult<CleanupPlanDto> {
-    plan(&state, scan, suggestions).await
+    plan(&state, scan, suggestions, CleanupOptionsArg::resolve(options)?).await
 }
 
 /// Plans moving what the user marked in the Explorer (node ids of a finished scan) to the trash. Each
@@ -607,8 +664,9 @@ pub async fn plan_marked_cleanup(
     state: State<'_, AppState>,
     scan: ScanId,
     nodes: Vec<NodeId>,
+    options: Option<CleanupOptionsArg>,
 ) -> CommandResult<CleanupPlanDto> {
-    plan_marked_nodes(&state, scan, nodes).await
+    plan_marked_nodes(&state, scan, nodes, CleanupOptionsArg::resolve(options)?).await
 }
 
 /// Starts a plan (once). Asks for confirmation first when something cannot be undone; a refused
@@ -720,7 +778,12 @@ pub async fn undo_run(state: &AppState, cleanup: CleanupId) -> CommandResult<Vec
 
 pub type Emit = Arc<dyn Fn(CleanupEventDto) + Send + Sync>;
 
-pub async fn plan(state: &AppState, scan: ScanId, suggestions: Vec<String>) -> CommandResult<CleanupPlanDto> {
+pub async fn plan(
+    state: &AppState,
+    scan: ScanId,
+    suggestions: Vec<String>,
+    options: CleanupOptions,
+) -> CommandResult<CleanupPlanDto> {
     // A broken rules file refuses every plan: nothing then says which folders the user keeps.
     let user = user_rules::current(&state.user_rules).await?;
     user.usable()?;
@@ -766,7 +829,7 @@ pub async fn plan(state: &AppState, scan: ScanId, suggestions: Vec<String>) -> C
             .collect();
         // Learnt once for the request: one overall time limit, however many plans it makes.
         let kept = KeptFolders::learn(&rules, &platform.entry_probe);
-        let mut plan = make_plan(&tree, &env, &rules, &ids, &platform.entry_probe, &kept);
+        let mut plan = make_plan(&tree, &env, &rules, &ids, &platform.entry_probe, &kept, &options);
 
         if !labels.is_empty() {
             // Exactly the labels the suggestion lists, no more: a label a rule already speaks for is
@@ -782,6 +845,7 @@ pub async fn plan(state: &AppState, scan: ScanId, suggestions: Vec<String>) -> C
                 &listed,
                 &platform.entry_probe,
                 &kept,
+                &options,
             ));
         }
 
@@ -835,6 +899,7 @@ pub async fn plan_marked_nodes(
     state: &AppState,
     scan: ScanId,
     nodes: Vec<NodeId>,
+    options: CleanupOptions,
 ) -> CommandResult<CleanupPlanDto> {
     let user = user_rules::current(&state.user_rules).await?;
     user.usable()?;
@@ -862,7 +927,14 @@ pub async fn plan_marked_nodes(
     let generation = user.generation;
     let plan = tauri::async_runtime::spawn_blocking(move || {
         let env = platform.environment_for(tree.root_path());
-        plan_marked(&tree, &env, &user.rule_set(), &nodes, &platform.entry_probe)
+        plan_marked(
+            &tree,
+            &env,
+            &user.rule_set(),
+            &nodes,
+            &platform.entry_probe,
+            &options,
+        )
     })
     .await?;
 
@@ -1087,19 +1159,26 @@ pub fn describe(plan: &CleanupPlan, scan: ScanId, plan_id: PlanId) -> CleanupPla
         plan_id,
         scan_id: scan,
         groups,
-        refused_more: plan.refused.len().saturating_sub(MAX_REFUSED) as u64,
+        refused_more: (plan.left_out.len() + plan.refused.len()).saturating_sub(MAX_REFUSED) as u64,
+        // What the options left out comes first, so a long list of refusals never hides it.
         refused: plan
-            .refused
+            .left_out
             .iter()
-            .take(MAX_REFUSED)
-            .map(|refused| RefusedDto {
+            .map(|left_out| RefusedDto {
+                rule_id: left_out.rule_id.to_owned(),
+                path: left_out.path.clone(),
+                reason: left_out.reason.to_owned(),
+            })
+            .chain(plan.refused.iter().map(|refused| RefusedDto {
                 rule_id: refused.rule_id.to_owned(),
                 path: refused.path.clone(),
                 reason: refused.reason.to_string(),
-            })
+            }))
+            .take(MAX_REFUSED)
             .collect(),
         not_found: plan.not_found.clone(),
         allocated: clamp(plan.allocated),
+        options: plan.options().into(),
         needs_confirmation: question(plan).is_some(),
     }
 }

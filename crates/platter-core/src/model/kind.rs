@@ -17,7 +17,7 @@ pub enum NodeKind {
     Dir,
     File,
     Symlink,
-    /// A mount point that was deliberately not descended into; size 0.
+    /// A mount point or a folder the user excluded that was deliberately not descended into; size 0.
     Mount,
     Other,
     /// Synthetic node merging the children a LOD query had no room for.
@@ -31,7 +31,7 @@ impl NodeKind {
     }
 }
 
-/// Why a mount point was left out of the scan (a `mount` node). Wire names are camelCase.
+/// Why a mount point or a folder was left out of the scan (a `mount` node). Wire names are camelCase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SkipReason {
@@ -43,6 +43,9 @@ pub enum SkipReason {
     /// The same filesystem as one the scan covers already, so entering it would count its data twice
     /// (a bind mount, a snapshot mount, a second mount of one disk).
     Duplicate,
+    /// A folder the user asked the scan to leave out. It is recorded like a mount that was not entered,
+    /// so nothing below it is read, counted, suggested or cleaned.
+    Excluded,
     /// The reader cannot tell: the mount is not in the mount table it read at the start of the scan, or
     /// that table was not available.
     Unknown,

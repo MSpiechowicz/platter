@@ -161,7 +161,7 @@
     vertical-align: middle;
     border: 1px solid var(--line);
     border-radius: 4px;
-    background: #ffffff08;
+    background: var(--wash-2);
     color: var(--text);
     transition:
       color 0.15s,
@@ -184,7 +184,7 @@
   .chip:hover,
   .chip:focus-visible {
     color: var(--accent);
-    background: #ffffff0d;
+    background: var(--wash-4);
     border-color: var(--dim);
   }
 
@@ -342,7 +342,7 @@
   .pline:hover,
   .pline:focus-visible {
     color: var(--accent);
-    background: #ffffff0d;
+    background: var(--wash-4);
   }
 
   .p {

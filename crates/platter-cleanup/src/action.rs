@@ -22,6 +22,64 @@ impl Tool {
     }
 }
 
+/// How many versions of each package the package cache tool keeps. Only the pacman cache is cleaned
+/// this way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeepVersions {
+    One,
+    #[default]
+    Two,
+    Three,
+}
+
+impl KeepVersions {
+    /// The version count a user chose, or `None` for anything but 1, 2 and 3.
+    pub fn from_count(count: u64) -> Option<Self> {
+        match count {
+            1 => Some(Self::One),
+            2 => Some(Self::Two),
+            3 => Some(Self::Three),
+            _ => None,
+        }
+    }
+
+    pub fn count(self) -> u8 {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+            Self::Three => 3,
+        }
+    }
+
+    /// The fixed arguments of the pacman cache tool for this count.
+    fn paccache_args(self) -> &'static [&'static str] {
+        match self {
+            Self::One => &["-rk1"],
+            Self::Two => &["-rk2"],
+            Self::Three => &["-rk3"],
+        }
+    }
+}
+
+/// What the user chose for a cleanup. They are fixed into the plan when it is made, so the run and the
+/// confirmation use the same values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupOptions {
+    /// How many versions of each package the pacman cache keeps.
+    pub keep_package_versions: KeepVersions,
+    /// Tools that need administrator rights may be planned. When off, they are left out of the plan.
+    pub ask_for_admin: bool,
+}
+
+impl Default for CleanupOptions {
+    fn default() -> Self {
+        Self {
+            keep_package_versions: KeepVersions::default(),
+            ask_for_admin: true,
+        }
+    }
+}
+
 /// What cleaning one matched target means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CleanupAction {
@@ -41,8 +99,9 @@ pub enum CleanupAction {
 }
 
 /// The action for a rule, or `None` when Platter does not clean what the rule finds (a `keep` rule, or
-/// something that needs a tool Platter does not drive yet, such as btrfs snapshots).
-pub fn action_for(rule_id: &str) -> Option<CleanupAction> {
+/// something that needs a tool Platter does not drive yet, such as btrfs snapshots). The options choose
+/// among fixed commands, never build one.
+pub fn action_for(rule_id: &str, options: &CleanupOptions) -> Option<CleanupAction> {
     use CleanupAction::{Delete, EmptyFolder, EmptyTrash, RunTool, Trash};
 
     let action = match rule_id {
@@ -66,7 +125,7 @@ pub fn action_for(rule_id: &str) -> Option<CleanupAction> {
         "user-safe" => Trash,
         "pacman-cache" => RunTool(Tool {
             program: "paccache",
-            args: &["-rk2"],
+            args: options.keep_package_versions.paccache_args(),
             needs_elevation: true,
         }),
         "apt-cache" => RunTool(Tool {

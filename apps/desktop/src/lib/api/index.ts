@@ -15,6 +15,7 @@ function lazyApi(load: () => Promise<Api>): Api {
   return {
     listVolumes: async () => (await impl()).listVolumes(),
     pickFolder: async () => (await impl()).pickFolder(),
+    pickExcludedFolder: async () => (await impl()).pickExcludedFolder(),
     startScan: async (options, onEvent) => (await impl()).startScan(options, onEvent),
     cancelScan: async (scan) => (await impl()).cancelScan(scan),
     dropScan: async (scan) => (await impl()).dropScan(scan),
@@ -25,8 +26,9 @@ function lazyApi(load: () => Promise<Api>): Api {
     getPath: async (scan, node) => (await impl()).getPath(scan, node),
     getSummary: async (scan, node) => (await impl()).getSummary(scan, node),
     getSuggestions: async (scan) => (await impl()).getSuggestions(scan),
-    planCleanup: async (scan, suggestionIds) => (await impl()).planCleanup(scan, suggestionIds),
-    planMarkedCleanup: async (scan, nodes) => (await impl()).planMarkedCleanup(scan, nodes),
+    planCleanup: async (scan, suggestionIds, options) =>
+      (await impl()).planCleanup(scan, suggestionIds, options),
+    planMarkedCleanup: async (scan, nodes, options) => (await impl()).planMarkedCleanup(scan, nodes, options),
     startCleanup: async (plan, onEvent) => (await impl()).startCleanup(plan, onEvent),
     cancelCleanup: async (cleanup) => (await impl()).cancelCleanup(cleanup),
     undoCleanup: async (cleanup) => (await impl()).undoCleanup(cleanup),

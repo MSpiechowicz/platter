@@ -12,6 +12,7 @@ import type {
   CleanupActionKind,
   CleanupEvent,
   CleanupId,
+  CleanupOptions,
   CleanupPlanDto,
   OutcomeDto,
   PlanGroupDto,
@@ -90,6 +91,37 @@ const tool = (program: string, args: string[], needsElevation: boolean): Action 
   tool: { program, args, needsElevation },
 });
 
+/** `NEEDS_ADMIN_OFF` of `crates/platter-cleanup`: why an item needing the password is left out. */
+const NEEDS_ADMIN_OFF = 'Needs administrator rights, which are turned off in Settings.';
+
+/** The defaults of `CleanupOptions` in `crates/platter-cleanup`. */
+const DEFAULT_OPTIONS: CleanupOptions = { keepPackageVersions: 2, askForAdmin: true };
+
+/** The options as `plan_cleanup` checks them: a missing value takes the default, a wrong one is `invalid`. */
+function checkOptions(options: Partial<CleanupOptions> | undefined): CleanupOptions {
+  const keep = options?.keepPackageVersions ?? DEFAULT_OPTIONS.keepPackageVersions;
+  const admin = options?.askForAdmin ?? DEFAULT_OPTIONS.askForAdmin;
+
+  if (keep !== 1 && keep !== 2 && keep !== 3) {
+    return fail('invalid', 'keepPackageVersions must be 1, 2 or 3');
+  }
+
+  if (typeof admin !== 'boolean') {
+    return fail('invalid', 'askForAdmin must be true or false');
+  }
+
+  return { keepPackageVersions: keep, askForAdmin: admin };
+}
+
+/** The pacman cache keeps as many versions as the options say (`action_for` with `CleanupOptions`). */
+function withOptions(id: string, action: Action | undefined, options: CleanupOptions): Action | undefined {
+  if (id === 'pacman-cache' && action?.kind === 'runTool') {
+    return tool('paccache', [`-rk${options.keepPackageVersions}`], true);
+  }
+
+  return action;
+}
+
 /** `action_for` of `crates/platter-cleanup/src/action.rs`: the rules not listed are not cleaned. */
 const ACTIONS: Record<string, Action> = {
   'rust-target': DELETE,
@@ -120,6 +152,7 @@ const ACTIONS: Record<string, Action> = {
   'docker-desktop-vm': TRASH,
 
   coredumps: tool('find', ['/var/lib/systemd/coredump', '-xdev', '-mindepth', '1', '-delete'], true),
+  // The count follows the plan's options (`withOptions`).
   'pacman-cache': tool('paccache', ['-rk2'], true),
   'apt-cache': tool('apt-get', ['clean'], true),
   'dnf-cache': tool('dnf', ['clean', 'packages'], true),
@@ -304,8 +337,10 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
     ids: string[],
     tree: MockTree,
     user: readonly UserRuleInput[],
+    options: CleanupOptions,
   ): { plan: Omit<CleanupPlanDto, 'planId'>; planned: PlannedGroup[] } => {
     const chosen = new Set(ids);
+    const leftOut: RefusedDto[] = [];
     const labels = host.labelsOf(scan);
     const { suggestions } = suggestionsOf(tree, labels, user);
     const byRule = new Map(suggestions.map((suggestion) => [suggestion.id, suggestion]));
@@ -319,7 +354,7 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
 
     for (const id of ordered) {
       const suggestion = byRule.get(id) as SuggestionDto;
-      const action = ACTIONS[id];
+      const action = withOptions(id, ACTIONS[id], options);
 
       // The labels are all known, so the group takes every one; a rule's matches are the 20 the suggestion lists.
       const nodes =
@@ -346,6 +381,14 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
         continue;
       }
 
+      // With administrator rights off, a tool that needs the password is left out at plan time.
+      if (action.kind === 'runTool' && action.tool.needsElevation && !options.askForAdmin) {
+        leftOut.push(
+          ...targets.map((target) => ({ ruleId: id, path: target.path, reason: NEEDS_ADMIN_OFF })),
+        );
+        continue;
+      }
+
       const command = commandOf(action);
 
       planned.push({ ruleId: id, action, targets });
@@ -362,12 +405,16 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
       });
     }
 
+    // What was left out comes first, so the cap never hides it.
+    const notDone = [...leftOut, ...refused];
+
     return {
       plan: {
         scanId: scan,
+        options,
         groups,
-        refused: refused.slice(0, 200),
-        refusedMore: Math.max(0, refused.length - 200),
+        refused: notDone.slice(0, 200),
+        refusedMore: Math.max(0, notDone.length - 200),
         notFound: [...chosen].filter((id) => !byRule.has(id)),
         allocated: groups.reduce((sum, group) => sum + group.allocated, 0),
         needsConfirmation: needsConfirmation(planned),
@@ -515,6 +562,7 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
     ids: number[],
     tree: MockTree,
     user: readonly UserRuleInput[],
+    options: CleanupOptions,
   ): { plan: Omit<CleanupPlanDto, 'planId'>; planned: PlannedGroup[] } => {
     const kept = keptNodes(suggestionsOf(tree, [], user).suggestions);
     // Outer items first, so an item inside one that is planned is found out.
@@ -559,6 +607,7 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
     return {
       plan: {
         scanId: scan,
+        options,
         groups,
         refused: refused.slice(0, MAX_REFUSED),
         refusedMore: Math.max(0, refused.length - MAX_REFUSED),
@@ -575,7 +624,8 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
       plans.clear();
     },
 
-    async planMarkedCleanup(scan, nodes) {
+    async planMarkedCleanup(scan, nodes, options) {
+      const checked = checkOptions(options);
       const user = checkRulesUsable();
 
       if (nodes.length === 0 || nodes.length > MAX_MARKED) {
@@ -593,12 +643,13 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
         return fail('notFound', `node ${unknown} does not exist`);
       }
 
-      const { plan, planned } = describeMarked(scan, nodes, tree, user);
+      const { plan, planned } = describeMarked(scan, nodes, tree, user, checked);
 
       return { planId: store(scan, planned), ...plan };
     },
 
-    async planCleanup(scan, suggestionIds) {
+    async planCleanup(scan, suggestionIds, options) {
+      const checked = checkOptions(options);
       const user = checkRulesUsable();
 
       if (suggestionIds.length === 0 || suggestionIds.length > MAX_RULES) {
@@ -621,7 +672,7 @@ export function createMockCleanup(host: MockCleanupHost): MockCleanup {
         checkAdvisorPlannable(scan, tree, user);
       }
 
-      const { plan, planned } = describe(scan, suggestionIds, tree, user);
+      const { plan, planned } = describe(scan, suggestionIds, tree, user, checked);
 
       return { planId: store(scan, planned), ...plan };
     },

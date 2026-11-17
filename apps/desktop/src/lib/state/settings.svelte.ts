@@ -1,5 +1,11 @@
-import type { UnloadAfter } from '../api/types';
+import {
+  MAX_EXCLUDED,
+  MAX_EXCLUDED_PATH_BYTES,
+  type KeepPackageVersions,
+  type UnloadAfter,
+} from '../api/types';
 import type { SizeUnits } from '../format';
+import { isThemeChoice, type ThemeChoice } from './theme.svelte';
 
 export type ExplorerView = 'flat' | '3d';
 
@@ -24,6 +30,16 @@ export interface SettingsData {
   advisorUseGpu: boolean;
   /** How often to check for a new version. An older save has no such value and gets the default, daily. */
   updateCheck: UpdateSchedule;
+  /** An AppImage downloads and installs an update a check found by itself. It never restarts by itself. Off by default. */
+  autoInstallUpdates: boolean;
+  /** How many old versions of each pacman package stay in its cache when it is cleaned. */
+  keepPackageVersions: KeepPackageVersions;
+  /** Clean what needs the administrator password (system caches and logs). Off leaves those out of every plan. */
+  askForAdmin: boolean;
+  /** Absolute paths of folders every scan leaves out, in the order they were added. */
+  excludedPaths: string[];
+  /** Dark, light, or what the desktop uses. Dark by default, as before the setting existed. */
+  theme: ThemeChoice;
 }
 
 const UPDATE_SCHEDULES: readonly UpdateSchedule[] = ['sixHours', 'daily', 'weekly', 'never'];
@@ -43,6 +59,11 @@ const DEFAULTS: SettingsData = {
   advisorLogQuestions: true,
   advisorUseGpu: true,
   updateCheck: 'daily',
+  autoInstallUpdates: false,
+  keepPackageVersions: 2,
+  askForAdmin: true,
+  excludedPaths: [],
+  theme: 'dark',
 };
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
@@ -54,6 +75,27 @@ function defaultStorage(): StorageLike | null {
   } catch {
     return null;
   }
+}
+
+const encoder = new TextEncoder();
+
+/** The folders to leave out as the backend takes them: absolute paths, no repeats, at most 64 of at most 4096 bytes. */
+export function cleanExcluded(paths: readonly unknown[]): string[] {
+  const kept: string[] = [];
+
+  for (const path of paths) {
+    if (
+      typeof path === 'string' &&
+      path.startsWith('/') &&
+      encoder.encode(path).length <= MAX_EXCLUDED_PATH_BYTES &&
+      !kept.includes(path) &&
+      kept.length < MAX_EXCLUDED
+    ) {
+      kept.push(path);
+    }
+  }
+
+  return kept;
 }
 
 /** Keeps only values of the right type, so a hand-edited or old save cannot break the app. */
@@ -77,6 +119,18 @@ function sanitize(raw: unknown): Partial<SettingsData> {
     clean.advisorUnloadAfter = value.advisorUnloadAfter as UnloadAfter;
   }
 
+  if (isThemeChoice(value.theme)) {
+    clean.theme = value.theme;
+  }
+
+  if (Array.isArray(value.excludedPaths)) {
+    clean.excludedPaths = cleanExcluded(value.excludedPaths);
+  }
+
+  if (value.keepPackageVersions === 1 || value.keepPackageVersions === 2 || value.keepPackageVersions === 3) {
+    clean.keepPackageVersions = value.keepPackageVersions;
+  }
+
   if (UPDATE_SCHEDULES.includes(value.updateCheck as UpdateSchedule)) {
     clean.updateCheck = value.updateCheck as UpdateSchedule;
   }
@@ -88,6 +142,8 @@ function sanitize(raw: unknown): Partial<SettingsData> {
     'advisorEnabled',
     'advisorLogQuestions',
     'advisorUseGpu',
+    'autoInstallUpdates',
+    'askForAdmin',
   ] as const) {
     if (typeof value[key] === 'boolean') {
       clean[key] = value[key];
@@ -108,6 +164,11 @@ export class SettingsStore implements SettingsData {
   advisorLogQuestions = $state(DEFAULTS.advisorLogQuestions);
   advisorUseGpu = $state(DEFAULTS.advisorUseGpu);
   updateCheck = $state<UpdateSchedule>(DEFAULTS.updateCheck);
+  autoInstallUpdates = $state(DEFAULTS.autoInstallUpdates);
+  keepPackageVersions = $state<KeepPackageVersions>(DEFAULTS.keepPackageVersions);
+  askForAdmin = $state(DEFAULTS.askForAdmin);
+  excludedPaths = $state<string[]>([...DEFAULTS.excludedPaths]);
+  theme = $state<ThemeChoice>(DEFAULTS.theme);
 
   readonly #storage: StorageLike | null;
 
@@ -146,6 +207,11 @@ export class SettingsStore implements SettingsData {
       advisorLogQuestions: this.advisorLogQuestions,
       advisorUseGpu: this.advisorUseGpu,
       updateCheck: this.updateCheck,
+      autoInstallUpdates: this.autoInstallUpdates,
+      keepPackageVersions: this.keepPackageVersions,
+      askForAdmin: this.askForAdmin,
+      excludedPaths: [...this.excludedPaths],
+      theme: this.theme,
     };
 
     try {

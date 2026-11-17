@@ -1,5 +1,5 @@
 use platter_cleanup::{
-    CleanupAction, CleanupPlan, CleanupReport, Disk, TargetOutcome, execute, plan_cleanup,
+    CleanupAction, CleanupOptions, CleanupPlan, CleanupReport, Disk, TargetOutcome, execute, plan_cleanup,
 };
 use platter_core::dto::Verdict;
 use platter_core::{CancelToken, UserRule};
@@ -34,13 +34,15 @@ pub fn run(args: &CleanArgs) -> CliResult<()> {
     selected.sort_unstable();
     selected.dedup();
 
-    let tree = scan_path(&args.path, args.one_file_system, args.max_entries)?;
+    let tree = scan_path(&args.path, args.one_file_system, args.max_entries, &args.excluded)?;
     // A scan can take long: the rules are read again, and the plan is made from the ones that were read
     // first only when they are still what the file says.
     unchanged_rules(&user, user_rules())?;
     let platform = Platform::current();
     let env = platform.environment_for(tree.root_path());
-    let plan = plan_cleanup(&tree, &env, &rules, &selected, &platform.entry_probe);
+    // No flags for the options yet: the defaults (keep 2 package versions, ask for admin) apply.
+    let options = CleanupOptions::default();
+    let plan = plan_cleanup(&tree, &env, &rules, &selected, &platform.entry_probe, &options);
 
     // Only rules asked for by name are worth a "found nothing"; `--safe` asks for all of them.
     let asked: Vec<String> = plan
@@ -55,7 +57,7 @@ pub fn run(args: &CleanArgs) -> CliResult<()> {
     }
     if plan.groups().is_empty() {
         // Asked to clean, and nothing could be: that is not a success.
-        if !plan.refused.is_empty() || !asked.is_empty() {
+        if !plan.refused.is_empty() || !plan.left_out.is_empty() || !asked.is_empty() {
             return Err("nothing was cleaned (see above)".into());
         }
         return Ok(());
@@ -158,15 +160,26 @@ fn render(plan: &CleanupPlan, not_found: &[String], verbose: bool, dry_run: bool
         }
     }
 
-    if !plan.refused.is_empty() {
+    if !plan.refused.is_empty() || !plan.left_out.is_empty() {
         lines.push(String::new());
-        lines.push(format!("Left out ({}):", plan.refused.len()));
+        lines.push(format!(
+            "Left out ({}):",
+            plan.refused.len() + plan.left_out.len()
+        ));
         for refused in &plan.refused {
             lines.push(format!(
                 "  {}  {}: {}",
                 refused.rule_id,
                 format::display(&refused.path),
                 format::display(&refused.reason.to_string())
+            ));
+        }
+        for left_out in &plan.left_out {
+            lines.push(format!(
+                "  {}  {}: {}",
+                left_out.rule_id,
+                format::display(&left_out.path),
+                left_out.reason
             ));
         }
     }

@@ -308,8 +308,6 @@
     height: auto;
     margin-bottom: 22px;
     color: var(--accent);
-    --rim: #2f3b52;
-    --face: #1a2335;
   }
 
   .side {

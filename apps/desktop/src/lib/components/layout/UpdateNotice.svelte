@@ -160,7 +160,7 @@
   }
 
   .ubtn:hover {
-    background: #ffffff0a;
+    background: var(--wash-3);
   }
 
   .ubtn i {

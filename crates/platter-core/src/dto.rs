@@ -61,7 +61,17 @@ impl From<&Volume> for VolumeDto {
 pub struct ScanOptions {
     pub root: String,
     pub one_file_system: bool,
+    /// Absolute paths of folders the scan leaves out (at most [`MAX_EXCLUDED`], each at most
+    /// [`MAX_EXCLUDED_PATH_BYTES`] bytes). A path that no longer exists is ignored. Omitted means none.
+    #[serde(default)]
+    pub excluded: Vec<String>,
 }
+
+/// Most folders a scan may be told to leave out.
+pub const MAX_EXCLUDED: usize = 64;
+
+/// Longest path, in bytes, of a folder a scan may be told to leave out (the usual `PATH_MAX`).
+pub const MAX_EXCLUDED_PATH_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]

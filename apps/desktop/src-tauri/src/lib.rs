@@ -124,6 +124,7 @@ pub fn run() {
             commands::history::restore_history_cleanup,
             commands::system::open_in_file_manager,
             commands::system::pick_folder,
+            commands::system::pick_excluded_folder,
             commands::system::open_external,
             commands::update::check_update,
             commands::update::install_update,

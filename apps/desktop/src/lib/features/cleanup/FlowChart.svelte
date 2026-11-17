@@ -318,7 +318,7 @@
   }
 
   .name.hot {
-    color: #fff;
+    color: var(--strong);
   }
 
   .size {

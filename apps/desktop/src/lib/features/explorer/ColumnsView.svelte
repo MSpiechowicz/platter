@@ -256,9 +256,9 @@
     white-space: nowrap;
     font-size: 12px;
     line-height: 1.25;
-    color: #fff;
-    background: #0a0e17d9;
-    border: 1px solid #ffffff22;
+    color: var(--strong);
+    background: var(--label-bg);
+    border: 1px solid var(--edge);
     border-radius: 5px;
     padding: 3px 7px;
     text-align: center;
@@ -276,7 +276,7 @@
   }
 
   .lb span {
-    color: #c3cbd9;
+    color: var(--label-sub);
   }
 
   .lb.dim {
@@ -288,13 +288,13 @@
   }
 
   .lb.sel {
-    border-color: #fff !important;
+    border-color: var(--strong) !important;
   }
 
   /* Marked for cleanup: a dashed border, over the others. */
   .lb.mk {
     border-style: dashed;
-    border-color: #fff !important;
+    border-color: var(--strong) !important;
   }
 
   .lb .tag {

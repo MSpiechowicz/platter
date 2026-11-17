@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use platter_cleanup::{
-    CandidateLimits, CleanupAction, CleanupPlan, KEPT_LEARNING_BUDGET, KeptFolders, Protected, Refusal,
-    action_for, label_candidates, plan_cleanup, plan_cleanup_with, plan_labelled, plan_labelled_with,
-    plan_marked, with_real_keeps,
+    CandidateLimits, CleanupAction, CleanupOptions, CleanupPlan, KEPT_LEARNING_BUDGET, KeptFolders,
+    Protected, Refusal, action_for, label_candidates, plan_cleanup, plan_cleanup_with, plan_labelled,
+    plan_labelled_with, plan_marked, with_real_keeps,
 };
 use platter_core::dto::SuggestionSource;
 use platter_core::dto::Verdict;
@@ -87,7 +87,14 @@ fn a_user_safe_folder_is_planned_for_the_trash_and_never_deleted() {
     let tree = scan_at(&fs, "/");
     let rules = rules(&[(UserVerdict::Safe, "/home/u/stuff/big")]);
 
-    let plan = plan_cleanup(&tree, &env(), &rules, &["user-safe"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &rules,
+        &["user-safe"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert_eq!(plan.groups().len(), 1);
     let group = &plan.groups()[0];
@@ -97,7 +104,10 @@ fn a_user_safe_folder_is_planned_for_the_trash_and_never_deleted() {
     );
     assert_eq!(group.targets()[0].display_path(), "/home/u/stuff/big");
     assert_eq!(plan.allocated, 1100);
-    assert!(matches!(action_for("user-safe"), Some(CleanupAction::Trash)));
+    assert!(matches!(
+        action_for("user-safe", &CleanupOptions::default()),
+        Some(CleanupAction::Trash)
+    ));
 }
 
 #[test]
@@ -106,7 +116,14 @@ fn user_keep_is_never_planned() {
     let tree = scan_at(&fs, "/");
     let rules = rules(&[(UserVerdict::Keep, "/home/u/stuff/big")]);
 
-    let plan = plan_cleanup(&tree, &env(), &rules, &["user-keep"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &rules,
+        &["user-keep"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert!(plan.groups().is_empty());
     assert_eq!(refused_for(&plan, "/home/u/stuff/big"), Some(&Refusal::Kept));
@@ -123,7 +140,14 @@ fn a_user_safe_cannot_get_past_the_protected_places() {
     for folder in ["/home/u", "/home/u/.ssh/keys"] {
         let rules = rules(&[(UserVerdict::Safe, folder)]);
 
-        let plan = plan_cleanup(&tree, &env(), &rules, &["user-safe"], &fs);
+        let plan = plan_cleanup(
+            &tree,
+            &env(),
+            &rules,
+            &["user-safe"],
+            &fs,
+            &CleanupOptions::default(),
+        );
 
         assert!(plan.groups().is_empty(), "{folder}: {plan:#?}");
         assert!(
@@ -139,7 +163,14 @@ fn a_user_safe_on_a_personal_folder_loses_to_the_builtin_keep() {
     let tree = scan_at(&fs, "/");
     let rules = rules(&[(UserVerdict::Safe, "/home/u/Documents")]);
 
-    let plan = plan_cleanup(&tree, &env(), &rules, &["user-safe", "documents"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &rules,
+        &["user-safe", "documents"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert!(plan.groups().is_empty(), "{plan:#?}");
     assert_eq!(refused_for(&plan, "/home/u/Documents"), Some(&Refusal::Kept));
@@ -151,7 +182,14 @@ fn a_user_safe_on_the_scan_root_is_refused() {
     let tree = scan_at(&fs, "/home/u/stuff");
     let rules = rules(&[(UserVerdict::Safe, "/home/u/stuff")]);
 
-    let plan = plan_cleanup(&tree, &env(), &rules, &["user-safe"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &rules,
+        &["user-safe"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert!(plan.groups().is_empty());
     assert_eq!(refused_for(&plan, "/home/u/stuff"), Some(&Refusal::ScanRoot));
@@ -163,7 +201,14 @@ fn a_user_keep_inside_a_builtin_match_stops_that_match_being_planned() {
     let tree = scan_at(&fs, "/");
     let rules = rules(&[(UserVerdict::Keep, "/home/u/.cache/precious")]);
 
-    let plan = plan_cleanup(&tree, &env(), &rules, &["app-cache"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &rules,
+        &["app-cache"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert!(plan.groups().is_empty(), "{plan:#?}");
     assert_eq!(plan.not_found, ["app-cache"]);
@@ -180,7 +225,7 @@ fn a_user_keep_blocks_marked_folders_inside_around_and_equal() {
         node(&tree, "home/u/stuff"),
     ];
 
-    let plan = plan_marked(&tree, &env(), &rules, &marked, &fs);
+    let plan = plan_marked(&tree, &env(), &rules, &marked, &fs, &CleanupOptions::default());
 
     assert!(plan.groups().is_empty(), "{plan:#?}");
     for path in ["/home/u/stuff/big", "/home/u/stuff/big/inner", "/home/u/stuff"] {
@@ -194,7 +239,14 @@ fn a_user_keep_leaves_other_marked_folders_alone() {
     let tree = scan_at(&fs, "/");
     let rules = rules(&[(UserVerdict::Keep, "/home/u/stuff/big")]);
 
-    let plan = plan_marked(&tree, &env(), &rules, &[node(&tree, "home/u/stuff/other")], &fs);
+    let plan = plan_marked(
+        &tree,
+        &env(),
+        &rules,
+        &[node(&tree, "home/u/stuff/other")],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert_eq!(plan.groups().len(), 1);
 }
@@ -213,7 +265,7 @@ fn a_user_keep_blocks_labelled_folders() {
         })
         .collect();
 
-    let plan = plan_labelled(&tree, &env(), &rules, &labels, &fs);
+    let plan = plan_labelled(&tree, &env(), &rules, &labels, &fs, &CleanupOptions::default());
 
     let planned: Vec<String> = plan.targets().map(|target| target.display_path()).collect();
     assert_eq!(planned, ["/home/u/stuff/other"]);
@@ -230,8 +282,22 @@ fn a_scan_inside_a_user_kept_folder_plans_nothing() {
     let tree = scan_at(&fs, "/home/u/stuff/big");
     let rules = rules(&[(UserVerdict::Keep, "/home/u/stuff")]);
 
-    let marked = plan_marked(&tree, &env(), &rules, &[node(&tree, "inner")], &fs);
-    let by_rule = plan_cleanup(&tree, &env(), &rules, &["user-safe", "app-cache"], &fs);
+    let marked = plan_marked(
+        &tree,
+        &env(),
+        &rules,
+        &[node(&tree, "inner")],
+        &fs,
+        &CleanupOptions::default(),
+    );
+    let by_rule = plan_cleanup(
+        &tree,
+        &env(),
+        &rules,
+        &["user-safe", "app-cache"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert!(marked.groups().is_empty());
     assert_eq!(
@@ -332,7 +398,14 @@ fn a_kept_folder_with_no_bytes_blocks_marked_folders_inside_around_and_equal() {
             .map(|path| node(&tree, &relative(path)))
             .collect();
 
-        let plan = plan_marked(&tree, &env(), &rules, &marked, &case.fs);
+        let plan = plan_marked(
+            &tree,
+            &env(),
+            &rules,
+            &marked,
+            &case.fs,
+            &CleanupOptions::default(),
+        );
 
         assert!(plan.groups().is_empty(), "{}: {plan:#?}", case.kept);
         for path in [case.kept, case.inside, case.parent] {
@@ -354,8 +427,22 @@ fn a_kept_folder_with_no_bytes_blocks_a_label_on_its_parent_and_a_user_safe_ther
             reason: String::new(),
         }];
 
-        let labelled = plan_labelled(&tree, &env(), &rules, &labels, &case.fs);
-        let by_rule = plan_cleanup(&tree, &env(), &rules, &["user-safe"], &case.fs);
+        let labelled = plan_labelled(
+            &tree,
+            &env(),
+            &rules,
+            &labels,
+            &case.fs,
+            &CleanupOptions::default(),
+        );
+        let by_rule = plan_cleanup(
+            &tree,
+            &env(),
+            &rules,
+            &["user-safe"],
+            &case.fs,
+            &CleanupOptions::default(),
+        );
 
         assert!(labelled.groups().is_empty(), "{}: {labelled:#?}", case.kept);
         assert_eq!(
@@ -425,7 +512,14 @@ fn another_path_to_a_user_kept_folder_is_kept_in_every_kind_of_plan() {
     let tree = scan_at(&fs, "/");
     let rules = rules(&[(UserVerdict::Keep, "/home/u/work/proj")]);
 
-    let by_rule = plan_cleanup(&tree, &env(), &rules, &["rust-target"], &fs);
+    let by_rule = plan_cleanup(
+        &tree,
+        &env(),
+        &rules,
+        &["rust-target"],
+        &fs,
+        &CleanupOptions::default(),
+    );
     let marked = plan_marked(
         &tree,
         &env(),
@@ -436,6 +530,7 @@ fn another_path_to_a_user_kept_folder_is_kept_in_every_kind_of_plan() {
             node(&tree, "data/other/keep"),
         ],
         &fs,
+        &CleanupOptions::default(),
     );
     let labels: Vec<ModelLabel> = ["data/alias/keep", "data/other/keep"]
         .iter()
@@ -445,7 +540,7 @@ fn another_path_to_a_user_kept_folder_is_kept_in_every_kind_of_plan() {
             reason: String::new(),
         })
         .collect();
-    let labelled = plan_labelled(&tree, &env(), &rules, &labels, &fs);
+    let labelled = plan_labelled(&tree, &env(), &rules, &labels, &fs, &CleanupOptions::default());
 
     let planned =
         |plan: &CleanupPlan| -> Vec<String> { plan.targets().map(|target| target.display_path()).collect() };
@@ -536,9 +631,30 @@ fn a_user_kept_mount_keeps_the_folder_around_it_in_every_kind_of_plan() {
         (UserVerdict::Safe, "/home/u/proj"),
     ]);
 
-    let marked = plan_marked(&tree, &env(), &rules, &[node(&tree, "proj")], &fs);
-    let labelled = plan_labelled(&tree, &env(), &rules, &[label(&tree, "proj")], &fs);
-    let by_rule = plan_cleanup(&tree, &env(), &rules, &["user-safe", "user-keep"], &fs);
+    let marked = plan_marked(
+        &tree,
+        &env(),
+        &rules,
+        &[node(&tree, "proj")],
+        &fs,
+        &CleanupOptions::default(),
+    );
+    let labelled = plan_labelled(
+        &tree,
+        &env(),
+        &rules,
+        &[label(&tree, "proj")],
+        &fs,
+        &CleanupOptions::default(),
+    );
+    let by_rule = plan_cleanup(
+        &tree,
+        &env(),
+        &rules,
+        &["user-safe", "user-keep"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     for (what, plan) in [("marked", &marked), ("labelled", &labelled)] {
         assert!(plan.groups().is_empty(), "{what}: {plan:#?}");
@@ -594,8 +710,22 @@ fn a_builtin_keep_on_a_mount_keeps_the_folder_around_it() {
     let covering = explainer
         .covering(node(&tree, &format!("{relative}/common")))
         .expect("the mount is kept");
-    let marked = plan_marked(&tree, &env(), &rules, &[node(&tree, relative)], &fs);
-    let by_rule = plan_cleanup(&tree, &env(), &rules, &["user-safe"], &fs);
+    let marked = plan_marked(
+        &tree,
+        &env(),
+        &rules,
+        &[node(&tree, relative)],
+        &fs,
+        &CleanupOptions::default(),
+    );
+    let by_rule = plan_cleanup(
+        &tree,
+        &env(),
+        &rules,
+        &["user-safe"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert_eq!(
         (covering.id, covering.source),
@@ -620,9 +750,30 @@ fn a_kept_folder_below_a_skipped_mount_still_keeps_the_target_around_it() {
         (UserVerdict::Safe, "/home/u/proj"),
     ]);
 
-    let marked = plan_marked(&tree, &env(), &rules, &[node(&tree, "proj")], &fs);
-    let labelled = plan_labelled(&tree, &env(), &rules, &[label(&tree, "proj")], &fs);
-    let by_rule = plan_cleanup(&tree, &env(), &rules, &["user-safe"], &fs);
+    let marked = plan_marked(
+        &tree,
+        &env(),
+        &rules,
+        &[node(&tree, "proj")],
+        &fs,
+        &CleanupOptions::default(),
+    );
+    let labelled = plan_labelled(
+        &tree,
+        &env(),
+        &rules,
+        &[label(&tree, "proj")],
+        &fs,
+        &CleanupOptions::default(),
+    );
+    let by_rule = plan_cleanup(
+        &tree,
+        &env(),
+        &rules,
+        &["user-safe"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     for (what, plan) in [("marked", &marked), ("labelled", &labelled), ("rule", &by_rule)] {
         assert!(plan.groups().is_empty(), "{what}: {plan:#?}");
@@ -636,7 +787,14 @@ fn a_folder_beside_a_user_kept_mount_is_not_kept() {
     let tree = scan_on_one_filesystem(&fs, "/home/u");
     let rules = rules(&[(UserVerdict::Keep, "/home/u/proj/nas")]);
 
-    let marked = plan_marked(&tree, &env(), &rules, &[node(&tree, "proj/data")], &fs);
+    let marked = plan_marked(
+        &tree,
+        &env(),
+        &rules,
+        &[node(&tree, "proj/data")],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     let planned: Vec<String> = marked.targets().map(|target| target.display_path()).collect();
     assert_eq!(planned, ["/home/u/proj/data"], "{marked:#?}");
@@ -710,9 +868,25 @@ fn keep_folders_on_a_hung_mount_cannot_hold_planning_and_the_rest_still_protect_
     assert!(stalled <= 12, "{stalled} looks at the hung mount");
 
     // Both plans of a request use the same learned folders and look at the hung mount no more.
-    let by_rule = plan_cleanup_with(&tree, &env(), &rules, &["rust-target"], &hung, &kept);
+    let by_rule = plan_cleanup_with(
+        &tree,
+        &env(),
+        &rules,
+        &["rust-target"],
+        &hung,
+        &kept,
+        &CleanupOptions::default(),
+    );
     let labels = [label(&tree, "data/alias/keep"), label(&tree, "data/other/keep")];
-    let labelled = plan_labelled_with(&tree, &env(), &rules, &labels, &hung, &kept);
+    let labelled = plan_labelled_with(
+        &tree,
+        &env(),
+        &rules,
+        &labels,
+        &hung,
+        &kept,
+        &CleanupOptions::default(),
+    );
     assert_eq!(
         hung.stalled.load(Ordering::SeqCst),
         stalled,
@@ -743,6 +917,7 @@ fn keep_folders_on_a_hung_mount_cannot_hold_planning_and_the_rest_still_protect_
         &[label(&tree, "home/u/work/proj/keep")],
         &hung,
         &kept,
+        &CleanupOptions::default(),
     );
     assert!(marked.groups().is_empty(), "{marked:#?}");
     assert_eq!(
@@ -841,8 +1016,22 @@ fn a_keep_link_to_the_top_folder_or_above_the_home_does_not_block_every_plan() {
     for leads_to in ["/", "/home", "/home/u"] {
         let probe = LinkedProbe::new(&fs, &[("/home/u/link", leads_to)]);
 
-        let by_rule = plan_cleanup(&tree, &env(), &rules, &["user-safe"], &probe);
-        let marked = plan_marked(&tree, &env(), &rules, &[node(&tree, "project/x")], &probe);
+        let by_rule = plan_cleanup(
+            &tree,
+            &env(),
+            &rules,
+            &["user-safe"],
+            &probe,
+            &CleanupOptions::default(),
+        );
+        let marked = plan_marked(
+            &tree,
+            &env(),
+            &rules,
+            &[node(&tree, "project/x")],
+            &probe,
+            &CleanupOptions::default(),
+        );
 
         assert_eq!(
             planned(&by_rule),
@@ -867,6 +1056,7 @@ fn a_keep_link_to_the_top_folder_leaves_no_real_folder_and_the_link_itself_stays
         &rules,
         &[node(&tree, "project/x"), node(&tree, "link")],
         &probe,
+        &CleanupOptions::default(),
     );
 
     assert!(kept.resolved_folders().is_empty());
@@ -886,7 +1076,14 @@ fn a_keep_that_is_a_bind_mount_of_the_home_folder_over_protects_and_refuses_ever
         (UserVerdict::Safe, "/home/u/project/x"),
     ]);
 
-    let plan = plan_cleanup(&tree, &env(), &rules, &["user-safe"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &rules,
+        &["user-safe"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert!(plan.groups().is_empty(), "{plan:#?}");
     assert_eq!(
@@ -906,8 +1103,22 @@ fn a_keep_link_to_a_real_folder_keeps_that_folder_in_every_kind_of_plan() {
     ]);
     let probe = LinkedProbe::new(&fs, &[("/home/u/link", "/home/u/real")]);
 
-    let by_rule = plan_cleanup(&tree, &env(), &rules, &["user-safe"], &probe);
-    let marked = plan_marked(&tree, &env(), &rules, &[node(&tree, "real/y")], &probe);
+    let by_rule = plan_cleanup(
+        &tree,
+        &env(),
+        &rules,
+        &["user-safe"],
+        &probe,
+        &CleanupOptions::default(),
+    );
+    let marked = plan_marked(
+        &tree,
+        &env(),
+        &rules,
+        &[node(&tree, "real/y")],
+        &probe,
+        &CleanupOptions::default(),
+    );
 
     assert_eq!(
         refused_for(&by_rule, "/home/u/real/y"),
@@ -963,9 +1174,16 @@ fn a_keep_link_to_the_scan_root_or_a_folder_holding_it_keeps_the_scan_in_every_p
         let labels: Vec<ModelLabel> = caches(root).iter().map(|path| label(&tree, path)).collect();
         let count = nodes.len();
 
-        let by_rule = plan_cleanup(&tree, &env(), &kept, &["python-cache"], &probe);
-        let marked = plan_marked(&tree, &env(), &kept, &nodes, &probe);
-        let labelled = plan_labelled(&tree, &env(), &kept, &labels, &probe);
+        let by_rule = plan_cleanup(
+            &tree,
+            &env(),
+            &kept,
+            &["python-cache"],
+            &probe,
+            &CleanupOptions::default(),
+        );
+        let marked = plan_marked(&tree, &env(), &kept, &nodes, &probe, &CleanupOptions::default());
+        let labelled = plan_labelled(&tree, &env(), &kept, &labels, &probe, &CleanupOptions::default());
         let listed = evaluate(
             &tree,
             &env(),
@@ -989,7 +1207,14 @@ fn a_keep_link_to_the_scan_root_or_a_folder_holding_it_keeps_the_scan_in_every_p
         }
 
         // The same scan without the keep is the control: the caches are there to clean.
-        let control = plan_cleanup(&tree, &env(), &RuleSet::builtin(), &["python-cache"], &probe);
+        let control = plan_cleanup(
+            &tree,
+            &env(),
+            &RuleSet::builtin(),
+            &["python-cache"],
+            &probe,
+            &CleanupOptions::default(),
+        );
         assert_eq!(
             planned(&control).len(),
             count,
@@ -1006,7 +1231,14 @@ fn a_keep_link_to_a_folder_below_the_scan_root_still_refuses_what_lies_in_it() {
     let kept = rules(&[(UserVerdict::Keep, "/home/u/link")]);
     let tree = scan_at(&fs, "/data");
 
-    let by_rule = plan_cleanup(&tree, &env(), &kept, &["python-cache"], &probe);
+    let by_rule = plan_cleanup(
+        &tree,
+        &env(),
+        &kept,
+        &["python-cache"],
+        &probe,
+        &CleanupOptions::default(),
+    );
 
     all_refused_as_kept(&by_rule, 2, "/data by rule");
 }
@@ -1020,7 +1252,14 @@ fn a_keep_link_to_the_home_folder_or_above_protects_only_the_link_itself() {
     for leads_to in ["/", "/home", "/home/u"] {
         let probe = LinkedProbe::new(&fs, &[("/home/u/link", leads_to)]);
 
-        let by_rule = plan_cleanup(&tree, &env(), &kept, &["python-cache"], &probe);
+        let by_rule = plan_cleanup(
+            &tree,
+            &env(),
+            &kept,
+            &["python-cache"],
+            &probe,
+            &CleanupOptions::default(),
+        );
         let listed = evaluate(
             &tree,
             &env(),
@@ -1047,7 +1286,15 @@ fn a_hung_keep_first_does_not_cost_a_later_keep_its_real_location() {
     let started = Instant::now();
     let kept = KeptFolders::learn_within(&rules, &probe, Duration::from_millis(400));
     let learned_in = started.elapsed();
-    let plan = plan_cleanup_with(&tree, &env(), &rules, &["user-safe"], &probe, &kept);
+    let plan = plan_cleanup_with(
+        &tree,
+        &env(),
+        &rules,
+        &["user-safe"],
+        &probe,
+        &kept,
+        &CleanupOptions::default(),
+    );
 
     assert!(learned_in < Duration::from_millis(1500), "{learned_in:?}");
     assert_eq!(kept.resolved_folders(), [PathBuf::from("/home/u/real")]);
@@ -1102,7 +1349,15 @@ fn a_link_keep_behind_many_hung_keeps_is_still_read_by_text_and_protects_where_i
     for root in ["/data", "/data/proj"] {
         let tree = scan_at(&fs, root);
 
-        let plan = plan_cleanup_with(&tree, &env(), &rules, &["python-cache"], &probe, &kept);
+        let plan = plan_cleanup_with(
+            &tree,
+            &env(),
+            &rules,
+            &["python-cache"],
+            &probe,
+            &kept,
+            &CleanupOptions::default(),
+        );
 
         all_refused_as_kept(&plan, caches(root).len(), root);
     }
@@ -1125,8 +1380,24 @@ fn a_keep_that_the_limit_ran_out_before_could_be_a_link_so_nothing_is_planned() 
         let tree = scan_at(&fs, root);
         let labels: Vec<ModelLabel> = caches(root).iter().map(|path| label(&tree, path)).collect();
 
-        let by_rule = plan_cleanup_with(&tree, &env(), &rules, &["python-cache"], &probe, &kept);
-        let labelled = plan_labelled_with(&tree, &env(), &rules, &labels, &probe, &kept);
+        let by_rule = plan_cleanup_with(
+            &tree,
+            &env(),
+            &rules,
+            &["python-cache"],
+            &probe,
+            &kept,
+            &CleanupOptions::default(),
+        );
+        let labelled = plan_labelled_with(
+            &tree,
+            &env(),
+            &rules,
+            &labels,
+            &probe,
+            &kept,
+            &CleanupOptions::default(),
+        );
 
         for (plan, what) in [(&by_rule, "by rule"), (&labelled, "labelled")] {
             assert!(plan.groups().is_empty(), "{root} {what}: {plan:#?}");
@@ -1150,7 +1421,15 @@ fn a_link_keep_whose_way_cannot_be_followed_in_time_refuses_every_plan() {
     let tree = scan_at(&fs, "/data");
 
     let kept = KeptFolders::learn(&rules, &probe);
-    let plan = plan_cleanup_with(&tree, &env(), &rules, &["python-cache"], &probe, &kept);
+    let plan = plan_cleanup_with(
+        &tree,
+        &env(),
+        &rules,
+        &["python-cache"],
+        &probe,
+        &kept,
+        &CleanupOptions::default(),
+    );
 
     // The link leads onto a mount that does not answer: where it really is cannot be told.
     assert!(kept.unresolved());
@@ -1176,7 +1455,15 @@ fn a_hung_keep_that_is_not_a_link_does_not_stop_planning() {
     let tree = scan_at(&fs, "/data");
 
     let kept = KeptFolders::learn(&rules, &probe);
-    let plan = plan_cleanup_with(&tree, &env(), &rules, &["python-cache"], &probe, &kept);
+    let plan = plan_cleanup_with(
+        &tree,
+        &env(),
+        &rules,
+        &["python-cache"],
+        &probe,
+        &kept,
+        &CleanupOptions::default(),
+    );
 
     assert!(!kept.unresolved());
     assert_eq!(planned(&plan), ["/data/proj/__pycache__"], "{plan:#?}");
@@ -1215,7 +1502,15 @@ fn a_link_that_leads_nowhere_in_a_few_hops_is_not_resolved_and_refuses_every_pla
     let tree = scan_at(&fs, "/data");
 
     let kept = KeptFolders::learn(&rules, &probe);
-    let plan = plan_cleanup_with(&tree, &env(), &rules, &["python-cache"], &probe, &kept);
+    let plan = plan_cleanup_with(
+        &tree,
+        &env(),
+        &rules,
+        &["python-cache"],
+        &probe,
+        &kept,
+        &CleanupOptions::default(),
+    );
 
     assert!(kept.unresolved());
     assert!(plan.groups().is_empty(), "{plan:#?}");
@@ -1237,7 +1532,15 @@ fn without_hung_keeps_the_same_link_keep_refuses_as_kept() {
     for root in ["/data", "/data/proj"] {
         let tree = scan_at(&fs, root);
 
-        let plan = plan_cleanup_with(&tree, &env(), &rules, &["python-cache"], &probe, &kept);
+        let plan = plan_cleanup_with(
+            &tree,
+            &env(),
+            &rules,
+            &["python-cache"],
+            &probe,
+            &kept,
+            &CleanupOptions::default(),
+        );
 
         all_refused_as_kept(&plan, caches(root).len(), root);
     }
@@ -1291,9 +1594,25 @@ fn the_plans_of_one_request_look_the_protected_places_up_once() {
     let probe = LinkedProbe::new(&fs, &[]);
     let kept = KeptFolders::learn(&rules, &probe);
 
-    plan_cleanup_with(&tree, &env(), &rules, &["user-safe"], &probe, &kept);
+    plan_cleanup_with(
+        &tree,
+        &env(),
+        &rules,
+        &["user-safe"],
+        &probe,
+        &kept,
+        &CleanupOptions::default(),
+    );
     let after_first = probe.resolves.load(Ordering::SeqCst);
-    plan_labelled_with(&tree, &env(), &rules, &[label(&tree, "real/y")], &probe, &kept);
+    plan_labelled_with(
+        &tree,
+        &env(),
+        &rules,
+        &[label(&tree, "real/y")],
+        &probe,
+        &kept,
+        &CleanupOptions::default(),
+    );
 
     assert!(
         after_first > 10,

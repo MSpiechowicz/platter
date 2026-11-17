@@ -169,6 +169,7 @@ fn a_folder_whose_name_is_not_text_is_refused() {
         ScanOptions {
             root: root.to_string_lossy().into_owned(),
             one_file_system: false,
+            excluded: Vec::new(),
         },
         Arc::new(move |event| {
             let _ = sender.send(event);

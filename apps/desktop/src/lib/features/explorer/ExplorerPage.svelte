@@ -446,7 +446,7 @@
   .veil {
     position: absolute;
     inset: 0;
-    background: #111723b3;
+    background: var(--veil);
   }
 
   /*

@@ -2315,6 +2315,7 @@ fn a_folder_kept_through_a_link_is_no_label_candidate_and_no_label_in_it_is_list
         &rules,
         &listed,
         &probe,
+        &platter_cleanup::CleanupOptions::default(),
     );
     assert!(plan.refused.is_empty(), "{plan:#?}");
     assert_eq!(plan.targets().count(), 1, "{plan:#?}");

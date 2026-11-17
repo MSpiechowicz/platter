@@ -62,6 +62,7 @@ const group = (
 const planOf = (groups: PlanGroupDto[], extra: Partial<CleanupPlanDto> = {}): CleanupPlanDto => ({
   planId: 5,
   scanId: 1,
+  options: { keepPackageVersions: 2, askForAdmin: true },
   groups,
   refused: [],
   refusedMore: 0,
@@ -499,7 +500,10 @@ describe('AdvisorCard and the rules of the user', () => {
     await fireEvent.click(button(/^Clean selected/));
 
     await waitFor(() => expect(context.api.planCleanup).toHaveBeenCalledOnce());
-    expect(context.api.planCleanup).toHaveBeenCalledWith(context.scanId, ['user-safe', 'target']);
+    expect(context.api.planCleanup).toHaveBeenCalledWith(context.scanId, ['user-safe', 'target'], {
+      keepPackageVersions: 2,
+      askForAdmin: true,
+    });
   });
 });
 
@@ -519,7 +523,10 @@ describe('AdvisorCard cleaning', () => {
     await fireEvent.click(button('Clean selected (2)'));
 
     await waitFor(() => expect(context.api.startCleanup).toHaveBeenCalledOnce());
-    expect(context.api.planCleanup).toHaveBeenCalledWith(context.scanId, ['target', 'trash']);
+    expect(context.api.planCleanup).toHaveBeenCalledWith(context.scanId, ['target', 'trash'], {
+      keepPackageVersions: 2,
+      askForAdmin: true,
+    });
     expect(document.querySelector('dialog[open]')).toBeNull();
     expect(button('Clean safe · 105 GB').disabled).toBe(true);
     expect(button('Clean selected (2)').disabled).toBe(true);
@@ -546,7 +553,10 @@ describe('AdvisorCard cleaning', () => {
     await fireEvent.click(button('Clean safe · 105 GB'));
 
     await waitFor(() => expect(context.api.planCleanup).toHaveBeenCalledOnce());
-    expect(context.api.planCleanup).toHaveBeenCalledWith(context.scanId, ['target', 'trash']);
+    expect(context.api.planCleanup).toHaveBeenCalledWith(context.scanId, ['target', 'trash'], {
+      keepPackageVersions: 2,
+      askForAdmin: true,
+    });
   });
 
   it('shows the review dialog for review items: one row per group, the safe rest, the total, Cancel and Clean', async () => {

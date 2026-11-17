@@ -1,5 +1,9 @@
 /* Design tokens and base styles. Taken from docs/mockups/shared.css.
-   Flat styling only: no gradients, no glows. One accent colour; green means "safe" and nothing else. */
+   Flat styling only: no gradients, no glows. One accent colour; green means "safe" and nothing else.
+   The dark set is the default. `:root[data-theme='light']` below swaps the same names for the light set; the theme
+   store (state/theme.svelte.ts) sets the attribute. Every colour a component draws is a token here, so a component
+   never needs to know the theme. A token that colours something drawn in JS (the map, the 3D view) is read back
+   with `theme.token()`. */
 
 :root {
   --bg: #0a0e17;
@@ -15,6 +19,54 @@
   --on-accent: #06141a;
   --hover: #ffffff0f;
   --track: #ffffff10;
+
+  /* Layers of the page colour: a faint panel, a hovered row, a raised segment, an off switch, a ring, an edge. */
+  --wash-1: #ffffff05;
+  --wash-2: #ffffff08;
+  --wash-3: #ffffff0a;
+  --wash-4: #ffffff0d;
+  --raised: #ffffff14;
+  --toggle-off: #ffffff1c;
+  --ring: #ffffff1f;
+  --edge: #ffffff22;
+
+  /* Text that is brighter than --text (a hovered or searched name, a map label) and the outline of a selection. */
+  --strong: #ffffff;
+  /* The knob of a switch and the ring of the logo. */
+  --knob: #e4e9f2;
+  --logo-ring: #e6ebf5;
+
+  /* Floating panels: a shadow for a tooltip or toast, for a menu, for a dialog, and the dimmed page behind a dialog. */
+  --shadow-1: #0008;
+  --shadow-2: #000a;
+  --shadow-3: #000c;
+  --scrim: #05080dcc;
+
+  /* The accent as a tint: a hovered crumb, a question you asked, its outline. */
+  --accent-soft: #3ec5d81a;
+  --accent-wash: #3ec5d81f;
+  --accent-edge: #3ec5d859;
+  /* Cyan and green as text on a card: the History chart's figures. */
+  --cyan-text: #7fd8e6;
+  --green-text: #7fd3ac;
+
+  /* The veil over a map that is loading. It is the card colour, mostly opaque. */
+  --veil: #111723b3;
+  /* Marks drawn over a coloured fill (the slits of a can, the lines of a page). */
+  --ink-1: #0007;
+  --ink-2: #0a0e1766;
+  /* A tile the pointer is on is lit by this much: above 1 brightens, below 1 darkens. */
+  --hot-brightness: 1.3;
+  /* How far the rest of the map steps back while one folder is selected: the opacity it keeps. */
+  --step-back: 0.32;
+
+  /* A 3D map label: a dark chip with a light name on a dark scene. */
+  --label-bg: #0a0e17d9;
+  --label-sub: #c3cbd9;
+
+  /* The Advisor illustration: the rim and the face of the machine. */
+  --rim: #2f3b52;
+  --face: #1a2335;
 
   --cyan: #3ec5d8;
   --violet: #8f86d9;
@@ -46,6 +98,79 @@
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   color-scheme: dark;
+}
+
+/* The light set. Hues are the dark set's, darkened until text in them has a ratio of at least 4.5 to 1 on a card and
+   on the page, and a fill has at least 3 to 1. Cards are white on a cool grey page, the way the dark cards are lighter
+   than the dark page. */
+:root[data-theme='light'] {
+  --bg: #eef1f6;
+  --side-bg: #e6eaf1;
+  --card: #ffffff;
+  --card2: #f4f6fa;
+  --line: #d3d9e4;
+  --text: #101828;
+  --muted: #4a566b;
+  --dim: #5a667b;
+  --accent: #0c7285;
+  --accent-hover: #095d6d;
+  --on-accent: #ffffff;
+  --hover: #10182810;
+  --track: #1018281a;
+
+  --wash-1: #1018280a;
+  --wash-2: #1018280d;
+  --wash-3: #10182810;
+  --wash-4: #10182812;
+  --raised: #10182814;
+  --toggle-off: #98a2b3;
+  --ring: #10182826;
+  --edge: #1018282e;
+
+  --strong: #0b1220;
+  --knob: #ffffff;
+  --logo-ring: #1a2335;
+
+  --shadow-1: #1018281f;
+  --shadow-2: #10182829;
+  --shadow-3: #10182840;
+  --scrim: #10182873;
+
+  --accent-soft: #0c728517;
+  --accent-wash: #0c72851a;
+  --accent-edge: #0c728559;
+  --cyan-text: #095d6d;
+  --green-text: #17694a;
+
+  --veil: #ffffffb3;
+  --ink-1: #ffffffb3;
+  --ink-2: #ffffff80;
+  --hot-brightness: 0.93;
+  --step-back: 0.5;
+
+  --label-bg: #ffffffe6;
+  --label-sub: #4a566b;
+
+  --rim: #c5cddb;
+  --face: #e8ecf3;
+
+  --cyan: #0c7285;
+  --violet: #6a5cc4;
+  --blue: #2c68b8;
+  --pink: #b0457a;
+  --amber: #946200;
+  --green: #1c7a52;
+  --red: #b8383d;
+  --slate: #66728a;
+  --clay: #a15a3a;
+
+  --cat-document: #356fae;
+  --cat-archive: #8458a6;
+  --cat-package: #a65a1b;
+  --cat-diskImage: #7a6a30;
+  --cat-data: #3f766e;
+
+  color-scheme: light;
 }
 
 *,

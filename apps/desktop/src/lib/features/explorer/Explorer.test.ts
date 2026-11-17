@@ -4,6 +4,7 @@ import type { NodeDto } from '../../api/types';
 import { fmt } from '../../state/fmt.svelte';
 import { scan } from '../../state/scan.svelte';
 import { settings } from '../../state/settings.svelte';
+import { theme } from '../../state/theme.svelte';
 import { ui } from '../../state/ui.svelte';
 import Explorer from './Explorer.svelte';
 
@@ -68,6 +69,29 @@ describe('the Explorer', () => {
     expect((screen.getByRole('button', { name: /^Back/ }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Whole disk' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('7 items')).toBeTruthy();
+  });
+
+  it('draws the tiles again in the colours of the new theme when the theme changes', async () => {
+    render(Explorer, { props: {} });
+
+    const home = await within(await screen.findByLabelText('Map of the open folder')).findByRole('button', {
+      name: /^home \/ demo, /,
+    });
+    const fillOf = (): string | null => home.querySelector('rect')?.getAttribute('fill') ?? null;
+    const dark = fillOf();
+
+    try {
+      theme.setChoice('light');
+
+      await waitFor(() => expect(fillOf()).not.toBe(dark));
+      expect(fillOf()).toMatch(/^#[0-9a-f]{6}$/);
+
+      theme.setChoice('dark');
+
+      await waitFor(() => expect(fillOf()).toBe(dark));
+    } finally {
+      theme.setChoice('dark');
+    }
   });
 
   it('calls the button "Whole scan" when the scan root is a folder, not a whole volume', async () => {

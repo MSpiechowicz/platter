@@ -25,6 +25,7 @@ import type {
   VolumeDto,
   ScanWarning,
 } from './types';
+import { MAX_EXCLUDED, MAX_EXCLUDED_PATH_BYTES } from './types';
 
 const GB = 1_000_000_000;
 
@@ -106,6 +107,8 @@ export interface MockOptions {
   /** Test hook: the demo disk keeps nearly everything in one folder (see `dominantLayout`). */
   dominant?: boolean;
   pickedFolder?: string | null;
+  /** Test hook: what the picker for a folder to leave out returns (`null`: cancelled). */
+  pickedExcluded?: string | null;
   /** Test hook: warnings the finished scan reports. */
   warnings?: ScanWarning[];
   /** Test hook: timers and starting state of the advisor model's state machine (see `mock-advisor.ts`). */
@@ -452,12 +455,32 @@ export function createMockApi(options: MockOptions = {}): Api {
       return options.pickedFolder === undefined ? '/home/demo' : options.pickedFolder;
     },
 
+    async pickExcludedFolder() {
+      return options.pickedExcluded === undefined ? '/home/demo/Videos' : options.pickedExcluded;
+    },
+
     async startScan(scanOptions: ScanOptions, onEvent) {
+      // As `start_scan` checks them, before an id is taken.
+      const excluded = scanOptions.excluded ?? [];
+
+      if (excluded.length > MAX_EXCLUDED) {
+        return fail('invalid', `leave out at most ${MAX_EXCLUDED} folders`);
+      }
+
+      const bad = excluded.find(
+        (path) => !path.startsWith('/') || utf8Length(path) > MAX_EXCLUDED_PATH_BYTES,
+      );
+
+      if (bad !== undefined) {
+        return fail('invalid', `${bad} is not an absolute path of a folder`);
+      }
+
       const id = nextId++;
       const tree = buildTree({
         seed,
         root: scanOptions.root,
         oneFileSystem: scanOptions.oneFileSystem,
+        excluded,
         bytes: bytesFor(scanOptions.root),
         now: clock(),
         dominant: options.dominant,

@@ -52,7 +52,11 @@
 
   function startScan(): void {
     if (target !== null) {
-      scan.start({ root: target, oneFileSystem: settings.oneFileSystem });
+      scan.start({
+        root: target,
+        oneFileSystem: settings.oneFileSystem,
+        excluded: [...settings.excludedPaths],
+      });
     }
   }
 

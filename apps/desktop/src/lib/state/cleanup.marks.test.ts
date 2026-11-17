@@ -122,7 +122,10 @@ describe('marking', () => {
     store.mark(demo);
     await store.cleanMarked();
 
-    expect(planMarkedCleanup).toHaveBeenCalledExactlyOnceWith(scanId, [demo.id]);
+    expect(planMarkedCleanup).toHaveBeenCalledExactlyOnceWith(scanId, [demo.id], {
+      keepPackageVersions: 2,
+      askForAdmin: true,
+    });
   });
 
   it('refuses the scan root, a kept item, an item inside a kept folder, and the 1001st mark', async () => {
@@ -431,7 +434,10 @@ describe('cleaning what is marked', () => {
     expect(store.phase.kind).toBe('idle');
     expect(store.notice).toBe('Could not plan the cleanup: node 5 does not exist');
     expect(api.planMarkedCleanup).toHaveBeenCalledOnce();
-    expect(api.planMarkedCleanup).toHaveBeenCalledWith(scanId, [5]);
+    expect(api.planMarkedCleanup).toHaveBeenCalledWith(scanId, [5], {
+      keepPackageVersions: 2,
+      askForAdmin: true,
+    });
   });
 
   it('does nothing without marks, while another flow runs, or twice for two clicks', async () => {

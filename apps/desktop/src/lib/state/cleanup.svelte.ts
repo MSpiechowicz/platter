@@ -2,6 +2,7 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { api as defaultApi } from '../api';
 import { describeError, isApiError, type Api } from '../api/client';
 import type {
+  CleanupOptions,
   CleanupEvent,
   CleanupId,
   CleanupPlanDto,
@@ -14,6 +15,7 @@ import type {
   Verdict,
 } from '../api/types';
 import { scan as defaultScan, type ScanStore } from './scan.svelte';
+import { settings } from './settings.svelte';
 
 /*
  * The cleanup flow, with no knowledge of the interface: which suggestions are selected (Overview, Cleanup view) or
@@ -456,7 +458,7 @@ export class CleanupStore {
     this.select('safe');
     const ids = this.safeItems.map((item) => item.id);
 
-    await this.#begin((scan) => this.#api.planCleanup(scan, ids));
+    await this.#begin((scan) => this.#api.planCleanup(scan, ids, this.#options()));
   }
 
   async cleanSelected(): Promise<void> {
@@ -466,7 +468,7 @@ export class CleanupStore {
 
     const ids = this.selectedItems.map((item) => item.id);
 
-    await this.#begin((scan) => this.#api.planCleanup(scan, ids));
+    await this.#begin((scan) => this.#api.planCleanup(scan, ids, this.#options()));
   }
 
   /**
@@ -480,7 +482,12 @@ export class CleanupStore {
 
     const nodes = this.outermostMarks.map((mark) => mark.id);
 
-    await this.#begin((scan) => this.#api.planMarkedCleanup(scan, nodes));
+    await this.#begin((scan) => this.#api.planMarkedCleanup(scan, nodes, this.#options()));
+  }
+
+  /** The Cleanup settings, fixed into the plan the backend makes now. */
+  #options(): CleanupOptions {
+    return { keepPackageVersions: settings.keepPackageVersions, askForAdmin: settings.askForAdmin };
   }
 
   /** "Clean <total>" in the review dialog. */

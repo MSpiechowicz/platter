@@ -91,6 +91,8 @@ pub(crate) struct Walker<'a, S: DirSource> {
     pub reporter: &'a Reporter<'a>,
     /// What the walk may collect; once a limit is hit every worker stops and the scan reports `TooLarge`.
     pub budget: &'a EntryBudget,
+    /// Identities of the folders the user left out, never the scan root's own.
+    pub excluded: &'a [(u64, u64)],
 }
 
 impl<S: DirSource> Walker<'_, S> {
@@ -216,16 +218,26 @@ impl<S: DirSource> Walker<'_, S> {
                     // A directory's own length is filesystem bookkeeping, not data; only its blocks count.
                     entry.apparent = 0;
 
+                    // A folder the user left out is never entered, whatever the source handed over. It is
+                    // recorded like a mount that was not entered, so everything that refuses those
+                    // (cleanup, rules, the Explorer) refuses it too.
+                    let left_out = self.excluded.contains(&(meta.dev, meta.ino));
+
                     // Whether a mount root is entered is the source's decision (it knows what counts as
                     // the same filesystem); a missing handle on a mount root makes it a `mount` node.
-                    let not_descended = meta.is_mount_root && raw.child.is_none();
+                    let not_descended = left_out || (meta.is_mount_root && raw.child.is_none());
                     if not_descended {
                         entry.kind = NodeKind::Mount;
                         entry.allocated = 0;
                         entry.apparent = 0;
 
                         // `Unknown` is what a mount without a reason is, so it is not stored.
-                        if let Some(reason) = raw.skipped.filter(|&reason| reason != SkipReason::Unknown) {
+                        let reason = if left_out {
+                            Some(SkipReason::Excluded)
+                        } else {
+                            raw.skipped.filter(|&reason| reason != SkipReason::Unknown)
+                        };
+                        if let Some(reason) = reason {
                             skips.push((index as u32, reason));
                         }
                     } else {

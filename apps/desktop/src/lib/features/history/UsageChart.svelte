@@ -226,7 +226,7 @@
   }
 
   .chart .value.disk {
-    fill: #7fd8e6;
+    fill: var(--cyan-text);
   }
 
   .bracket {
@@ -235,7 +235,7 @@
   }
 
   .chart .saved-text {
-    fill: #7fd3ac;
+    fill: var(--green-text);
     font-size: 14px;
     font-weight: 600;
   }

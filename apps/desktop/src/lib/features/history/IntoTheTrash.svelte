@@ -24,18 +24,18 @@
   <g clip-path="url(#history-outside-can)">
     <g class="doc d1">
       <rect x="0" y="34" width="20" height="26" rx="3" fill="var(--amber)" />
-      <path d="M4 42h12M4 48h9" stroke="#0007" stroke-width="2" stroke-linecap="round" />
+      <path d="M4 42h12M4 48h9" stroke="var(--ink-1)" stroke-width="2" stroke-linecap="round" />
     </g>
     <g class="doc d2">
       <g transform="rotate(-8 36 39)">
         <rect x="26" y="26" width="20" height="26" rx="3" fill="var(--slate)" />
-        <path d="M30 34h12M30 40h9" stroke="#0007" stroke-width="2" stroke-linecap="round" />
+        <path d="M30 34h12M30 40h9" stroke="var(--ink-1)" stroke-width="2" stroke-linecap="round" />
       </g>
     </g>
     <g class="doc d3">
       <g transform="rotate(6 62 49)">
         <rect x="52" y="36" width="20" height="26" rx="3" fill="var(--violet)" />
-        <path d="M56 44h12M56 50h9" stroke="#0007" stroke-width="2" stroke-linecap="round" />
+        <path d="M56 44h12M56 50h9" stroke="var(--ink-1)" stroke-width="2" stroke-linecap="round" />
       </g>
     </g>
   </g>
@@ -47,7 +47,12 @@
       stroke-width="2.5"
       stroke-linejoin="round"
     />
-    <path d="M104 38v20M111 38v20M118 38v20" stroke="#0a0e1766" stroke-width="2.4" stroke-linecap="round" />
+    <path
+      d="M104 38v20M111 38v20M118 38v20"
+      stroke="var(--ink-2)"
+      stroke-width="2.4"
+      stroke-linecap="round"
+    />
   </g>
   <!-- The gust when the lid slams: puffs of air out of both sides of the lid, and wind lines sweeping away. -->
   <g class="gust" aria-hidden="true">

@@ -182,6 +182,26 @@ impl Tree {
         }
     }
 
+    /// Whether a folder the user left out of the scan ([`SkipReason::Excluded`]) lies inside this folder.
+    /// Its bytes are not in the folder's size, so acting on the whole folder would reach data the scan
+    /// was told to leave alone. The node itself does not count.
+    pub fn holds_excluded(&self, id: NodeId) -> bool {
+        self.skipped
+            .iter()
+            .filter(|&&(_, reason)| reason == SkipReason::Excluded)
+            .any(|&(left_out, _)| {
+                let mut current = self.parent(NodeId(left_out));
+
+                while let Some(ancestor) = current {
+                    if ancestor == id {
+                        return true;
+                    }
+                    current = self.parent(ancestor);
+                }
+                false
+            })
+    }
+
     /// Whether some directory inside the subtree (or the node itself) could not be listed. The sizes,
     /// counts and age of such a node only cover the part that was read.
     pub fn has_unreadable(&self, id: NodeId) -> bool {

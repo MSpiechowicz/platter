@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
-use platter_core::dto::{ScanEvent, ScanId, ScanOptions};
+use platter_core::dto::{MAX_EXCLUDED, MAX_EXCLUDED_PATH_BYTES, ScanEvent, ScanId, ScanOptions};
 use platter_core::{CancelToken, DirSource, ScanConfig, scan};
 use platter_platform::root::ResolvedRoot;
 use tauri::State;
@@ -78,6 +78,8 @@ pub async fn start_pinned(
     pinned: Option<(u64, u64)>,
     emit: EmitFn,
 ) -> CommandResult<ScanId> {
+    check_excluded(&options.excluded)?;
+
     // `canonicalize` touches the filesystem and can block for as long as a mount is unresponsive. The
     // scan is not registered yet, so a failure here leaves nothing behind and emits no event.
     let requested = options.root.clone();
@@ -90,7 +92,13 @@ pub async fn start_pinned(
         ));
     }
     let root = resolved.path;
-    let config = scan_config(options.one_file_system, resolved.identity);
+
+    let excluded = options.excluded;
+    let excluded = tauri::async_runtime::spawn_blocking(move || excluded_identities(&excluded)).await?;
+    let config = ScanConfig {
+        excluded,
+        ..scan_config(options.one_file_system, resolved.identity)
+    };
 
     let (id, cancel) = state.scans.begin()?;
 
@@ -143,6 +151,48 @@ pub fn scan_config(one_file_system: bool, identity: Option<(u64, u64)>) -> ScanC
         max_memory_bytes: Some(platter_platform::suggested_memory_budget()),
         ..ScanConfig::default()
     }
+}
+
+/// Refuses a list of folders to leave out that is too long or holds a path that is not absolute, before
+/// anything is read. A relative path would mean whatever folder the app happens to run in, and `~` is
+/// not expanded.
+pub fn check_excluded(excluded: &[String]) -> CommandResult<()> {
+    if excluded.len() > MAX_EXCLUDED {
+        return Err(CommandError::invalid(format!(
+            "at most {MAX_EXCLUDED} folders can be left out of a scan, not {}",
+            excluded.len()
+        )));
+    }
+
+    for path in excluded {
+        if path.len() > MAX_EXCLUDED_PATH_BYTES {
+            return Err(CommandError::invalid(format!(
+                "a folder to leave out has a path longer than {MAX_EXCLUDED_PATH_BYTES} bytes"
+            )));
+        }
+        if !Path::new(path).is_absolute() {
+            return Err(CommandError::invalid(format!(
+                "{path} is not an absolute path, so it cannot be left out of a scan"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// The `(dev, ino)` of every folder to leave out that exists now. One that was removed, is not a folder
+/// or cannot be read is skipped: a folder that is gone must not stop a scan. Blocks like
+/// [`resolve_root`], so call it off the async worker.
+pub fn excluded_identities(excluded: &[String]) -> Vec<(u64, u64)> {
+    let mut identities: Vec<(u64, u64)> = excluded
+        .iter()
+        .filter_map(|path| platter_platform::root::resolve_root(Path::new(path)).ok())
+        .filter_map(|resolved| resolved.identity)
+        .collect();
+
+    identities.sort_unstable();
+    identities.dedup();
+    identities
 }
 
 /// Runs a scan to completion and reports it: progress events while it walks, then one terminal event.

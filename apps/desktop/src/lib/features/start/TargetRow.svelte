@@ -66,7 +66,7 @@
 
   .row.selected {
     border-color: var(--accent);
-    background: #ffffff08;
+    background: var(--wash-2);
     color: var(--text);
   }
 

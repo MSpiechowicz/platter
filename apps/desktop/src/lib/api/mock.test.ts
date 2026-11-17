@@ -64,6 +64,55 @@ describe('volumes and folder picker', () => {
   });
 });
 
+describe('folders left out of scans', () => {
+  /** Starts a scan with these folders left out and waits for its end. */
+  function scanWithout(api: Api, excluded: string[]): Promise<FinishedScan> {
+    return new Promise((resolve, reject) => {
+      api
+        .startScan({ root: '/', oneFileSystem: true, excluded }, (event) => {
+          if (event.type === 'finished') {
+            resolve({ id: event.scanId, rootId: event.rootId, totals: event.totals, events: [] });
+          }
+        })
+        .catch(reject);
+    });
+  }
+
+  it('picks a folder to leave out, or nothing when cancelled', async () => {
+    expect(await createMockApi(FAST).pickExcludedFolder()).toBe('/home/demo/Videos');
+    expect(await createMockApi({ pickedExcluded: null }).pickExcludedFolder()).toBeNull();
+  });
+
+  it('shows a left-out folder as skipped, counts nothing of it, and never leaves out the root', async () => {
+    const api = createMockApi(FAST);
+    const full = await scan(api);
+    const home = (await allChildren(api, full.id, full.rootId)).find((node) => node.name === 'home');
+    expect(home?.kind).toBe('dir');
+
+    const without = await scanWithout(api, ['/home', '/']);
+    const left = (await allChildren(api, without.id, without.rootId)).find((node) => node.name === 'home');
+
+    expect(left).toMatchObject({ kind: 'mount', skipped: 'excluded', allocated: 0 });
+    expect(without.totals.allocated).toBeLessThan(full.totals.allocated);
+  });
+
+  it('refuses what the backend refuses: a relative path, too many folders', async () => {
+    const api = createMockApi(FAST);
+
+    await expect(
+      api.startScan({ root: '/', oneFileSystem: true, excluded: ['~/x'] }, () => {}),
+    ).rejects.toMatchObject({
+      code: 'invalid',
+    });
+    const many = Array.from({ length: 65 }, (_, index) => `/x${index}`);
+    await expect(
+      api.startScan({ root: '/', oneFileSystem: true, excluded: many }, () => {}),
+    ).rejects.toMatchObject({
+      code: 'invalid',
+    });
+  });
+});
+
 describe('the root node', () => {
   it('is named like the real backend: the last path component, or "/" for the filesystem root', async () => {
     const api = createMockApi(FAST);

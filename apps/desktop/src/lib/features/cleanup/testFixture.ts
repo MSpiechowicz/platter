@@ -67,6 +67,7 @@ export const markedGroup = (gb: number, items = 2): PlanGroupDto => ({
 export const planOf = (groups: PlanGroupDto[]): CleanupPlanDto => ({
   planId: 5,
   scanId: 1,
+  options: { keepPackageVersions: 2, askForAdmin: true },
   groups,
   refused: [],
   refusedMore: 0,

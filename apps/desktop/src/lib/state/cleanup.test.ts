@@ -200,7 +200,10 @@ describe('planning', () => {
 
     await store.cleanSelected();
 
-    expect(planCleanup).toHaveBeenCalledWith(scanId, ids(data, 'safe'));
+    expect(planCleanup).toHaveBeenCalledWith(scanId, ids(data, 'safe'), {
+      keepPackageVersions: 2,
+      askForAdmin: true,
+    });
     await vi.waitFor(done(store));
     expect(store.reviewing).toBeUndefined();
   });
@@ -212,7 +215,10 @@ describe('planning', () => {
     store.select('all');
     await store.cleanSafe();
 
-    expect(planCleanup).toHaveBeenCalledWith(scanId, ids(data, 'safe'));
+    expect(planCleanup).toHaveBeenCalledWith(scanId, ids(data, 'safe'), {
+      keepPackageVersions: 2,
+      askForAdmin: true,
+    });
     expect(store.choice).not.toBe('all');
     await vi.waitFor(done(store));
   });
@@ -287,6 +293,7 @@ describe('planning', () => {
       planCleanup: async (scanId) => ({
         planId: 1,
         scanId,
+        options: { keepPackageVersions: 2, askForAdmin: true },
         groups: [],
         refused: [{ ruleId: 'x', path: '/x', reason: 'kept on purpose' }],
         refusedMore: 0,

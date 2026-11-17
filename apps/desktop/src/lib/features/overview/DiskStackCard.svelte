@@ -84,7 +84,7 @@
   {@const slab = placed.slab}
   {#if slab.free}
     {#each [placed.left, placed.right, placed.top] as face (face)}
-      <polygon points={face} fill="#ffffff05" stroke={slab.color} stroke-dasharray="4 4" />
+      <polygon points={face} fill="var(--wash-1)" stroke={slab.color} stroke-dasharray="4 4" />
     {/each}
   {:else}
     <polygon points={placed.left} style="fill:{mix(slab.color, 55)}" />

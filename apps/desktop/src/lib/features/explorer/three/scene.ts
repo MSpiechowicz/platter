@@ -1,6 +1,7 @@
 import {
   AmbientLight,
   BoxGeometry,
+  Color,
   DirectionalLight,
   EdgesGeometry,
   Group,
@@ -15,7 +16,8 @@ import {
 } from 'three';
 import { COLLAPSED_NODE_ID } from '../../../api/client';
 import type { NodeId } from '../../../api/types';
-import { colorOf, type ColorMap } from '../colors';
+import { theme } from '../../../state/theme.svelte';
+import { colorOf, columnMix, type ColorMap } from '../colors';
 import { ANCHOR_RISE, type ColumnsLayout, type Column } from '../layout/columns';
 import type { Rect } from '../layout/geometry';
 import { attachControls, type Reactions } from './controls';
@@ -67,19 +69,22 @@ export interface SceneOptions {
 
 const GROW_MS = 650;
 const MIN_SIZE = 0.05;
-const CARD_COLOR = 0x111723;
 const AMBIENT = 2.1;
 const SUN = 1.5;
 /** The dot sits on the lid, a little below the label's anchor. */
 const DOT_DROP = ANCHOR_RISE / 2;
+
+/** The page background the columns are mixed towards, and the card the scene is cleared to: tokens of the theme on screen. */
+const pageBackground = (): Color => new Color(theme.token('--bg'));
+const cardColor = (): Color => new Color(theme.token('--card'));
 
 const easeOut = (k: number): number => 1 - Math.pow(1 - k, 3);
 
 /**
  * The 3D columns: renderer, camera and picking. It knows nothing about folders or the page; it is given a layout
  * and colours and reports clicks, hovers and where the labels belong.
- * A frame is drawn only when the layout, the highlight, the camera or the size changes (and while the columns grow),
- * so nothing runs while the view is idle; `dispose()` ends it and frees what the GPU holds.
+ * A frame is drawn only when the layout, the highlight, the camera, the size or the theme changes (and while the
+ * columns grow), so nothing runs while the view is idle; `dispose()` ends it and frees what the GPU holds.
  */
 export class ColumnsScene {
   readonly #host: HTMLElement;
@@ -91,6 +96,7 @@ export class ColumnsScene {
   readonly #raycaster = new Raycaster();
   readonly #listeners = new AbortController();
   readonly #resizeObserver: ResizeObserver;
+  readonly #unsubscribeTheme: () => void;
   readonly #box = new BoxGeometry(1, 1, 1);
   readonly #outline = new EdgesGeometry(this.#box, 30);
   readonly #view: CameraView = { ...INITIAL_VIEW };
@@ -99,6 +105,9 @@ export class ColumnsScene {
   #corners: readonly Vector3[] = BLOCK_CORNERS;
   /** The size of the host the camera was last set up for; `null` until it has one. */
   #size: { width: number; height: number } | null = null;
+  /** What the columns are mixed towards, from the theme on screen. */
+  #background = pageBackground();
+  #mixes = columnMix();
   #group: Group | null = null;
   #columns: Column[] = [];
   /** One look per column, and one per floor of a column whose floors have colours of their own. */
@@ -120,7 +129,7 @@ export class ColumnsScene {
 
     this.#renderer = new WebGLRenderer({ antialias: true, preserveDrawingBuffer: options.keepDrawing });
     this.#renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.#renderer.setClearColor(CARD_COLOR);
+    this.#renderer.setClearColor(cardColor());
     host.prepend(this.#renderer.domElement);
 
     const sun = new DirectionalLight(0xffffff, SUN);
@@ -131,6 +140,7 @@ export class ColumnsScene {
     this.#resizeObserver = new ResizeObserver(() => this.#resize());
     this.#resizeObserver.observe(host);
     this.#resize();
+    this.#unsubscribeTheme = theme.subscribe(() => this.#retheme());
 
     attachControls(
       host,
@@ -222,6 +232,7 @@ export class ColumnsScene {
     }
 
     this.#disposed = true;
+    this.#unsubscribeTheme();
     cancelAnimationFrame(this.#frame);
     this.#frame = 0;
     this.#listeners.abort();
@@ -244,11 +255,25 @@ export class ColumnsScene {
     }
 
     const color = hue === undefined ? colorOf(colors, top) : (colors.get(hue) ?? colorOf(colors, top));
-    const look = new Look(color);
+    const look = new Look(color, this.#background, this.#mixes);
 
     this.#looks.set(key, { id: top, look });
 
     return look;
+  }
+
+  /** The theme changed: the card behind and every column's mix towards the page are redone, and a frame is drawn. */
+  #retheme(): void {
+    this.#background = pageBackground();
+    this.#mixes = columnMix();
+    this.#renderer.setClearColor(cardColor());
+
+    for (const { look } of this.#looks.values()) {
+      look.retheme(this.#background, this.#mixes);
+    }
+
+    this.#paint();
+    this.invalidate();
   }
 
   #clear(): void {

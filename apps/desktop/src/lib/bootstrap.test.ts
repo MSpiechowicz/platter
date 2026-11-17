@@ -122,3 +122,29 @@ describe('bootstrap: the update schedule', () => {
     expect(start).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('bootstrap: the theme', () => {
+  beforeEach(() => {
+    state.calls = [];
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    document.documentElement.removeAttribute('data-theme');
+  });
+
+  it('shows the theme of the URL hook without saving it', async () => {
+    await boot({ theme: 'light' });
+
+    expect(document.documentElement.dataset.theme).toBe('light');
+    expect(localStorage.getItem('platter.settings')).toBeNull();
+  });
+
+  it('leaves the theme alone without the hook', async () => {
+    document.documentElement.dataset.theme = 'dark';
+
+    await boot({});
+
+    expect(document.documentElement.dataset.theme).toBe('dark');
+  });
+});

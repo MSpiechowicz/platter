@@ -203,7 +203,7 @@
     top: calc(100% + 6px);
     width: 100%;
     z-index: 30;
-    box-shadow: 0 14px 40px #000a;
+    box-shadow: 0 14px 40px var(--shadow-2);
     animation: rise 0.16s var(--ease-out);
   }
 

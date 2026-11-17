@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use platter_cleanup::{CleanupAction, CleanupPlan, Refusal, plan_cleanup};
+use platter_cleanup::{CleanupAction, CleanupOptions, CleanupPlan, Refusal, plan_cleanup};
 use platter_core::dto::Verdict;
 use platter_core::testing::{FakeFs, NOW};
 use platter_core::{CancelToken, Environment, Os, ScanConfig, Tree, UserDir, scan};
@@ -72,7 +72,14 @@ fn a_dry_run_plans_every_selected_match_with_its_action() {
         "pacman-cache",
     ];
 
-    let plan = plan_cleanup(&tree, &env(), &RuleSet::builtin(), &selected, &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &selected,
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     let groups: Vec<_> = plan
         .groups()
@@ -114,6 +121,7 @@ fn only_selected_rules_are_planned_and_unknown_ids_are_reported() {
         &RuleSet::builtin(),
         &["rust-target", "no-such-rule", "apt-cache"],
         &fs,
+        &CleanupOptions::default(),
     );
 
     assert_eq!(paths(&plan), ["/home/u/code/rs/target"]);
@@ -132,6 +140,7 @@ fn keep_and_unsupported_rules_are_refused() {
         &RuleSet::builtin(),
         &["documents", "btrfs-snapshots"],
         &fs,
+        &CleanupOptions::default(),
     );
 
     assert!(plan.groups().is_empty());
@@ -156,6 +165,7 @@ fn without_a_home_directory_nothing_is_planned() {
         &RuleSet::builtin(),
         &["rust-target", "pacman-cache"],
         &fs,
+        &CleanupOptions::default(),
     );
 
     assert!(plan.groups().is_empty());
@@ -169,7 +179,14 @@ fn the_scan_root_itself_is_never_a_target() {
     fs.file("/home/u/.cache/a/b", 10);
     let tree = scan_at(&fs, "/home/u/.cache");
 
-    let plan = plan_cleanup(&tree, &env(), &RuleSet::builtin(), &["app-cache"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &["app-cache"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert_eq!(
         reasons(&plan),
@@ -202,7 +219,14 @@ fn protected_places_are_refused_whatever_a_rule_says() {
         ("npm-cache", Matcher::Home("Dokumenty"), "/home/u/Dokumenty"),
     ];
     for (id, matcher, place) in cases {
-        let plan = plan_cleanup(&tree, &env, &one_rule(id, matcher), &[id], &fs);
+        let plan = plan_cleanup(
+            &tree,
+            &env,
+            &one_rule(id, matcher),
+            &[id],
+            &fs,
+            &CleanupOptions::default(),
+        );
 
         assert!(plan.groups().is_empty(), "{matcher:?}: {plan:#?}");
         assert_eq!(
@@ -219,7 +243,14 @@ fn a_target_swapped_for_a_link_after_the_scan_is_refused() {
     let tree = scan_at(&fs, "/");
     fs.swap_for_symlink("/home/u/code/rs/target");
 
-    let plan = plan_cleanup(&tree, &env(), &RuleSet::builtin(), &["rust-target"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &["rust-target"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert_eq!(
         reasons(&plan),
@@ -233,7 +264,14 @@ fn a_folder_on_the_way_swapped_for_a_link_is_refused() {
     let tree = scan_at(&fs, "/");
     fs.swap_for_symlink("/home/u/code");
 
-    let plan = plan_cleanup(&tree, &env(), &RuleSet::builtin(), &["rust-target"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &["rust-target"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert!(plan.groups().is_empty());
     assert!(matches!(&plan.refused[0].reason, Refusal::Changed(what) if what.contains("link")));
@@ -253,6 +291,7 @@ fn a_target_that_is_gone_or_changed_kind_is_refused() {
         &RuleSet::builtin(),
         &["rust-target", "node-modules"],
         &fs,
+        &CleanupOptions::default(),
     );
 
     assert!(plan.groups().is_empty());
@@ -284,7 +323,14 @@ fn a_mount_as_target_or_on_the_way_is_refused() {
     aged(&mut fs, "/home/u/vol/b/target/x", 10, 90);
     let tree = scan_at(&fs, "/");
 
-    let plan = plan_cleanup(&tree, &env(), &RuleSet::builtin(), &["rust-target"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &["rust-target"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert!(plan.groups().is_empty(), "{plan:#?}");
     assert_eq!(plan.refused.len(), 2);
@@ -299,7 +345,14 @@ fn a_mount_above_the_scan_root_is_fine() {
     aged(&mut fs, "/home/u/a/target/x", 10, 90);
     let tree = scan_at(&fs, "/home/u");
 
-    let plan = plan_cleanup(&tree, &env(), &RuleSet::builtin(), &["rust-target"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &["rust-target"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert_eq!(paths(&plan), ["/home/u/a/target"]);
 }
@@ -311,7 +364,14 @@ fn a_review_target_with_an_unreadable_part_is_refused() {
     fs.unreadable_dir("/home/u/.cache/locked");
     let tree = scan_at(&fs, "/");
 
-    let plan = plan_cleanup(&tree, &env(), &RuleSet::builtin(), &["app-cache"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &["app-cache"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert_eq!(
         reasons(&plan),
@@ -327,7 +387,14 @@ fn file_rules_plan_single_files() {
     aged(&mut fs, "/home/u/Downloads/new.zip", 5, 3);
     let tree = scan_at(&fs, "/");
 
-    let plan = plan_cleanup(&tree, &env(), &RuleSet::builtin(), &["old-downloads"], &fs);
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &["old-downloads"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     let mut found = paths(&plan);
     found.sort();
@@ -345,8 +412,22 @@ fn a_part_platter_cannot_read_does_not_stop_a_tool_that_cleans_it() {
     let tree = scan_at(&fs, "/var/cache");
     let home_tree = scan_at(&fs, "/");
 
-    let tool = plan_cleanup(&tree, &env(), &RuleSet::builtin(), &["pacman-cache"], &fs);
-    let own = plan_cleanup(&home_tree, &env(), &RuleSet::builtin(), &["app-cache"], &fs);
+    let tool = plan_cleanup(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &["pacman-cache"],
+        &fs,
+        &CleanupOptions::default(),
+    );
+    let own = plan_cleanup(
+        &home_tree,
+        &env(),
+        &RuleSet::builtin(),
+        &["app-cache"],
+        &fs,
+        &CleanupOptions::default(),
+    );
 
     assert_eq!(paths(&tool), ["/var/cache/pacman/pkg"], "{tool:#?}");
     assert_eq!(
@@ -370,6 +451,7 @@ fn a_file_modified_after_the_scan_or_a_project_whose_marker_is_gone_is_refused()
         &RuleSet::builtin(),
         &["old-downloads", "rust-target", "node-modules"],
         &fs,
+        &CleanupOptions::default(),
     );
 
     assert!(plan.groups().is_empty(), "{plan:#?}");
@@ -397,7 +479,7 @@ fn a_file_modified_after_the_scan_or_a_project_whose_marker_is_gone_is_refused()
 
 mod marked {
     use super::*;
-    use platter_cleanup::{MARKED, plan_marked};
+    use platter_cleanup::{CleanupOptions, MARKED, plan_marked};
     use platter_core::NodeId;
 
     fn node(tree: &Tree, path: &str) -> NodeId {
@@ -438,6 +520,7 @@ mod marked {
             &RuleSet::builtin(),
             &[node(&tree, "home/u/old/stuff")],
             &fs,
+            &CleanupOptions::default(),
         );
 
         assert_eq!(plan.groups().len(), 1);
@@ -468,7 +551,14 @@ mod marked {
             NodeId(999_999),
         ];
 
-        let plan = plan_marked(&tree, &env, &RuleSet::builtin(), &marked, &fs);
+        let plan = plan_marked(
+            &tree,
+            &env,
+            &RuleSet::builtin(),
+            &marked,
+            &fs,
+            &CleanupOptions::default(),
+        );
 
         assert_eq!(paths(&plan), ["/home/u/old/stuff"]);
         let why = |path: &str| {
@@ -503,7 +593,14 @@ mod marked {
             node(&tree, "home/u/.local/share/other"),
         ];
 
-        let plan = plan_marked(&tree, &env(), &RuleSet::builtin(), &marked, &fs);
+        let plan = plan_marked(
+            &tree,
+            &env(),
+            &RuleSet::builtin(),
+            &marked,
+            &fs,
+            &CleanupOptions::default(),
+        );
 
         assert_eq!(paths(&plan), ["/home/u/.local/share/other"]);
         assert!(

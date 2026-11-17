@@ -80,7 +80,7 @@
     padding: 22px;
     width: min(480px, calc(100vw - 32px));
     margin: auto;
-    box-shadow: 0 24px 80px #000c;
+    box-shadow: 0 24px 80px var(--shadow-3);
   }
 
   .dlg.wide {
@@ -88,7 +88,7 @@
   }
 
   .dlg::backdrop {
-    background: #05080dcc;
+    background: var(--scrim);
   }
 
   .dlg[open] {

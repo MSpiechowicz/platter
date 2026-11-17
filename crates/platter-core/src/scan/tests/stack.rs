@@ -219,6 +219,7 @@ fn threads_used_when_already_carrying(frames: usize) -> usize {
         cancel: &cancel,
         reporter: &reporter,
         budget: &budget,
+        excluded: &[],
     };
 
     let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();

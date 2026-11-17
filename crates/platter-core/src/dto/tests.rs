@@ -52,6 +52,7 @@ fn skipped_is_present_only_on_mount_nodes_and_spelled_in_camel_case() {
         (SkipReason::OtherDisk, "otherDisk"),
         (SkipReason::System, "system"),
         (SkipReason::Duplicate, "duplicate"),
+        (SkipReason::Excluded, "excluded"),
         (SkipReason::Unknown, "unknown"),
     ] {
         let mount = NodeDto {
@@ -114,8 +115,20 @@ fn scan_options() {
     let dto = ScanOptions {
         root: "/home".into(),
         one_file_system: true,
+        excluded: vec!["/home/me/.cache".into()],
     };
-    assert_wire(&dto, json!({ "root": "/home", "oneFileSystem": true }));
+    assert_wire(
+        &dto,
+        json!({ "root": "/home", "oneFileSystem": true, "excluded": ["/home/me/.cache"] }),
+    );
+}
+
+#[test]
+fn scan_options_without_excluded_folders_parse_as_an_empty_list() {
+    let parsed: ScanOptions =
+        serde_json::from_value(json!({ "root": "/home", "oneFileSystem": false })).unwrap();
+
+    assert!(parsed.excluded.is_empty());
 }
 
 #[test]

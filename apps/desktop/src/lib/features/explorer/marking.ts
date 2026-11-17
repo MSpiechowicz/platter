@@ -47,7 +47,9 @@ export function itemOff(node: NodeDto): string | undefined {
     case 'symlink':
       return 'A link is never cleaned.';
     case 'mount':
-      return 'Another disk or a system folder is never cleaned.';
+      return node.skipped === 'excluded'
+        ? 'You left this folder out of scans, so it is never cleaned.'
+        : 'Another disk or a system folder is never cleaned.';
     case 'other':
     case 'collapsed':
       return 'Only files and folders can be cleaned.';

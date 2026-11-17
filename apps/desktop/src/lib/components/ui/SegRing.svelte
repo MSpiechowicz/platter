@@ -59,7 +59,7 @@
         y2="24"
         stroke-width="4.5"
         transform="rotate({(i * 360) / segments} 64 64)"
-        style="stroke:{i < lit ? color : '#ffffff14'};transition-delay:{i * 14}ms"
+        style="stroke:{i < lit ? color : 'var(--raised)'};transition-delay:{i * 14}ms"
       />
     {/each}
     <circle cx="64" cy="64" r="36" fill="none" style="stroke:{color}" stroke-opacity=".3" />

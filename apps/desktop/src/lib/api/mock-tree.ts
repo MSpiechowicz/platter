@@ -62,6 +62,8 @@ export interface TreeOptions {
   now: number;
   /** Use the lopsided demo layout, where one folder holds nearly everything. */
   dominant?: boolean;
+  /** Absolute paths of folders the user leaves out of scans. Never the root. */
+  excluded?: readonly string[];
 }
 
 /** Deterministic random numbers in [0, 1). */
@@ -142,6 +144,7 @@ interface Context {
   random: Random;
   now: number;
   oneFileSystem: boolean;
+  excluded: ReadonlySet<string>;
 }
 
 /** A directory owns one block, like on a real disk; `apparent` stays 0, as `du` counts it. */
@@ -159,11 +162,20 @@ const dirDraft = (name: string, now: number): Draft => ({
 const isSkipped = (spec: DirSpec, ctx: Context): boolean =>
   spec.mount === true && (ctx.oneFileSystem || spec.skipped === 'system');
 
-function weightOf(spec: DirSpec, ctx: Context): number {
-  return isSkipped(spec, ctx) ? 0 : spec.weight;
+/** The path of a folder below `parent`. */
+const below = (parent: string, name: string): string =>
+  parent.endsWith('/') ? parent + name : `${parent}/${name}`;
+
+function weightOf(spec: DirSpec, ctx: Context, path: string): number {
+  return isSkipped(spec, ctx) || ctx.excluded.has(path) ? 0 : spec.weight;
 }
 
-function buildDir(spec: DirSpec, bytes: number, ctx: Context): Draft {
+function buildDir(spec: DirSpec, bytes: number, ctx: Context, path: string, isRoot = false): Draft {
+  // A folder the user left out: never read, counted as nothing, as the backend's walker does.
+  if (!isRoot && ctx.excluded.has(path)) {
+    return { ...dirDraft(spec.name, ctx.now), kind: 'mount', allocated: 0, skipped: 'excluded' };
+  }
+
   if (isSkipped(spec, ctx)) {
     return {
       ...dirDraft(spec.name, ctx.now),
@@ -180,14 +192,20 @@ function buildDir(spec: DirSpec, bytes: number, ctx: Context): Draft {
   const draft = dirDraft(spec.name, ctx.now);
   const kids = spec.kids ?? [];
   const filesWeight = spec.files ? (spec.files.weight ?? 1) : 0;
-  const total = kids.reduce((sum, kid) => sum + weightOf(kid, ctx), 0) + filesWeight;
+  // A left-out folder keeps its share of the split, so what it held is missing from the total, as on a real disk.
+  const share = (kid: DirSpec): number =>
+    ctx.excluded.has(below(path, kid.name)) && !isSkipped(kid, ctx)
+      ? kid.weight
+      : weightOf(kid, ctx, below(path, kid.name));
+  const total = kids.reduce((sum, kid) => sum + share(kid), 0) + filesWeight;
 
   for (const kid of kids) {
-    const weight = weightOf(kid, ctx);
+    const kidPath = below(path, kid.name);
+    const weight = weightOf(kid, ctx, kidPath);
 
     // A mount point that is not entered still shows up, as an empty `mount` node.
-    if (weight > 0 || kid.mount || kid.unreadable || kid.empty) {
-      draft.kids.push(buildDir(kid, (bytes * weight) / total, ctx));
+    if (weight > 0 || kid.mount || kid.unreadable || kid.empty || ctx.excluded.has(kidPath)) {
+      draft.kids.push(buildDir(kid, total > 0 ? (bytes * weight) / total : 0, ctx, kidPath));
     }
   }
 
@@ -280,13 +298,14 @@ export function buildTree(options: TreeOptions): MockTree {
     random: mulberry32(options.seed),
     now: options.now,
     oneFileSystem: options.oneFileSystem,
+    excluded: new Set(options.excluded ?? []),
   };
   const rootSpec: DirSpec = {
     name: rootName(options.root),
     weight: 1,
     kids: layoutFor(options.root, options.dominant),
   };
-  const rootDraft = buildDir(rootSpec, options.bytes, ctx);
+  const rootDraft = buildDir(rootSpec, options.bytes, ctx, options.root, true);
 
   return flatten(rootDraft, options);
 }

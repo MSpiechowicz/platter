@@ -147,7 +147,7 @@
           />
           <path
             d="M18 21v15M23 21v15M28 21v15"
-            stroke="#0a0e1766"
+            stroke="var(--ink-2)"
             stroke-width="2.2"
             stroke-linecap="round"
           />

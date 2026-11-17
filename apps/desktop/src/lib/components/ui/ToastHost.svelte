@@ -55,7 +55,7 @@
     color: var(--text);
     padding: 14px 14px 14px 16px;
     border-radius: 10px;
-    box-shadow: 0 10px 30px #0008;
+    box-shadow: 0 10px 30px var(--shadow-1);
     pointer-events: auto;
   }
 

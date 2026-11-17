@@ -25,6 +25,9 @@ export type HookHistory = 'thin' | 'empty' | 'broken' | 'flat';
 /** Which update the mock finds: one the app installs itself, or one a package manager installs. */
 export type HookUpdate = 'install' | 'package';
 
+/** The theme to show, as the Theme setting offers it (not saved). */
+export type HookTheme = 'dark' | 'light' | 'system';
+
 export interface TestHooks {
   /**
    * Jump to a view; `overview`, `scanning`, `explorer` and `cleanup` start a scan on the mock first, and so does
@@ -92,6 +95,8 @@ export interface TestHooks {
   rules: 'seed' | 'broken' | null;
   /** What the history mock holds (`history=thin`); without it, a disk cleaned five times in 90 days. */
   history: HookHistory | null;
+  /** Show this theme instead of the saved one (`theme=light`, `theme=dark`, `theme=system`); not saved. */
+  theme: HookTheme | null;
 }
 
 const VIEWS: readonly string[] = [
@@ -134,6 +139,7 @@ const NO_HOOKS: TestHooks = {
   chat: null,
   rules: null,
   history: null,
+  theme: null,
 };
 
 function isInsideTauri(): boolean {
@@ -168,6 +174,7 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
   const gpu = params.get('gpu');
   const gpuProblem = params.get('gpuProblem');
   const history = params.get('history');
+  const theme = params.get('theme');
 
   return {
     view: view !== null && VIEWS.includes(view) ? (view as HookView) : null,
@@ -194,6 +201,7 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
     chat: wholeNumber(params.get('chat')),
     history: history !== null && HISTORY_STATES.includes(history) ? (history as HookHistory) : null,
     rules: params.get('rules') === 'broken' ? 'broken' : params.has('rules') ? 'seed' : null,
+    theme: theme === 'dark' || theme === 'light' || theme === 'system' ? theme : null,
   };
 }
 

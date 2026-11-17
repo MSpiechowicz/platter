@@ -313,12 +313,12 @@
   }
 
   .hot rect {
-    filter: brightness(1.3);
+    filter: brightness(var(--hot-brightness));
   }
 
   /* Everything but the selected folder steps back. */
   .has-sel .top:not(.sel) {
-    opacity: 0.32;
+    opacity: var(--step-back);
   }
 
   /* Safe to clean: a green outline. Green means safe and nothing else. */
@@ -329,14 +329,14 @@
   }
 
   .sel > rect.first {
-    stroke: #fff;
+    stroke: var(--strong);
     stroke-width: 2;
     stroke-opacity: 1;
   }
 
   /* Marked for cleanup: a dashed outline, over the others. */
   .top rect.marked {
-    stroke: #fff;
+    stroke: var(--strong);
     stroke-width: 2;
     stroke-opacity: 1;
     stroke-dasharray: 6 4;
@@ -354,7 +354,7 @@
 
   text {
     font-family: var(--font);
-    fill: #fff;
+    fill: var(--strong);
     pointer-events: none;
   }
 

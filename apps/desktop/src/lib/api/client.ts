@@ -1,4 +1,5 @@
 import type {
+  CleanupOptions,
   AdvisorAnswerDto,
   AdvisorLabelsDto,
   AdvisorOptionsDto,
@@ -49,6 +50,9 @@ export interface Api {
   /** Opens the system folder picker. Resolves to `null` when the user cancels. */
   pickFolder(): Promise<string | null>;
 
+  /** Opens the system folder picker for a folder to leave out of scans. Its absolute path, or `null` when cancelled. */
+  pickExcludedFolder(): Promise<string | null>;
+
   /**
    * Starts a scan. Resolves with the scan id as soon as the scan is running;
    * progress and the final `finished` / `cancelled` / `failed` event arrive on `onEvent`
@@ -87,7 +91,7 @@ export interface Api {
    * also the advisor switched off, or no labelled folder that can be cleaned. The labels of a scan are dropped when
    * the disk changes (a cleanup or an undo).
    */
-  planCleanup(scan: ScanId, suggestionIds: string[]): Promise<CleanupPlanDto>;
+  planCleanup(scan: ScanId, suggestionIds: string[], options?: CleanupOptions): Promise<CleanupPlanDto>;
   /**
    * Plans moving the items the user marked in the Explorer (node ids of a finished scan, 1 to 1000) to the trash:
    * one group `marked`, verdict `review`, action `trash`. Nothing is changed. Items the backend will not touch
@@ -95,7 +99,7 @@ export interface Api {
    * more than 1000, or an outdated scan; `notFound`: an id that is not in the scan. It is started, confirmed and
    * undone like any other plan.
    */
-  planMarkedCleanup(scan: ScanId, nodes: NodeId[]): Promise<CleanupPlanDto>;
+  planMarkedCleanup(scan: ScanId, nodes: NodeId[], options?: CleanupOptions): Promise<CleanupPlanDto>;
   /**
    * Starts a plan; a plan starts once. Resolves with the cleanup id as soon as it is running; `groupStarted`,
    * `targetDone`, `groupFinished` and a last `finished` (or `failed`) arrive on `onEvent`, possibly before this

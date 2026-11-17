@@ -345,7 +345,7 @@
   }
 
   .sug.pick:hover .t {
-    color: #fff;
+    color: var(--strong);
   }
 
   .text {
@@ -413,7 +413,7 @@
   .pline:hover:not(:disabled),
   .pline:focus-visible {
     color: var(--accent);
-    background: #ffffff0d;
+    background: var(--wash-4);
   }
 
   .pline:disabled {

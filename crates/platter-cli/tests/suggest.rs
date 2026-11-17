@@ -246,3 +246,20 @@ fn files_with_more_than_one_hard_link_are_counted_in_shared_files() {
     assert_eq!(trash["sharedFiles"], 1);
     assert_eq!(trash["items"], 1);
 }
+
+#[test]
+fn an_excluded_folder_produces_no_suggestion() {
+    let dir = fixture();
+    let target = dir.path().join("code/proj/target");
+
+    let output = suggest(dir.path(), &["--json", "--exclude", target.to_str().unwrap()]);
+    let report: Value = serde_json::from_str(&stdout_text(&output)).expect("stdout is JSON");
+
+    let ids: Vec<&str> = report["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["trash", "app-cache", "documents"]);
+}

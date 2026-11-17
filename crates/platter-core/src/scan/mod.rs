@@ -68,6 +68,10 @@ pub struct ScanConfig {
     /// the length of its name. `None` is no limit beyond the other two. An app picks a figure that fits
     /// the memory it finds (the platform crate suggests half of what is free).
     pub max_memory_bytes: Option<u64>,
+    /// The `(dev, ino)` of folders the user wants left out. A directory with one of these identities is
+    /// not entered and becomes a `mount` node of size 0 with [`SkipReason::Excluded`](crate::model::SkipReason::Excluded).
+    /// The identity of the scan root is ignored, the root is always scanned.
+    pub excluded: Vec<(u64, u64)>,
 }
 
 /// Default for [`ScanConfig::max_entries`]: 30 million entries, several gigabytes at the top end. An app
@@ -89,6 +93,7 @@ impl Default for ScanConfig {
             max_entries: Some(DEFAULT_MAX_ENTRIES),
             max_name_bytes: None,
             max_memory_bytes: Some(DEFAULT_MAX_MEMORY_BYTES),
+            excluded: Vec::new(),
         }
     }
 }
@@ -154,18 +159,26 @@ pub fn scan<S: DirSource>(
         },
         threads,
     );
+    let root_identity = (root_info.meta.dev, root_info.meta.ino);
+    let excluded: Vec<(u64, u64)> = config
+        .excluded
+        .iter()
+        .copied()
+        .filter(|&identity| identity != root_identity)
+        .collect();
     let walker = Walker {
         source,
         cancel,
         reporter: &reporter,
         budget: &budget,
+        excluded: &excluded,
     };
 
     let root_chunk = pool.install(|| {
         let chain = PathChain {
             parent: None,
             name: root_text.as_bytes(),
-            identity: (root_info.meta.dev, root_info.meta.ino),
+            identity: root_identity,
         };
         walker.walk(root_info.handle, 0, &chain)
     });

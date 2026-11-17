@@ -66,6 +66,52 @@ describe('SettingsStore', () => {
     expect(new SettingsStore(storage).updateCheck).toBe('daily');
   });
 
+  it('keeps two package versions, asks for administrator rights and installs no update by itself by default', () => {
+    const storage = new MemoryStorage();
+
+    storage.setItem(SETTINGS_KEY, JSON.stringify({ units: 'GiB' }));
+    const store = new SettingsStore(storage);
+
+    expect(store.keepPackageVersions).toBe(2);
+    expect(store.askForAdmin).toBe(true);
+    expect(store.autoInstallUpdates).toBe(false);
+  });
+
+  it('keeps 1 to 3 package versions only, and restores the cleanup and update choices', () => {
+    const storage = new MemoryStorage();
+
+    storage.setItem(SETTINGS_KEY, JSON.stringify({ keepPackageVersions: 7, askForAdmin: 'no' }));
+    expect(new SettingsStore(storage).keepPackageVersions).toBe(2);
+    expect(new SettingsStore(storage).askForAdmin).toBe(true);
+
+    const first = new SettingsStore(storage);
+    first.set('keepPackageVersions', 3);
+    first.set('askForAdmin', false);
+    first.set('autoInstallUpdates', true);
+    const second = new SettingsStore(storage);
+
+    expect([second.keepPackageVersions, second.askForAdmin, second.autoInstallUpdates]).toEqual([
+      3,
+      false,
+      true,
+    ]);
+  });
+
+  it('keeps only absolute, distinct folders to leave out, at most 64 of them', () => {
+    const storage = new MemoryStorage();
+    const many = Array.from({ length: 70 }, (_, index) => `/f${index}`);
+
+    storage.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({ excludedPaths: ['/a', '~/b', 'c', '/a', 5, '/d', ...many] }),
+    );
+    const store = new SettingsStore(storage);
+
+    expect(store.excludedPaths.slice(0, 3)).toEqual(['/a', '/d', '/f0']);
+    expect(store.excludedPaths).toHaveLength(64);
+    expect(new SettingsStore(new MemoryStorage()).excludedPaths).toEqual([]);
+  });
+
   it('saves a change and restores it in a new store', () => {
     const storage = new MemoryStorage();
     const first = new SettingsStore(storage);

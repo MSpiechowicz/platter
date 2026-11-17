@@ -22,7 +22,7 @@ struct Fixture {
 }
 
 pub fn run(args: &ExportArgs) -> CliResult<()> {
-    let tree = scan_path(&args.path, args.one_file_system, args.max_entries)?;
+    let tree = scan_path(&args.path, args.one_file_system, args.max_entries, &args.excluded)?;
 
     let fixture = Fixture {
         volume: volume_of(&args.path),

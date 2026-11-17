@@ -614,8 +614,8 @@
   }
 
   .q .bd {
-    background: #3ec5d81f;
-    border: 1px solid #3ec5d859;
+    background: var(--accent-wash);
+    border: 1px solid var(--accent-edge);
     /* One radius on every corner (owner: the mockup's speech-tail corner read as a wrong shape). */
     border-radius: 10px;
     padding: 9px 12px;
@@ -679,7 +679,7 @@
     flex: none;
     width: 14px;
     height: 14px;
-    border: 2px solid #ffffff1f;
+    border: 2px solid var(--ring);
     border-top-color: var(--accent);
     border-radius: 50%;
     animation: askspin 0.9s linear infinite;
@@ -754,7 +754,7 @@
     background: var(--card2);
     border: 1px solid var(--line);
     border-radius: 9px;
-    box-shadow: 0 14px 40px #000a;
+    box-shadow: 0 14px 40px var(--shadow-2);
   }
 
   .opt {

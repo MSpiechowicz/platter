@@ -71,6 +71,36 @@ describe('planCleanup', () => {
     expect(plan.groups.every((entry) => entry.samplePaths.length <= 20)).toBe(true);
   });
 
+  it('fixes the options into the plan: the kept pacman versions, and nothing needing the password when that is off', async () => {
+    const api = createMockApi(FAST);
+    const id = await scan(api);
+
+    const standard = await api.planCleanup(id, ['pacman-cache', 'rust-target']);
+    expect(standard.options).toEqual({ keepPackageVersions: 2, askForAdmin: true });
+
+    const three = await api.planCleanup(id, ['pacman-cache'], { keepPackageVersions: 3, askForAdmin: true });
+    expect(three.groups[0]).toMatchObject({ ruleId: 'pacman-cache', command: 'paccache -rk3' });
+
+    const noAdmin = await api.planCleanup(id, ['pacman-cache', 'rust-target'], {
+      keepPackageVersions: 2,
+      askForAdmin: false,
+    });
+    expect(noAdmin.groups.map((group) => group.ruleId)).toEqual(['rust-target']);
+    expect(noAdmin.refused[0]).toMatchObject({
+      ruleId: 'pacman-cache',
+      reason: 'Needs administrator rights, which are turned off in Settings.',
+    });
+  });
+
+  it('refuses options the backend refuses', async () => {
+    const api = createMockApi(FAST);
+    const id = await scan(api);
+
+    await expect(
+      api.planCleanup(id, ['rust-target'], { keepPackageVersions: 4 as never, askForAdmin: true }),
+    ).rejects.toMatchObject({ code: 'invalid' });
+  });
+
   it('plans groups in the rule table order', async () => {
     const api = createMockApi(FAST);
     const id = await scan(api);

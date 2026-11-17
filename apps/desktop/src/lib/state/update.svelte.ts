@@ -62,6 +62,8 @@ export interface UpdaterDeps {
   ui?: Pick<UiStore, 'toast'>;
   storage?: StorageLike | null;
   schedule?: () => UpdateSchedule;
+  /** Whether an update a check found is installed without a click (Settings, AppImage only). */
+  autoInstall?: () => boolean;
   /** The time in unix milliseconds. */
   now?: () => number;
 }
@@ -94,6 +96,7 @@ export class UpdaterStore {
   readonly #ui: Pick<UiStore, 'toast'>;
   readonly #storage: StorageLike | null;
   readonly #schedule: () => UpdateSchedule;
+  readonly #autoInstall: () => boolean;
   readonly #now: () => number;
 
   #timers: { first: ReturnType<typeof setTimeout>; due: ReturnType<typeof setInterval> } | null = null;
@@ -103,12 +106,14 @@ export class UpdaterStore {
     ui = defaultUi,
     storage = defaultStorage(),
     schedule = () => settings.updateCheck,
+    autoInstall = () => settings.autoInstallUpdates,
     now = Date.now,
   }: UpdaterDeps = {}) {
     this.#api = api;
     this.#ui = ui;
     this.#storage = storage;
     this.#schedule = schedule;
+    this.#autoInstall = autoInstall;
     this.#now = now;
     this.checkedAt = this.#readCheckedAt();
   }
@@ -130,8 +135,16 @@ export class UpdaterStore {
       if (manual) {
         this.result = { kind: 'error', message: describeError(reason) };
       }
+
+      return;
     } finally {
       this.checking = false;
+    }
+
+    // "Install updates automatically": the download and install start by themselves. The restart stays the
+    // user's click. A failure says nothing and is tried again at the next check.
+    if (this.#autoInstall() && this.info?.canInstall && this.phase === 'available') {
+      void this.install({ quiet: true });
     }
   }
 
@@ -172,8 +185,11 @@ export class UpdaterStore {
     };
   }
 
-  /** Downloads and installs the update the last check found. Needs `info.canInstall`. */
-  async install(): Promise<void> {
+  /**
+   * Downloads and installs the update the last check found. Needs `info.canInstall`. A `quiet` install (the
+   * automatic one) shows no toast when it fails.
+   */
+  async install({ quiet = false }: { quiet?: boolean } = {}): Promise<void> {
     if (!this.info?.canInstall || this.phase !== 'available') {
       return;
     }
@@ -189,7 +205,10 @@ export class UpdaterStore {
       this.phase = 'ready';
     } catch (reason) {
       this.phase = 'available';
-      this.#ui.toast('The update failed', describeError(reason), 'error');
+
+      if (!quiet) {
+        this.#ui.toast('The update failed', describeError(reason), 'error');
+      }
     }
   }
 

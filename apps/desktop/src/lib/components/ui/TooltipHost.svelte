@@ -52,7 +52,7 @@
     font-size: 12.5px;
     line-height: 1.45;
     color: var(--muted);
-    box-shadow: 0 8px 24px #0008;
+    box-shadow: 0 8px 24px var(--shadow-1);
     opacity: 0;
     transition: opacity 0.15s;
     pointer-events: none;

@@ -33,6 +33,8 @@ pub enum Refusal {
     Symlink,
     /// It is a mount, or a mount lies between the scan root and it.
     Mount,
+    /// A folder inside it was left out of the scan by the user, and it was not looked at.
+    Excluded,
     /// It, or something inside it, could not be read during the scan.
     Unreadable,
     /// Neither a file nor a folder (a socket, device or similar).
@@ -60,6 +62,7 @@ impl fmt::Display for Refusal {
             Refusal::Protected(place) => write!(f, "protected: {place}"),
             Refusal::Symlink => write!(f, "it is a link"),
             Refusal::Mount => write!(f, "it is, or lies below, another mounted filesystem"),
+            Refusal::Excluded => write!(f, "it holds a folder you left out of scans"),
             Refusal::Unreadable => write!(f, "part of it could not be read"),
             Refusal::NotFileOrFolder => write!(f, "neither a file nor a folder"),
             Refusal::Changed(what) => write!(f, "changed since the scan: {what}"),
@@ -170,6 +173,11 @@ impl<P: EntryProbe> Guard<'_, P> {
         };
         if !by_tool && (tree.is_unreadable(node) || tree.has_unreadable(node)) {
             return Err(Refusal::Unreadable);
+        }
+        // A folder the user left out was not read, so it is not in the size this target was judged by.
+        // Removing the target would remove it too.
+        if is_dir && !by_tool && tree.holds_excluded(node) {
+            return Err(Refusal::Excluded);
         }
 
         let path = tree.path_bytes(node);

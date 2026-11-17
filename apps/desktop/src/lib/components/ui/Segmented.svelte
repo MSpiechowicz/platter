@@ -78,7 +78,7 @@
   }
 
   .on {
-    background: #ffffff14;
+    background: var(--raised);
     color: var(--text);
   }
 

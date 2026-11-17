@@ -4,7 +4,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use platter_cleanup::{CleanupEvent, Disk, TargetOutcome, execute, plan_cleanup};
+use platter_cleanup::{
+    CleanupEvent, CleanupOptions, Disk, KeepVersions, TargetOutcome, execute, plan_cleanup,
+};
 use platter_core::testing::{FakeFs, NOW};
 use platter_core::{
     CancelToken, EntryRemover, Environment, ExpectedEntry, Os, RemoveMode, Removed, ScanConfig, ToolCommand,
@@ -102,7 +104,14 @@ const ALL: [&str; 4] = ["rust-target", "app-cache", "old-downloads", "pacman-cac
 #[test]
 fn every_target_gets_its_action_and_tools_are_not_run_yet() {
     let fs = projects(2);
-    let plan = plan_cleanup(&scan_root(&fs), &env(), &RuleSet::builtin(), &ALL, &fs);
+    let plan = plan_cleanup(
+        &scan_root(&fs),
+        &env(),
+        &RuleSet::builtin(),
+        &ALL,
+        &fs,
+        &CleanupOptions::default(),
+    );
     let recorder = Recorder::default();
     let disk = Disk {
         probe: &fs,
@@ -152,6 +161,7 @@ fn a_target_changed_after_the_plan_is_left_alone_and_the_rest_goes_on() {
         &RuleSet::builtin(),
         &["rust-target"],
         &fs,
+        &CleanupOptions::default(),
     );
     fs.swap_for_symlink("/home/u/p1/target");
     let recorder = Recorder::default();
@@ -186,6 +196,7 @@ fn a_failure_on_one_target_does_not_stop_the_others() {
         &RuleSet::builtin(),
         &["rust-target"],
         &fs,
+        &CleanupOptions::default(),
     );
     let recorder = Recorder {
         fail: vec!["/home/u/p0/target".to_owned()],
@@ -219,6 +230,7 @@ fn cancelling_stops_between_targets() {
         &RuleSet::builtin(),
         &["rust-target"],
         &fs,
+        &CleanupOptions::default(),
     );
     let recorder = Recorder::default();
     let disk = Disk {
@@ -255,6 +267,7 @@ fn without_a_trash_folder_nothing_is_trashed() {
         &RuleSet::builtin(),
         &["old-downloads"],
         &fs,
+        &CleanupOptions::default(),
     );
     let recorder = Recorder::default();
     let disk = Disk {
@@ -308,6 +321,7 @@ fn owning_tools_run_once_per_rule_with_their_fixed_arguments() {
         &RuleSet::builtin(),
         &["pacman-cache", "docker-data"],
         &fs,
+        &CleanupOptions::default(),
     );
     let recorder = Recorder::default();
     let tools = Tools {
@@ -339,6 +353,57 @@ fn owning_tools_run_once_per_rule_with_their_fixed_arguments() {
     );
 }
 
+/// Records the arguments of every tool that ran.
+struct ArgTools {
+    ran: Mutex<Vec<(String, Vec<String>)>>,
+}
+
+impl ToolRunner for ArgTools {
+    fn run(&self, command: &ToolCommand<'_>) -> Result<(), ToolFailure> {
+        self.ran.lock().unwrap().push((
+            command.program.to_owned(),
+            command.args.iter().map(|arg| (*arg).to_owned()).collect(),
+        ));
+
+        Ok(())
+    }
+}
+
+#[test]
+fn a_plan_made_with_one_version_runs_the_pacman_cache_tool_with_one_version() {
+    let fs = system();
+    let plan = plan_cleanup(
+        &scan_root(&fs),
+        &env(),
+        &RuleSet::builtin(),
+        &["pacman-cache"],
+        &fs,
+        &CleanupOptions {
+            keep_package_versions: KeepVersions::One,
+            ask_for_admin: true,
+        },
+    );
+    let recorder = Recorder::default();
+    let tools = ArgTools {
+        ran: Mutex::new(Vec::new()),
+    };
+    let disk = Disk {
+        probe: &fs,
+        remover: &recorder,
+        trash_dir: None,
+        tools: Some(&tools),
+    };
+
+    let report = execute(&plan, &disk, &CancelToken::new(), &mut |_| {});
+
+    assert_eq!(
+        *tools.ran.lock().unwrap(),
+        [("paccache".to_owned(), vec!["-rk1".to_owned()])]
+    );
+    assert!(recorder.calls().is_empty());
+    assert!(matches!(&report.results[0].outcome, TargetOutcome::ByTool(_)));
+}
+
 #[test]
 fn a_refused_password_is_asked_for_only_once_per_run() {
     let fs = system();
@@ -348,6 +413,7 @@ fn a_refused_password_is_asked_for_only_once_per_run() {
         &RuleSet::builtin(),
         &["pacman-cache", "journal", "docker-data"],
         &fs,
+        &CleanupOptions::default(),
     );
     let recorder = Recorder::default();
     let tools = Tools {
@@ -389,6 +455,7 @@ fn a_missing_or_failing_tool_is_reported() {
         &RuleSet::builtin(),
         &["pacman-cache", "docker-data"],
         &fs,
+        &CleanupOptions::default(),
     );
     let recorder = Recorder::default();
     let tools = Tools {
@@ -440,6 +507,7 @@ fn a_file_modified_or_a_marker_removed_after_the_plan_is_left_alone() {
         &RuleSet::builtin(),
         &["rust-target", "old-downloads"],
         &fs,
+        &CleanupOptions::default(),
     );
     fs.set_mtime("/home/u/Downloads/old.iso", NOW);
     fs.remove("/home/u/p0/Cargo.toml");

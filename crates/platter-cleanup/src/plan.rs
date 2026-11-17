@@ -4,7 +4,7 @@ use platter_core::dto::Verdict;
 use platter_core::{EntryProbe, Environment, ModelLabel, ModelVerdict, NodeId, Tree};
 use platter_rules::{RuleSet, matches, scan_is_kept};
 
-use crate::action::{CleanupAction, action_for};
+use crate::action::{CleanupAction, CleanupOptions, action_for};
 use crate::guard::{Guard, Refusal, VerifiedTarget};
 use crate::kept::KeptFolders;
 use crate::path::{components, display, is_within, owned};
@@ -49,11 +49,26 @@ pub struct Refused {
     pub reason: Refusal,
 }
 
+/// Why a tool that needs administrator rights is left out when the user turned that off.
+pub const NEEDS_ADMIN_OFF: &str = "Needs administrator rights, which are turned off in Settings.";
+
+/// A matched node that is left out of the plan because of an option, not because the guard refused it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftOut {
+    pub rule_id: &'static str,
+    /// The path for people to read.
+    pub path: String,
+    pub reason: &'static str,
+}
+
 /// The result of planning. Making it changes nothing on disk.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CleanupPlan {
     pub(crate) groups: Vec<PlanGroup>,
     pub refused: Vec<Refused>,
+    /// Matches left out because they need administrator rights and the options turned that off. Nothing
+    /// was checked for them.
+    pub left_out: Vec<LeftOut>,
     /// Selected ids that are not rules, or rules that matched nothing in this scan.
     pub not_found: Vec<String>,
     /// Sum of all groups' scanned sizes. What cleaning frees can differ.
@@ -62,9 +77,16 @@ pub struct CleanupPlan {
     /// cross a mount.
     pub(crate) scan_root: std::path::PathBuf,
     pub(crate) root_depth: usize,
+    /// What the user chose when the plan was made.
+    pub(crate) options: CleanupOptions,
 }
 
 impl CleanupPlan {
+    /// What the user chose when the plan was made. The tools in the groups were picked with these.
+    pub fn options(&self) -> &CleanupOptions {
+        &self.options
+    }
+
     /// The groups of verified targets, one per selected rule that has any.
     pub fn groups(&self) -> &[PlanGroup] {
         &self.groups
@@ -82,15 +104,17 @@ impl CleanupPlan {
     /// Adds the groups, refusals and unknown ids of `other`, a plan of the same scan, to this plan. A
     /// target that now lies inside (or is the same as) another target of the merged plan is refused as
     /// nested, so acting on the merged plan never acts twice on one place; the totals are worked out
-    /// again. The scan root stays this plan's own, unless this plan has none yet.
+    /// again. The scan root and the options stay this plan's own, unless this plan has no scan root yet.
     pub fn absorb(&mut self, other: CleanupPlan) {
         if self.scan_root.as_os_str().is_empty() {
             self.scan_root = other.scan_root;
             self.root_depth = other.root_depth;
+            self.options = other.options;
         }
 
         self.groups.extend(other.groups);
         self.refused.extend(other.refused);
+        self.left_out.extend(other.left_out);
         for id in other.not_found {
             if !self.not_found.contains(&id) {
                 self.not_found.push(id);
@@ -114,6 +138,10 @@ impl CleanupPlan {
 /// match is planned (a suggestion lists only the largest few), and each match goes through the guard,
 /// which looks at the disk through `probe`. Nothing is changed.
 ///
+/// The `options` are fixed into the plan: they choose the arguments of the owning tools, and with
+/// `ask_for_admin` off a rule whose tool needs administrator rights is listed in `left_out` instead of
+/// being planned.
+///
 /// The kept folders are learned for this plan alone: see [`KeptFolders::learn`]. A caller that makes more
 /// than one plan for one request learns them once and uses [`plan_cleanup_with`].
 pub fn plan_cleanup(
@@ -122,10 +150,11 @@ pub fn plan_cleanup(
     rules: &RuleSet,
     selected: &[&str],
     probe: &impl EntryProbe,
+    options: &CleanupOptions,
 ) -> CleanupPlan {
     let kept = KeptFolders::learn(rules, probe);
 
-    plan_cleanup_with(tree, env, rules, selected, probe, &kept)
+    plan_cleanup_with(tree, env, rules, selected, probe, &kept, options)
 }
 
 /// [`plan_cleanup`] with the kept folders already learned (see [`KeptFolders::learn`]).
@@ -136,11 +165,13 @@ pub fn plan_cleanup_with(
     selected: &[&str],
     probe: &impl EntryProbe,
     kept: &KeptFolders,
+    options: &CleanupOptions,
 ) -> CleanupPlan {
     let mut plan = CleanupPlan {
         scan_root: tree.root_path().to_path_buf(),
         root_depth: components(tree.root_path().as_os_str().as_encoded_bytes())
             .map_or(0, |parts| parts.len()),
+        options: *options,
         ..CleanupPlan::default()
     };
     let found = matches(tree, env, rules);
@@ -205,7 +236,7 @@ pub fn plan_cleanup_with(
     };
 
     for rule in chosen {
-        let Some(action) = action_for(rule.id) else {
+        let Some(action) = action_for(rule.id, options) else {
             let reason = if rule.verdict == Verdict::Keep {
                 Refusal::Kept
             } else {
@@ -220,6 +251,22 @@ pub fn plan_cleanup_with(
             }
             continue;
         };
+
+        // A tool that needs administrator rights is left out when the user turned that off. This is
+        // decided here, at plan time, and not again when the plan runs.
+        if let CleanupAction::RunTool(tool) = action
+            && tool.needs_elevation()
+            && !options.ask_for_admin
+        {
+            for &node in &rule.nodes {
+                plan.left_out.push(LeftOut {
+                    rule_id: rule.id,
+                    path: display(&tree.path_bytes(node)),
+                    reason: NEEDS_ADMIN_OFF,
+                });
+            }
+            continue;
+        }
 
         // The files next to a folder that made a name rule match it, to be checked again.
         let named = rules
@@ -290,10 +337,14 @@ pub fn plan_marked(
     rules: &RuleSet,
     marked: &[platter_core::NodeId],
     probe: &impl EntryProbe,
+    options: &CleanupOptions,
 ) -> CleanupPlan {
     let kept = KeptFolders::learn(rules, probe);
 
-    plan_by_hand(tree, env, rules, marked, probe, &kept, MARKED)
+    CleanupPlan {
+        options: *options,
+        ..plan_by_hand(tree, env, rules, marked, probe, &kept, MARKED)
+    }
 }
 
 /// The rule id of what the local model labelled `review`.
@@ -313,10 +364,11 @@ pub fn plan_labelled(
     rules: &RuleSet,
     labels: &[ModelLabel],
     probe: &impl EntryProbe,
+    options: &CleanupOptions,
 ) -> CleanupPlan {
     let kept = KeptFolders::learn(rules, probe);
 
-    plan_labelled_with(tree, env, rules, labels, probe, &kept)
+    plan_labelled_with(tree, env, rules, labels, probe, &kept, options)
 }
 
 /// [`plan_labelled`] with the kept folders already learned (see [`KeptFolders::learn`]).
@@ -327,6 +379,7 @@ pub fn plan_labelled_with(
     labels: &[ModelLabel],
     probe: &impl EntryProbe,
     kept: &KeptFolders,
+    options: &CleanupOptions,
 ) -> CleanupPlan {
     let nodes: Vec<NodeId> = labels
         .iter()
@@ -334,10 +387,14 @@ pub fn plan_labelled_with(
         .map(|label| label.node)
         .collect();
 
-    plan_by_hand(tree, env, rules, &nodes, probe, kept, ADVISOR)
+    CleanupPlan {
+        options: *options,
+        ..plan_by_hand(tree, env, rules, &nodes, probe, kept, ADVISOR)
+    }
 }
 
-/// The plan for folders chosen by hand or by the model, as the one group `group`.
+/// The plan for folders chosen by hand or by the model, as the one group `group`. These only go to the
+/// trash and never run a tool, so the options are kept in the plan and change nothing else.
 fn plan_by_hand(
     tree: &Tree,
     env: &Environment,

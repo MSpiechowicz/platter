@@ -62,8 +62,8 @@
     width: 16px;
     height: 11px;
     border-radius: 3px;
-    border: 1.5px solid #fff;
-    background: #ffffff1f;
+    border: 1.5px solid var(--strong);
+    background: var(--ring);
   }
 
   /* Green means safe and nothing else; marked is the dashed outline the map draws. */

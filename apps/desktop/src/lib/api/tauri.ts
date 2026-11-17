@@ -2,6 +2,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 
 import { ApiRequestError, isApiError, type Api } from './client';
 import type {
+  CleanupOptions,
   AdvisorAnswerDto,
   AdvisorLabelsDto,
   AdvisorOptionsDto,
@@ -74,6 +75,8 @@ export function createTauriApi(): Api {
 
     pickFolder: () => call<string | null>('pick_folder'),
 
+    pickExcludedFolder: () => call<string | null>('pick_excluded_folder'),
+
     startScan(options: ScanOptions, onEvent: (event: ScanEvent) => void): Promise<ScanId> {
       const channel = new Channel<ScanEvent>();
       channel.onmessage = onEvent;
@@ -106,11 +109,11 @@ export function createTauriApi(): Api {
 
     getSuggestions: (scan: ScanId) => call<SuggestionsDto>('get_suggestions', { scan }),
 
-    planCleanup: (scan: ScanId, suggestionIds: string[]) =>
-      call<CleanupPlanDto>('plan_cleanup', { scan, suggestions: suggestionIds }),
+    planCleanup: (scan: ScanId, suggestionIds: string[], options?: CleanupOptions) =>
+      call<CleanupPlanDto>('plan_cleanup', { scan, suggestions: suggestionIds, options }),
 
-    planMarkedCleanup: (scan: ScanId, nodes: NodeId[]) =>
-      call<CleanupPlanDto>('plan_marked_cleanup', { scan, nodes }),
+    planMarkedCleanup: (scan: ScanId, nodes: NodeId[], options?: CleanupOptions) =>
+      call<CleanupPlanDto>('plan_marked_cleanup', { scan, nodes, options }),
 
     startCleanup(plan: PlanId, onEvent: (event: CleanupEvent) => void): Promise<CleanupId> {
       const channel = new Channel<CleanupEvent>();

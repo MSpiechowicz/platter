@@ -41,12 +41,14 @@ interface Setup {
   storage: MemoryStorage;
   clock: { now: number };
   schedule: { value: UpdateSchedule };
+  auto: { value: boolean };
 }
 
 function setup(update: UpdateOffer | null = OFFER): Setup {
   const storage = new MemoryStorage();
   const clock = { now: START };
   const schedule = { value: 'daily' as UpdateSchedule };
+  const auto = { value: false };
   const toasts: Setup['toasts'] = [];
   const api = {
     checkUpdate: vi.fn(async (): Promise<UpdateCheck> => ({ current: '0.1.0', update })),
@@ -65,10 +67,11 @@ function setup(update: UpdateOffer | null = OFFER): Setup {
     },
     storage,
     schedule: () => schedule.value,
+    autoInstall: () => auto.value,
     now: () => clock.now,
   });
 
-  return { store, api, toasts, storage, clock, schedule };
+  return { store, api, toasts, storage, clock, schedule, auto };
 }
 
 describe('UpdaterStore: checking', () => {
@@ -415,5 +418,59 @@ describe('UpdaterStore: storage that fails', () => {
 
     expect(store.result).toEqual({ kind: 'upToDate' });
     expect(store.checkedAt).toBeTruthy();
+  });
+});
+
+describe('UpdaterStore: installing automatically', () => {
+  it('installs an update a check found by itself when the setting is on, and then waits for the restart', async () => {
+    const { store, api, auto } = setup();
+    auto.value = true;
+
+    await store.check();
+    await vi.waitFor(() => expect(store.phase).toBe('ready'));
+
+    expect(api.installUpdate).toHaveBeenCalledTimes(1);
+    expect(api.restartApp).not.toHaveBeenCalled();
+  });
+
+  it('leaves the install to the user when the setting is off', async () => {
+    const { store, api } = setup();
+
+    await store.check();
+
+    expect(api.installUpdate).not.toHaveBeenCalled();
+    expect(store.phase).toBe('available');
+  });
+
+  it('does not install what a package manager installs', async () => {
+    const { store, api, auto } = setup({ ...OFFER, canInstall: false });
+    auto.value = true;
+
+    await store.check();
+
+    expect(api.installUpdate).not.toHaveBeenCalled();
+  });
+
+  it('says nothing when an automatic install fails, and offers the update again', async () => {
+    const { store, api, toasts, auto } = setup();
+    auto.value = true;
+    api.installUpdate.mockRejectedValueOnce({ code: 'io', message: 'The update could not be downloaded.' });
+
+    await store.check();
+    await vi.waitFor(() => expect(api.installUpdate).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(store.phase).toBe('available'));
+
+    expect(toasts).toEqual([]);
+    expect(store.info?.next).toBe(OFFER.version);
+  });
+
+  it('does not install after a check that failed', async () => {
+    const { store, api, auto } = setup();
+    auto.value = true;
+    api.checkUpdate.mockRejectedValueOnce({ code: 'io', message: 'offline' });
+
+    await store.check();
+
+    expect(api.installUpdate).not.toHaveBeenCalled();
   });
 });

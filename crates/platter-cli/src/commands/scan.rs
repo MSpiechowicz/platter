@@ -27,7 +27,7 @@ struct Report {
 }
 
 pub fn run(args: &ScanArgs) -> CliResult<()> {
-    let tree = scan_path(&args.path, args.one_file_system, args.max_entries)?;
+    let tree = scan_path(&args.path, args.one_file_system, args.max_entries, &args.excluded)?;
     let children = query::children(&tree, tree.root(), 0, args.top, SortKey::SizeDesc)?;
 
     let report = Report {

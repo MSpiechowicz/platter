@@ -273,7 +273,7 @@
     background: var(--card2);
     border: 1px solid var(--line);
     border-radius: 9px;
-    box-shadow: 0 14px 40px #000a;
+    box-shadow: 0 14px 40px var(--shadow-2);
   }
 
   .opt {

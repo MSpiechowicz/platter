@@ -16,7 +16,7 @@ pub fn run(args: &SuggestArgs) -> CliResult<()> {
     // started from the app would have. A path that cannot be resolved is left for the scan to report.
     let root = resolve_root(&args.path).map_or_else(|_| args.path.clone(), |resolved| resolved.path);
 
-    let tree = scan_path(&root, args.one_file_system, args.max_entries)?;
+    let tree = scan_path(&root, args.one_file_system, args.max_entries, &args.excluded)?;
 
     // A rules file that cannot be used is reported, and the suggestions are the built-in ones; `clean`
     // refuses to plan anything until the file is dealt with.

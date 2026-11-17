@@ -14,6 +14,7 @@ fn options(root: &Path) -> ScanOptions {
     ScanOptions {
         root: root.to_string_lossy().into_owned(),
         one_file_system: false,
+        excluded: Vec::new(),
     }
 }
 
@@ -197,6 +198,7 @@ fn the_root_is_validated_before_a_scan_is_registered() {
             ScanOptions {
                 root: root.to_owned(),
                 one_file_system: false,
+                excluded: Vec::new(),
             },
             Arc::clone(&emit),
         ))
@@ -207,6 +209,168 @@ fn the_root_is_validated_before_a_scan_is_registered() {
 
     let (first_valid, _) = run_to_the_end(&state, options(dir.path()));
     assert_eq!(first_valid, 1, "rejected requests do not consume ids");
+}
+
+fn excluding(root: &Path, excluded: Vec<String>) -> ScanOptions {
+    ScanOptions {
+        excluded,
+        ..options(root)
+    }
+}
+
+fn finished_totals(events: &[ScanEvent]) -> &platter_core::Totals {
+    match events.last().unwrap() {
+        ScanEvent::Finished { totals, .. } => totals,
+        other => panic!("expected finished, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_scan_leaves_out_the_folders_it_is_told_to_exclude() {
+    let state = AppState::for_test();
+    let dir = sample_dir();
+    let photos = dir.path().join("photos");
+
+    let (id, events) = run_to_the_end(
+        &state,
+        excluding(dir.path(), vec![photos.to_string_lossy().into_owned()]),
+    );
+
+    assert_eq!(finished_totals(&events).files, 1, "only notes.txt");
+
+    let tree = state.scans.tree(id).unwrap();
+    let left_out = query::children(&tree, tree.root(), 0, 10, SortKey::SizeDesc)
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|node| node.name == "photos")
+        .expect("the folder is still listed");
+    assert_eq!(left_out.kind, platter_core::NodeKind::Mount);
+    assert_eq!(left_out.skipped, Some(platter_core::SkipReason::Excluded));
+    assert_eq!(left_out.allocated, 0);
+}
+
+#[test]
+fn an_excluded_folder_that_does_not_exist_is_ignored() {
+    let state = AppState::for_test();
+    let dir = sample_dir();
+    let gone = dir.path().join("removed-long-ago");
+    let file = dir.path().join("notes.txt");
+
+    let (_, events) = run_to_the_end(
+        &state,
+        excluding(
+            dir.path(),
+            vec![
+                gone.to_string_lossy().into_owned(),
+                file.to_string_lossy().into_owned(),
+            ],
+        ),
+    );
+
+    assert_eq!(finished_totals(&events).files, 3, "nothing was left out");
+}
+
+#[test]
+fn excluding_the_scan_root_still_scans_it() {
+    let state = AppState::for_test();
+    let dir = sample_dir();
+
+    let (_, events) = run_to_the_end(
+        &state,
+        excluding(dir.path(), vec![dir.path().to_string_lossy().into_owned()]),
+    );
+
+    assert_eq!(finished_totals(&events).files, 3);
+}
+
+#[test]
+fn an_excluded_path_that_is_a_link_to_a_folder_leaves_the_folder_out() {
+    let state = AppState::for_test();
+    let dir = sample_dir();
+    let link = dir.path().join("shortcut");
+    std::os::unix::fs::symlink(dir.path().join("photos"), &link).unwrap();
+
+    let (_, events) = run_to_the_end(
+        &state,
+        excluding(dir.path(), vec![link.to_string_lossy().into_owned()]),
+    );
+
+    assert_eq!(
+        finished_totals(&events).files,
+        2,
+        "notes.txt and the link; photos is left out through it"
+    );
+}
+
+#[test]
+fn a_relative_excluded_path_is_refused_and_no_scan_starts() {
+    let state = AppState::for_test();
+    let dir = sample_dir();
+    let emit: EmitFn = Arc::new(|_| {});
+
+    for excluded in ["photos", "./photos", "~/photos", "", "../x"] {
+        let rejected = tauri::async_runtime::block_on(start(
+            &state,
+            excluding(dir.path(), vec![excluded.to_owned()]),
+            Arc::clone(&emit),
+        ))
+        .unwrap_err();
+
+        assert_eq!(rejected.code(), ApiErrorCode::Invalid, "{excluded:?}");
+    }
+
+    let (first_valid, _) = run_to_the_end(&state, options(dir.path()));
+    assert_eq!(first_valid, 1, "refused requests do not consume ids");
+}
+
+#[test]
+fn more_than_the_most_excluded_folders_is_refused_and_exactly_the_most_is_fine() {
+    let state = AppState::for_test();
+    let dir = sample_dir();
+    let emit: EmitFn = Arc::new(|_| {});
+    let missing = |count: usize| -> Vec<String> {
+        (0..count)
+            .map(|i| dir.path().join(format!("gone{i}")).to_string_lossy().into_owned())
+            .collect()
+    };
+
+    let rejected = tauri::async_runtime::block_on(start(
+        &state,
+        excluding(dir.path(), missing(platter_core::dto::MAX_EXCLUDED + 1)),
+        Arc::clone(&emit),
+    ))
+    .unwrap_err();
+    assert_eq!(rejected.code(), ApiErrorCode::Invalid);
+
+    let (_, events) = run_to_the_end(
+        &state,
+        excluding(dir.path(), missing(platter_core::dto::MAX_EXCLUDED)),
+    );
+    assert_eq!(finished_totals(&events).files, 3);
+}
+
+#[test]
+fn an_excluded_path_longer_than_the_most_is_refused() {
+    let state = AppState::for_test();
+    let dir = sample_dir();
+    let long = format!("/{}", "a".repeat(platter_core::dto::MAX_EXCLUDED_PATH_BYTES));
+
+    let rejected =
+        tauri::async_runtime::block_on(start(&state, excluding(dir.path(), vec![long]), Arc::new(|_| {})))
+            .unwrap_err();
+
+    assert_eq!(rejected.code(), ApiErrorCode::Invalid);
+}
+
+#[test]
+fn the_same_folder_named_twice_is_left_out_once() {
+    let dir = sample_dir();
+    let photos = dir.path().join("photos").to_string_lossy().into_owned();
+
+    let identities = excluded_identities(&[photos.clone(), photos]);
+
+    assert_eq!(identities.len(), 1);
 }
 
 #[test]

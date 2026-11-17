@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { COLLAPSED_NODE_ID } from '../../api/client';
 import { childColors } from '../../folderColor';
+import { theme } from '../../state/theme.svelte';
 import {
   assignMapColors,
   BACKGROUND,
@@ -9,8 +10,10 @@ import {
   dominantTile,
   ownChildren,
   FLAT_MIX,
+  FLAT_MIX_LIGHT,
   MERGED_STEP,
   PALETTE,
+  pageBackground,
   SLATE,
   tileStyle,
 } from './colors';
@@ -54,6 +57,56 @@ describe('blend', () => {
 
     expect(light(blend('#d6739f', 22))).toBeLessThan(light(blend('#d6739f', 38)));
     expect(light(blend('#d6739f', 38))).toBeLessThan(light(blend('#d6739f', 56)));
+  });
+});
+
+describe('blend on the page of the light theme', () => {
+  const LIGHT_BACKGROUND = '#eef1f6';
+
+  afterEach(() => {
+    document.documentElement.style.removeProperty('--bg');
+    theme.setChoice('dark');
+  });
+
+  it('is the light background at 0% and the colour at 100%', () => {
+    expect(blend('#3ec5d8', 0, LIGHT_BACKGROUND)).toBe(LIGHT_BACKGROUND);
+    expect(blend('#3ec5d8', 100, LIGHT_BACKGROUND)).toBe('#3ec5d8');
+  });
+
+  it('mixes towards the given background channel by channel', () => {
+    // 22% of #3ec5d8 over #eef1f6.
+    expect(blend('#3ec5d8', 22, LIGHT_BACKGROUND)).toBe('#c7e7ef');
+  });
+
+  it('makes deeper levels darker on a light page, as they are lighter on a dark one', () => {
+    const light = (hex: string) => Number.parseInt(hex.slice(1, 3), 16);
+
+    expect(light(blend('#d6739f', 56, LIGHT_BACKGROUND))).toBeLessThan(
+      light(blend('#d6739f', 22, LIGHT_BACKGROUND)),
+    );
+  });
+
+  it('takes the background of the theme on screen when none is given', () => {
+    document.documentElement.append(document.createElement('div'));
+    document.documentElement.style.setProperty('--bg', LIGHT_BACKGROUND);
+    theme.setChoice('light');
+
+    expect(pageBackground()).toBe(LIGHT_BACKGROUND);
+    expect(blend('#3ec5d8', 0)).toBe(LIGHT_BACKGROUND);
+  });
+
+  it('draws a tile in the light theme from the light background', () => {
+    const colors = new Map([[1, '#3ec5d8']]);
+    const tile = { node: leaf('a', 10).node, depth: 1 as const, top: 1, inner: undefined };
+    const dark = tileStyle(tile, colors);
+
+    document.documentElement.style.setProperty('--bg', LIGHT_BACKGROUND);
+    theme.setChoice('light');
+
+    expect(tileStyle(tile, colors).fill).toBe(
+      blend('#3ec5d8', FLAT_MIX_LIGHT[1] as number, LIGHT_BACKGROUND),
+    );
+    expect(tileStyle(tile, colors).fill).not.toBe(dark.fill);
   });
 });
 

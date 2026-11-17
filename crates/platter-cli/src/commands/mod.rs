@@ -6,8 +6,9 @@ pub mod volumes;
 
 use std::error::Error;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use platter_core::dto::MAX_EXCLUDED;
 use platter_core::{CancelToken, ScanConfig, Tree, UserRule, scan as run_scan};
 use platter_platform::Platform;
 use platter_platform::user_rules::{Loaded, load, rules_path};
@@ -36,7 +37,17 @@ pub fn print_line(text: &str) -> io::Result<()> {
 /// The root is resolved first and its identity pinned, as the app does, so the scan refuses to start
 /// if the folder was swapped for another one in between. A path that cannot be resolved is left for
 /// the scan to report.
-pub fn scan_path(path: &Path, one_file_system: bool, max_entries: Option<u64>) -> CliResult<Tree> {
+///
+/// `excluded` are folders to leave out, resolved the same way. One that cannot be resolved (it does not
+/// exist, or is not a folder) is ignored with a warning on stderr.
+pub fn scan_path(
+    path: &Path,
+    one_file_system: bool,
+    max_entries: Option<u64>,
+    excluded: &[PathBuf],
+) -> CliResult<Tree> {
+    let excluded = excluded_identities(excluded)?;
+
     let platform = Platform::current();
     let (path, root_identity) = match platter_platform::root::resolve_root(path) {
         Ok(resolved) => (resolved.path, resolved.identity),
@@ -48,6 +59,7 @@ pub fn scan_path(path: &Path, one_file_system: bool, max_entries: Option<u64>) -
         max_entries,
         root_identity,
         max_memory_bytes: Some(platter_platform::suggested_memory_budget()),
+        excluded,
         ..ScanConfig::default()
     };
     let show = progress::enabled();
@@ -76,6 +88,36 @@ pub fn scan_path(path: &Path, one_file_system: bool, max_entries: Option<u64>) -
         );
     }
     Ok(tree)
+}
+
+/// The `(dev, ino)` of each folder to leave out. At most [`MAX_EXCLUDED`] are accepted, as in the app.
+fn excluded_identities(excluded: &[PathBuf]) -> CliResult<Vec<(u64, u64)>> {
+    if excluded.len() > MAX_EXCLUDED {
+        return Err(format!(
+            "at most {MAX_EXCLUDED} folders can be left out of a scan, not {}",
+            excluded.len()
+        )
+        .into());
+    }
+
+    let mut identities = Vec::new();
+    for path in excluded {
+        match platter_platform::root::resolve_root(path) {
+            Ok(resolved) => identities.extend(resolved.identity),
+            Err(error) => {
+                let _ = writeln!(
+                    io::stderr(),
+                    "platter-cli: warning: {} is not left out because it cannot be used: {}",
+                    format::display(&path.display().to_string()),
+                    format::display(&error.to_string())
+                );
+            }
+        }
+    }
+
+    identities.sort_unstable();
+    identities.dedup();
+    Ok(identities)
 }
 
 /// What the user's rules file says (`$XDG_CONFIG_HOME/platter/rules.json`, the file the app writes): the

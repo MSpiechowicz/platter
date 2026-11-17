@@ -45,7 +45,13 @@ export interface VolumeDto {
 export interface ScanOptions {
   root: string;
   oneFileSystem: boolean;
+  /** Absolute paths of folders the scan leaves out (at most 64, each at most 4096 bytes). A missing one is ignored. */
+  excluded?: string[];
 }
+
+/** The most folders a scan can leave out, and the longest path of one, in bytes. */
+export const MAX_EXCLUDED = 64;
+export const MAX_EXCLUDED_PATH_BYTES = 4096;
 
 /** Things the scan could not do properly; left out of the event when there are none. */
 export type ScanWarning = 'mountTableUnavailable';
@@ -102,8 +108,11 @@ export interface NodeDto {
   skipped?: SkipReason;
 }
 
-/** otherDisk: another filesystem; system: a virtual, network or FUSE filesystem; duplicate: same disk, already counted; unknown: could not be classified. */
-export type SkipReason = 'otherDisk' | 'system' | 'duplicate' | 'unknown';
+/**
+ * otherDisk: another filesystem; system: a virtual, network or FUSE filesystem; duplicate: same disk, already counted;
+ * excluded: a folder the user leaves out of scans (Settings); unknown: could not be classified.
+ */
+export type SkipReason = 'otherDisk' | 'system' | 'duplicate' | 'excluded' | 'unknown';
 
 export type SortKey = 'sizeDesc' | 'sizeAsc' | 'nameAsc' | 'filesDesc' | 'mtimeDesc';
 
@@ -184,11 +193,26 @@ export interface RefusedDto {
   reason: string;
 }
 
+/** How many old versions of each pacman package stay in its cache. */
+export type KeepPackageVersions = 1 | 2 | 3;
+
+/** Options fixed into a cleanup plan when it is made (Settings, Cleanup card). */
+export interface CleanupOptions {
+  keepPackageVersions: KeepPackageVersions;
+  /** Off: everything that needs the administrator password is left out of the plan. */
+  askForAdmin: boolean;
+}
+
 export interface CleanupPlanDto {
   planId: PlanId;
   scanId: ScanId;
+  /** The options the plan was made with. */
+  options: CleanupOptions;
   groups: PlanGroupDto[];
-  /** At most 200 refusals; `refusedMore` counts the rest. */
+  /**
+   * At most 200 refusals; `refusedMore` counts the rest. Items left out because administrator rights are turned off
+   * come first, with the reason "Needs administrator rights, which are turned off in Settings."
+   */
   refused: RefusedDto[];
   refusedMore: number;
   /** Rule ids that matched nothing in this scan. */

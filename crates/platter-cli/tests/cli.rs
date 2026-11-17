@@ -270,3 +270,75 @@ fn the_default_memory_budget_fits_the_free_memory_and_leaves_normal_scans_alone(
 
     assert_eq!(report["totals"]["files"], 5);
 }
+
+#[test]
+fn scan_leaves_out_an_excluded_folder_and_counts_nothing_in_it() {
+    let dir = fixture();
+    let big = dir.path().join("big");
+    let report = stdout_json(&cli(&[
+        "scan",
+        path_arg(&dir),
+        "--json",
+        "--exclude",
+        big.to_str().unwrap(),
+    ]));
+
+    assert_eq!(report["totals"]["files"], 2, "small/note.txt and loose.bin");
+    assert_eq!(report["totals"]["apparent"], 11_000);
+
+    let children = report["children"].as_array().unwrap();
+    let left_out = children.iter().find(|child| child["name"] == "big").unwrap();
+    assert_eq!(left_out["kind"], "mount");
+    assert_eq!(left_out["skipped"], "excluded");
+    assert_eq!(left_out["allocated"], 0);
+}
+
+#[test]
+fn an_excluded_folder_that_does_not_exist_is_ignored_with_a_warning() {
+    let dir = fixture();
+    let report = cli(&[
+        "scan",
+        path_arg(&dir),
+        "--json",
+        "--exclude",
+        "/definitely/not/here",
+    ]);
+
+    assert!(
+        report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    assert!(String::from_utf8_lossy(&report.stderr).contains("not left out"));
+
+    let report: Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(report["totals"]["files"], 5);
+}
+
+#[test]
+fn excluding_the_scan_root_still_scans_it() {
+    let dir = fixture();
+    let report = stdout_json(&cli(&[
+        "scan",
+        path_arg(&dir),
+        "--json",
+        "--exclude",
+        path_arg(&dir),
+    ]));
+
+    assert_eq!(report["totals"]["files"], 5);
+}
+
+#[test]
+fn more_excluded_folders_than_the_app_allows_is_refused() {
+    let dir = fixture();
+    let mut args = vec!["scan", path_arg(&dir)];
+    for _ in 0..65 {
+        args.extend(["--exclude", "/tmp"]);
+    }
+
+    let output = cli(&args);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("at most 64"));
+}

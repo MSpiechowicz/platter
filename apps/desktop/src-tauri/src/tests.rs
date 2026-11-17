@@ -265,6 +265,47 @@ fn a_scan_root_the_backend_did_not_offer_is_refused() {
 }
 
 #[test]
+fn plan_commands_check_the_options_before_anything_else_and_accept_none() {
+    let (_app, window) = app();
+
+    for (cmd, args) in [
+        (
+            "plan_cleanup",
+            json!({ "scan": 41, "suggestions": ["rust-target"] }),
+        ),
+        ("plan_marked_cleanup", json!({ "scan": 41, "nodes": [1] })),
+    ] {
+        let with = |options: Value| {
+            let mut args = args.clone();
+            args["options"] = options;
+            invoke(&window, cmd, args).expect_err(cmd)
+        };
+
+        assert_eq!(
+            invoke(&window, cmd, args.clone()).expect_err(cmd)["code"],
+            "notFound",
+            "{cmd}: no options means the defaults"
+        );
+        assert_eq!(
+            with(json!({ "keepPackageVersions": 3, "askForAdmin": false }))["code"],
+            "notFound",
+            "{cmd}"
+        );
+        assert_eq!(
+            with(json!({ "keepPackageVersions": 4 }))["code"],
+            "invalid",
+            "{cmd}"
+        );
+        assert_eq!(
+            with(json!({ "keepPackageVersions": 0 }))["code"],
+            "invalid",
+            "{cmd}"
+        );
+        assert_eq!(with(json!({ "askForAdmin": "no" }))["code"], "invalid", "{cmd}");
+    }
+}
+
+#[test]
 fn cleanup_commands_take_ids_only_and_refuse_what_they_do_not_know() {
     let (_app, window) = app();
 

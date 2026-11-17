@@ -3,6 +3,7 @@
   import Card from '../../components/ui/Card.svelte';
   import Dropdown from '../../components/ui/Dropdown.svelte';
   import Field from '../../components/ui/Field.svelte';
+  import Toggle from '../../components/ui/Toggle.svelte';
   import { formatAgo } from '../../format';
   import { delayed } from '../../state/delayed.svelte';
   import { settings, type UpdateSchedule } from '../../state/settings.svelte';
@@ -53,11 +54,11 @@
       <div class="check">
         {#if busy}
           <svg class="spin" viewBox="0 0 48 48" role="status" aria-label="Checking for updates">
-            <circle cx="24" cy="24" r="13.5" fill="none" stroke="#ffffff1f" stroke-width="13" />
+            <circle cx="24" cy="24" r="13.5" fill="none" stroke="var(--ring)" stroke-width="13" />
             <g
               ><path
                 d="M32.77,6.02A20,20 0 0 1 40.96,13.40L29.94,20.29A7,7 0 0 0 27.07,17.71Z"
-                fill="#3ec5d8"
+                fill="var(--accent)"
               /></g
             >
           </svg>
@@ -78,6 +79,23 @@
         label="Check for updates"
         onchange={(value) => {
           settings.set('updateCheck', value);
+          ui.toast('Saved', 'The setting applies from now on.');
+        }}
+      />
+    {/snippet}
+  </Field>
+
+  <Field
+    label="Install updates automatically"
+    description="Downloaded and checked against its signature by itself. Platter restarts only when you click."
+  >
+    {#snippet control(labelId, descriptionId)}
+      <Toggle
+        checked={settings.autoInstallUpdates}
+        aria-labelledby={labelId}
+        aria-describedby={descriptionId}
+        onchange={(event) => {
+          settings.set('autoInstallUpdates', event.currentTarget.checked);
           ui.toast('Saved', 'The setting applies from now on.');
         }}
       />

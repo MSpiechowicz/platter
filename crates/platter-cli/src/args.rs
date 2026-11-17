@@ -51,6 +51,12 @@ pub struct ScanArgs {
     #[arg(long)]
     pub stats: bool,
 
+    /// Leave this folder out of the scan (repeatable). It is listed but never entered, counted or
+    /// cleaned. A folder that does not exist is ignored. Relative paths are taken from the current
+    /// folder.
+    #[arg(long = "exclude", value_name = "PATH")]
+    pub excluded: Vec<PathBuf>,
+
     /// Most entries to hold in memory before giving up (default: no cap of its own; a scan may use at most
     /// half of the free memory in any case).
     #[arg(long, value_name = "N")]
@@ -72,6 +78,12 @@ pub struct SuggestArgs {
     /// Also print how long the scan and the rules took (to stderr).
     #[arg(long)]
     pub stats: bool,
+
+    /// Leave this folder out of the scan (repeatable). It is listed but never entered, counted or
+    /// cleaned. A folder that does not exist is ignored. Relative paths are taken from the current
+    /// folder.
+    #[arg(long = "exclude", value_name = "PATH")]
+    pub excluded: Vec<PathBuf>,
 
     /// Most entries to hold in memory before giving up (see `scan --help`).
     #[arg(long, value_name = "N")]
@@ -107,6 +119,12 @@ pub struct CleanArgs {
     #[arg(long)]
     pub one_file_system: bool,
 
+    /// Leave this folder out of the scan (repeatable). It is listed but never entered, counted or
+    /// cleaned. A folder that does not exist is ignored. Relative paths are taken from the current
+    /// folder.
+    #[arg(long = "exclude", value_name = "PATH")]
+    pub excluded: Vec<PathBuf>,
+
     /// Most entries to hold in memory before giving up (see `scan --help`).
     #[arg(long, value_name = "N")]
     pub max_entries: Option<u64>,
@@ -132,7 +150,71 @@ pub struct ExportArgs {
     #[arg(long)]
     pub one_file_system: bool,
 
+    /// Leave this folder out of the scan (repeatable). It is listed but never entered, counted or
+    /// cleaned. A folder that does not exist is ignored. Relative paths are taken from the current
+    /// folder.
+    #[arg(long = "exclude", value_name = "PATH")]
+    pub excluded: Vec<PathBuf>,
+
     /// Most entries to hold in memory before giving up (see `scan --help`).
     #[arg(long, value_name = "N")]
     pub max_entries: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Command {
+        let mut argv = vec!["platter-cli"];
+        argv.extend_from_slice(args);
+
+        Cli::try_parse_from(argv).expect("the arguments parse").command
+    }
+
+    fn excluded(command: Command) -> Vec<PathBuf> {
+        match command {
+            Command::Scan(args) => args.excluded,
+            Command::Suggest(args) => args.excluded,
+            Command::Clean(args) => args.excluded,
+            Command::ExportFixture(args) => args.excluded,
+            Command::Volumes(_) => panic!("volumes takes no folders to leave out"),
+        }
+    }
+
+    #[test]
+    fn exclude_is_repeatable_and_keeps_the_order_given() {
+        let command = parse(&["scan", "/data", "--exclude", "/data/a", "--exclude", "/data/b"]);
+
+        assert_eq!(
+            excluded(command),
+            [PathBuf::from("/data/a"), PathBuf::from("/data/b")]
+        );
+    }
+
+    #[test]
+    fn no_exclude_means_an_empty_list() {
+        assert!(excluded(parse(&["scan", "/data"])).is_empty());
+    }
+
+    #[test]
+    fn every_command_that_scans_takes_exclude() {
+        for args in [
+            &["suggest", "/data", "--exclude", "/x"][..],
+            &["clean", "/data", "--dry-run", "--exclude", "/x"][..],
+            &["export-fixture", "/data", "--out", "f.json", "--exclude", "/x"][..],
+        ] {
+            assert_eq!(excluded(parse(args)), [PathBuf::from("/x")], "{args:?}");
+        }
+    }
+
+    #[test]
+    fn exclude_without_a_path_is_refused() {
+        assert!(Cli::try_parse_from(["platter-cli", "scan", "/data", "--exclude"]).is_err());
+    }
+
+    #[test]
+    fn volumes_does_not_take_exclude() {
+        assert!(Cli::try_parse_from(["platter-cli", "volumes", "--exclude", "/x"]).is_err());
+    }
 }

@@ -26,6 +26,7 @@ const ALL_OFF = {
   chat: null,
   rules: null,
   history: null,
+  theme: null,
 };
 
 describe('parseHooks', () => {
@@ -188,5 +189,14 @@ describe('parseHooks', () => {
     expect(parseHooks('?view=advisor&rules=whatever', false).rules).toBe('seed');
     expect(parseHooks('?view=advisor', false).rules).toBeNull();
     expect(parseHooks('?view=advisor&rules=broken', true).rules).toBeNull();
+  });
+
+  it('reads the theme to show, outside Tauri only', () => {
+    expect(parseHooks('?theme=light', false).theme).toBe('light');
+    expect(parseHooks('?theme=dark', false).theme).toBe('dark');
+    expect(parseHooks('?theme=system', false).theme).toBe('system');
+    expect(parseHooks('?theme=sepia', false).theme).toBeNull();
+    expect(parseHooks('?view=overview', false).theme).toBeNull();
+    expect(parseHooks('?theme=light', true).theme).toBeNull();
   });
 });
