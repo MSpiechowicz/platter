@@ -3,6 +3,7 @@
   import { describeError } from '../../api/client';
   import { MAX_EXCLUDED } from '../../api/types';
   import Button from '../../components/ui/Button.svelte';
+  import Field from '../../components/ui/Field.svelte';
   import Icon from '../../components/ui/Icon.svelte';
   import { shownPath, visibleText } from '../overview/display';
   import { cleanExcluded, settings } from '../../state/settings.svelte';
@@ -51,11 +52,15 @@
   }
 </script>
 
-<div class="excluded">
-  <div class="head">
-    <span class="label">Excluded paths</span>
-    <span class="hint">Never read, counted or cleaned. Applies to new scans.</span>
-  </div>
+<Field label="Excluded paths" description="Never read, counted or cleaned. Applies to new scans.">
+  {#snippet control()}
+    <Button disabled={picking || full} onclick={add}>
+      {full ? `At most ${MAX_EXCLUDED} folders` : 'Add folder…'}
+    </Button>
+  {/snippet}
+</Field>
+
+{#if settings.excludedPaths.length > 0}
   <ul class="chips" aria-label="Folders left out of scans">
     {#each settings.excludedPaths as path (path)}
       <li class="chip">
@@ -70,45 +75,18 @@
         </button>
       </li>
     {/each}
-    <li>
-      <Button disabled={picking || full} onclick={add}>
-        {full ? `At most ${MAX_EXCLUDED} folders` : 'Add folder…'}
-      </Button>
-    </li>
   </ul>
-</div>
+{/if}
 
 <style>
-  .excluded {
-    padding: 12px 0 2px;
-    border-top: 1px solid var(--line);
-  }
-
-  .head {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    margin-bottom: 10px;
-  }
-
-  .label {
-    font-size: 14px;
-    color: var(--text);
-  }
-
-  .hint {
-    font-size: 12px;
-    color: var(--muted);
-  }
-
   .chips {
+    padding: 0 0 12px;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     list-style: none;
     margin: 0;
-    padding: 0;
   }
 
   .chip {
