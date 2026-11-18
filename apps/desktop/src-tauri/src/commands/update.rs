@@ -580,6 +580,8 @@ mod tests {
         );
     }
 
+    // Uses the real `folder_writable`, which answers only on Linux and macOS (always `false` on Windows).
+    #[cfg(unix)]
     #[test]
     fn on_macos_a_bundle_in_a_folder_the_user_can_write_to_installs_updates_itself() {
         let folder = tempfile::tempdir().unwrap();
