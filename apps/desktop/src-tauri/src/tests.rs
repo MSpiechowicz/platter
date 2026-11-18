@@ -33,7 +33,7 @@ fn app() -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
             commands::history::history_overview,
             commands::history::restore_history_cleanup,
         ])
-        .build(tauri::generate_context!())
+        .build(crate::context())
         .expect("the app builds");
     let window = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()

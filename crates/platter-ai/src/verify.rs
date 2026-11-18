@@ -61,7 +61,9 @@ impl VerifiedModel {
         }
         #[cfg(not(unix))]
         {
-            let path = self.path();
+            let path = self
+                .path()
+                .map_err(|error| io::Error::new(io::ErrorKind::Unsupported, error.to_string()))?;
             let text = path.to_str().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "the model's path is not Unicode text")
             })?;

@@ -438,7 +438,7 @@ fn app_asking(
             clear_gpu_log,
             crate::commands::suggestions::get_suggestions,
         ])
-        .build(tauri::generate_context!())
+        .build(crate::context())
         .expect("the app builds");
     let window = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
@@ -1588,7 +1588,7 @@ fn app_over(state: AppState) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
             find_entries,
             crate::commands::suggestions::get_suggestions,
         ])
-        .build(tauri::generate_context!())
+        .build(crate::context())
         .expect("the app builds");
     let window = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
