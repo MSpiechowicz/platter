@@ -120,10 +120,11 @@ jobs:
           set -- packages/*.deb
           [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::Expected exactly one deb."; exit 1; }
           listing=$(dpkg -c "$1")
-          echo "$listing" | grep -E "^-rwxr-xr-x (root|0)/(root|0) .* \.$helper\$" ||
-            { echo "::error::The deb does not carry $helper as root/root 0755."; exit 1; }
-          echo "$listing" | grep -E "^-rw-r--r-- (root|0)/(root|0) .* \.$policy\$" ||
-            { echo "::error::The deb does not carry $policy as root/root 0644."; exit 1; }
+          # Tauri writes the deb's entries without the leading "./" (usr/bin/platter), dpkg-deb with it.
+          echo "$listing" | grep -E "^-rwxr-xr-x (root|0)/(root|0) .* (\./)?${helper#/}\$" ||
+            { echo "$listing" | grep -E "platter-elevate|\.policy\$"; echo "::error::The deb does not carry $helper as root/root 0755."; exit 1; }
+          echo "$listing" | grep -E "^-rw-r--r-- (root|0)/(root|0) .* (\./)?${policy#/}\$" ||
+            { echo "$listing" | grep -E "platter-elevate|\.policy\$"; echo "::error::The deb does not carry $policy as root/root 0644."; exit 1; }
           # The rpm is read with rpm itself, installed here when the runner lacks it. A check that cannot run
           # fails the release instead of passing without looking.
           if ! command -v rpm >/dev/null 2>&1; then
@@ -135,9 +136,9 @@ jobs:
           [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::Expected exactly one rpm."; exit 1; }
           listing=$(rpm -qlvp "$1")
           echo "$listing" | grep -E "^-rwxr-xr-x .* (root|0) +(root|0) .* $helper\$" ||
-            { echo "::error::The rpm does not carry $helper as root 0755."; exit 1; }
+            { echo "$listing" | grep -E "platter-elevate|\.policy\$"; echo "::error::The rpm does not carry $helper as root 0755."; exit 1; }
           echo "$listing" | grep -E "^-rw-r--r-- .* (root|0) +(root|0) .* $policy\$" ||
-            { echo "::error::The rpm does not carry $policy as root 0644."; exit 1; }
+            { echo "$listing" | grep -E "platter-elevate|\.policy\$"; echo "::error::The rpm does not carry $policy as root 0644."; exit 1; }
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
