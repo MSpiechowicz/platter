@@ -18,7 +18,8 @@
   // Only shown once a cleanup has ended; `result` is that cleanup's own report.
   const result = $derived(store.phase.kind === 'done' ? store.phase.result : undefined);
   const bars = $derived(resultBars(basis, result?.freed));
-  const status = $derived(footerStatus(store));
+  // The big figure above already says what was freed, so the sentence under the bars does not repeat it.
+  const status = $derived(footerStatus(store, { freedShown: true }));
   const canUndo = $derived(store.actions.includes('undo'));
 
   // A bar's share of the whole volume, or of what the scan counted for a folder.
@@ -65,7 +66,13 @@
       </div>
     </div>
 
-    <p class="text" class:attention={status.attention} role="status">{status.text}</p>
+    <!-- With the freed space in the big figure, a plain cleanup may have nothing more to say. The live region stays in
+         place either way, so a screen reader announces the text when it comes. -->
+    <div role="status">
+      {#if status.text}
+        <p class="text" class:attention={status.attention}>{status.text}</p>
+      {/if}
+    </div>
 
     {#each status.details as line, index (index)}
       <p class="detail">{line}</p>

@@ -96,7 +96,8 @@ export function planNotes(plan: CleanupPlanDto | undefined, titleOf: (ruleId: st
   return lines;
 }
 
-function resultText(result: CleanupResult): string {
+/** `freedShown`: the caller writes what was freed as a figure of its own, so the sentence leaves it out. */
+function resultText(result: CleanupResult, freedShown = false): string {
   if (result.kind === 'failed') {
     return `Cleaning failed: ${visibleText(result.message ?? 'unknown error')}.`;
   }
@@ -109,7 +110,9 @@ function resultText(result: CleanupResult): string {
   }
 
   if (result.freed !== undefined && result.freed > 0) {
-    parts.push(`Freed ${fmt.size(result.freed)}.`);
+    if (!freedShown) {
+      parts.push(`Freed ${fmt.size(result.freed)}.`);
+    }
   } else if (result.cleaned === 0) {
     parts.push('Nothing was cleaned.');
   } else if (!onlyTrashed && result.freed === 0) {
@@ -169,8 +172,13 @@ function resultDetails(result: CleanupResult): string[] {
   return lines;
 }
 
+export interface FooterOptions {
+  /** The view shows what was freed as a big figure: the status does not say it again. */
+  freedShown?: boolean;
+}
+
 /** What the footer says now, from the flow's state. */
-export function footerStatus(store: CleanupStore): FooterStatus {
+export function footerStatus(store: CleanupStore, options: FooterOptions = {}): FooterStatus {
   const phase = store.phase;
   const notes = planNotes(store.plan, (id) => store.suggestions.find((item) => item.id === id)?.title ?? id);
   const actions = store.actions;
@@ -197,7 +205,9 @@ export function footerStatus(store: CleanupStore): FooterStatus {
     }
 
     case 'done': {
-      const text = [resultText(phase.result), store.outdated ? OUTDATED_TEXT : ''].filter(Boolean).join(' ');
+      const text = [resultText(phase.result, options.freedShown), store.outdated ? OUTDATED_TEXT : '']
+        .filter(Boolean)
+        .join(' ');
       const failed = phase.result.kind === 'failed' || phase.result.withProblems > 0;
 
       return {

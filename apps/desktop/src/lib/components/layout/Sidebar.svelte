@@ -250,10 +250,7 @@
     transition: transform 0.28s cubic-bezier(0.3, 0.8, 0.3, 1);
   }
 
-  .sfold :global(svg) {
-    transition: transform 0.25s;
-  }
-
+  /* Collapsed, the glyph points the other way. It switches at once, with no animation. */
   .mini .sfold :global(svg) {
     transform: scaleX(-1);
   }

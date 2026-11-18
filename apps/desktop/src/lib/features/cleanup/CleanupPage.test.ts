@@ -3,11 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../../../App.svelte';
 import { api } from '../../api';
 import { advisor } from '../../state/advisor.svelte';
+import type { CleanupPlanDto } from '../../api/types';
 import { cleanup } from '../../state/cleanup.svelte';
 import { scan } from '../../state/scan.svelte';
 import { settings } from '../../state/settings.svelte';
 import { ui } from '../../state/ui.svelte';
-import { stubChartBox } from './testFixture';
+import { group, stubChartBox, suggestion } from './testFixture';
 
 // A fast demo disk, so a whole scan takes a fraction of a second.
 vi.mock('../../api', async () => {
@@ -84,6 +85,65 @@ describe('the Cleanup view', () => {
     expect(await screen.findByRole('heading', { name: /^Advisor/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^Clean safe/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^Clean selected/ })).toBeTruthy();
+  });
+
+  it('shows one waiting card until the suggestions and their first preview are here, and then all three together', async () => {
+    let answer: (plan: CleanupPlanDto) => void = () => {};
+    const planner = vi
+      .spyOn(api, 'planCleanup')
+      .mockImplementation(() => new Promise<CleanupPlanDto>((resolve) => (answer = resolve)));
+
+    render(App);
+    await scanDisk();
+    await fireEvent.click(nav('Cleanup'));
+    await screen.findByText('CLEANUP');
+
+    // The suggestions are in, the preview is not: the spinner of the whole page is up and nothing else is.
+    await waitFor(() => expect(planner).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('Reading the scan…', undefined, { timeout: 2000 })).toBeTruthy();
+    expect(main().querySelector('[aria-busy="true"]')).toBeTruthy();
+    expect(screen.queryByText('Selected to free')).toBeNull();
+    expect(screen.queryByRole('heading', { name: /^Advisor/ })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /^What happens when you clean/ })).toBeNull();
+
+    const [scanId, ids] = planner.mock.calls[0] ?? [];
+    answer({
+      planId: 1,
+      scanId: scanId as number,
+      options: { keepPackageVersions: 2, askForAdmin: true },
+      groups: [{ ...group(String(ids?.[0]), 'safe', 1), action: 'trash' }],
+      refused: [],
+      refusedMore: 0,
+      notFound: [],
+      allocated: 0,
+      needsConfirmation: false,
+    });
+
+    // The spinner stays its second, and then the chart, the Advisor and the preview come at once.
+    expect(await screen.findByText('Selected to free', undefined, { timeout: 3000 })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /^Advisor/ })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /^What happens when you clean/ })).toBeTruthy();
+    expect(screen.queryByText('Reading the scan…')).toBeNull();
+
+    // The card has what the page asked for, and asks nothing more.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(planner).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not wait for a preview when nothing is selected', async () => {
+    const planner = vi.spyOn(api, 'planCleanup');
+
+    vi.spyOn(api, 'getSuggestions').mockResolvedValue({
+      suggestions: [suggestion('snapshots', 'review', 268)],
+      totals: { safe: 0, review: 268e9, keep: 0 },
+    });
+
+    render(App);
+    await openCleanup();
+
+    expect(await screen.findByText('Selected to free', undefined, { timeout: 3000 })).toBeTruthy();
+    expect(screen.getByText('Select items in the Advisor to see what cleaning them does.')).toBeTruthy();
+    expect(planner).not.toHaveBeenCalled();
   });
 
   it('says LOCAL MODEL on its Advisor card only while the model is loaded', async () => {

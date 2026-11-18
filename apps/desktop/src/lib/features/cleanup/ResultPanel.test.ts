@@ -48,6 +48,8 @@ describe('ResultPanel', () => {
       { label: 'Before the cleanup', value: 74 },
       { label: 'After the cleanup', value: 61 },
     ]);
+    // The big figure says what was freed: the sentence under the bars does not say it again.
+    expect(screen.getByRole('status').textContent).not.toMatch(/Freed/);
   });
 
   it('draws the after bar in green, the freed space, and the before bar in the neutral colour', async () => {
