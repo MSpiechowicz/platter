@@ -2,6 +2,7 @@ import { ApiRequestError, type Api } from './client';
 import { folderAnswer } from './mock-advisor-folder';
 import { answerQuestion, readsWithoutModel, type FolderLookup } from './mock-scan-question';
 import { ruleView, type MockLabel, type RuleView, type UserRuleInput } from './mock-suggestions';
+import { cleanQuestion, isBlankQuestion } from '../question';
 import type { MockNode, MockTree } from './mock-tree';
 import type {
   AdvisorAnswerDto,
@@ -143,6 +144,8 @@ const holdsModel = (job: Job): boolean => job.kind === 'ask' && job.free === tru
 
 /** The longest question `askScan` takes, in characters after trimming. */
 const MAX_QUESTION_CHARS = 500;
+/** How many questions asked back the mock keeps the choices of, as the backend's `AskedBack`. */
+const KEPT_ASKED_BACK = 8;
 
 const DEFAULT_OPTIONS: AdvisorOptionsDto = {
   enabled: true,
@@ -198,6 +201,8 @@ export interface MockAdvisorOptions {
   questionLogBlocked?: boolean;
   /** Test hook: the answer of the download's confirmation dialog (default: confirmed). */
   confirmDownload?: () => boolean;
+  /** Test hook: the answer of the dialog before a log is cleared (default: confirmed). */
+  confirmClearLog?: () => boolean;
 }
 
 export type MockAdvisorApi = Pick<
@@ -628,6 +633,9 @@ type Job =
 export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOptions = {}): MockAdvisor {
   const timers = init.timers ?? realTimers;
   const confirmDownload = init.confirmDownload ?? (() => true);
+  const confirmClearLog = init.confirmClearLog ?? (() => true);
+  /** The questions asked back lately (newest first), each with the keys of the choices shown. */
+  const recentChoices: { asked: string; keys: string[] }[] = [];
 
   /** The lookups a question's scope is resolved with: the ones `findFolders` and `findEntries` use. */
   const lookupOf = (tree: MockTree): FolderLookup => {
@@ -946,7 +954,11 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
     },
 
     async clearQuestionLog() {
-      // As the backend: no log is fine; a link or a folder at the log's path is an `io` error.
+      // As the backend: asked first (a no is `cancelled`). No log is fine. A link or a folder at the log's path is
+      // an `io` error.
+      if (!confirmClearLog()) {
+        throw new ApiRequestError('cancelled', 'clearing the log was not confirmed');
+      }
       if (init.questionLogBlocked) {
         throw new ApiRequestError('io', 'The question log could not be removed.');
       }
@@ -976,7 +988,11 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
     },
 
     async clearGpuLog() {
-      // As the backend: no log is fine; a problem that waits for an answer stays for this session.
+      // As the backend: asked first (a no is `cancelled`). No log is fine. A problem that waits for an answer stays
+      // for this session.
+      if (!confirmClearLog()) {
+        throw new ApiRequestError('cancelled', 'clearing the log was not confirmed');
+      }
       lastGpu = undefined;
       push();
     },
@@ -1315,7 +1331,7 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
     async askScan(scan, question, units, pick): Promise<ScanAnswerDto> {
       const text = question.trim();
 
-      if (text === '') {
+      if (isBlankQuestion(text)) {
         return invalid('the question is empty');
       }
       if (Array.from(text).length > MAX_QUESTION_CHARS) {
@@ -1344,6 +1360,24 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
         return invalid('the model is not on disk yet');
       }
 
+      // As the backend's `AskedBack`: the choices shown for the last questions asked back, by scan and cleaned
+      // question. A pick must find under its id the choice that was shown.
+      const asked = `${scan}\n${cleanQuestion(text)}`;
+      const askedBack = {
+        shown:
+          pick === undefined ? undefined : (recentChoices.find((entry) => entry.asked === asked)?.keys ?? []),
+        remember(keys: string[]): void {
+          const kept = recentChoices.filter((entry) => entry.asked !== asked);
+
+          recentChoices.splice(
+            0,
+            recentChoices.length,
+            { asked, keys },
+            ...kept.slice(0, KEPT_ASKED_BACK - 1),
+          );
+        },
+      };
+
       /** The answer from the scan as it is now: the scan may have been dropped meanwhile, which is a `notFound`. */
       const answerNow = (): ScanAnswerDto => {
         const current = host.treeOf(scan);
@@ -1360,6 +1394,7 @@ export function createMockAdvisor(host: MockAdvisorHost, init: MockAdvisorOption
             lookup: lookupOf(current),
             guard: (node) => guardReason(current, node, view),
             summary: (node) => host.summary(current, node),
+            askedBack,
           },
           text,
           pick,

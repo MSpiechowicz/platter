@@ -462,6 +462,13 @@ fn a_model_that_fails_or_runs_out_of_time_reading_gives_the_general_question() {
     assert!(answer.answer.contains(" holds "), "{}", answer.answer);
     assert_eq!(control.judges(), 1);
     assert!(started.elapsed() < Duration::from_secs(5));
+    // The answer says it is about the whole scan because the question could not be read.
+    assert!(
+        answer.notes.iter().any(|note| note == UNREAD_NOTE),
+        "{:?}",
+        answer.notes
+    );
+    assert!(answer.answer.contains(UNREAD_NOTE), "{}", answer.answer);
 
     // Unreadable.
     let w = world(true);
@@ -470,6 +477,21 @@ fn a_model_that_fails_or_runs_out_of_time_reading_gives_the_general_question() {
     let answer = ask(&w, scan, "tell me something about this disk").unwrap();
     assert_eq!(answer.understood.intent, ScanIntentDto::General);
     assert_eq!(w.control.judges(), 1);
+    assert!(
+        answer.notes.iter().any(|note| note == UNREAD_NOTE),
+        "{:?}",
+        answer.notes
+    );
+
+    // A model that read it gives no such note.
+    w.control
+        .push_reply(r#"{"intent":"general","scope":"","kind":"any","limit":5}"#);
+    let answer = ask(&w, scan, "tell me something about this disk").unwrap();
+    assert!(
+        !answer.notes.iter().any(|note| note == UNREAD_NOTE),
+        "{:?}",
+        answer.notes
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -971,9 +993,10 @@ fn a_question_asked_back_is_sent_with_its_choices_and_a_pick_takes_one_of_them()
     let scan = register(&w.state, &fs);
     let phone = node_at(&w.state, scan, "/home/u/phone/backup");
     let reply = r#"{"intent":"cleanable","scope":"backup","kind":"any","limit":5}"#;
-    w.control.push_reply(reply);
-    w.control.push_reply(reply);
-    w.control.push_reply(reply);
+    // One reading per ask: the question, its pick, a stale pick, the pick again and a pick never asked.
+    for _ in 0..5 {
+        w.control.push_reply(reply);
+    }
     let (_app, window) = app_for(w.state);
     let question = "can I delete the backup folder?";
 
@@ -1018,6 +1041,27 @@ fn a_question_asked_back_is_sent_with_its_choices_and_a_pick_takes_one_of_them()
     .unwrap_err();
     assert_eq!(
         stale["message"],
+        "that choice is no longer available, so ask again"
+    );
+
+    // A pick for a question that was never asked back to this backend (a page that sends one on its own).
+    let again = invoke(
+        &window,
+        "ask_scan",
+        json!({ "scan": scan, "question": question, "units": "GB", "pick": 0 }),
+    );
+    assert!(
+        again.is_ok(),
+        "the question asked back can be picked again: {again:?}"
+    );
+    let never = invoke(
+        &window,
+        "ask_scan",
+        json!({ "scan": scan, "question": "where is my backup folder?", "units": "GB", "pick": 0 }),
+    )
+    .unwrap_err();
+    assert_eq!(
+        never["message"],
         "that choice is no longer available, so ask again"
     );
 }

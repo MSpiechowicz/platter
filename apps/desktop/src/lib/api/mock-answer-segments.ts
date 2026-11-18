@@ -36,11 +36,14 @@ export function cutPath(path: string, chars: number = SHEET_PATH_CHARS): string 
 
 /** A path set apart in the text; a `“`, `”` or `"` in the name is shown as `‟` or `〃`, so it cannot close the quote. */
 export function quoteName(path: string): string {
-  const name = Array.from(path)
+  return `“${withoutQuotes(path)}”`;
+}
+
+/** `path` with every `“`, `”` or `"` shown as `‟` or `〃`: the text `quoteName` sets in quotes. */
+function withoutQuotes(path: string): string {
+  return Array.from(path)
     .map((c) => (c === '“' ? OPEN_SUBSTITUTE : c === '”' || c === '"' ? CLOSE_SUBSTITUTE : c))
     .join('');
-
-  return `“${name}”`;
 }
 
 /** The segments as one text: every path in “ ” quotes. */
@@ -75,7 +78,12 @@ export function plain(text: string): string {
 
 /** A path the sheet holds, as an answer is read. */
 export interface KnownPath {
+  /** The path as `quoteName` shows it (its own quotes as `‟` or `〃`): two folders that read the same so are one text. */
   text: string;
+  /** The path as the sheet holds it, for the path segment. */
+  real: string;
+  /** The ways the path can stand in a text, longest first: `text`, and the path as the sheet holds it. */
+  forms: string[];
   /** The rows shown with this text (none for the scope and the context paths). */
   rows: number[];
   /** Whether it is the scope. */
@@ -136,16 +144,21 @@ export function knownPaths(original: KnownOriginal, source: KnownSource): KnownP
     add(path, original.contextPaths[index] ?? path, undefined, false),
   );
 
-  const grouped = new Map<string, Folder[]>();
+  const grouped = new Map<string, { real: string; forms: string[]; folders: Folder[] }>();
 
   for (const item of listed) {
     if (Array.from(item.text).length < 2) {
       continue;
     }
 
-    const folders = grouped.get(item.text) ?? [];
+    const key = withoutQuotes(item.text);
+    const group = grouped.get(key) ?? { real: item.text, forms: [key], folders: [] };
+    const folders = group.folders;
 
-    grouped.set(item.text, folders);
+    grouped.set(key, group);
+    if (!group.forms.includes(item.text)) {
+      group.forms.push(item.text);
+    }
 
     // A row is a folder of its own; the scope and a context path are the folder they say.
     const same =
@@ -158,21 +171,24 @@ export function knownPaths(original: KnownOriginal, source: KnownSource): KnownP
     }
   }
 
-  const paths: KnownPath[] = [...grouped].map(([text, folders]) => ({
+  const length = (text: string): number => encoder.encode(text).length;
+  const paths: KnownPath[] = [...grouped].map(([text, { real, forms, folders }]) => ({
     text,
+    real,
+    forms: forms.sort((a, b) => length(b) - length(a)),
     rows: folders.flatMap((folder) => (folder.row === undefined ? [] : [folder.row])),
     scope: folders.some((folder) => folder.scope),
     ambiguous: folders.length > 1,
   }));
 
-  const bytes = (path: KnownPath): number => encoder.encode(path.text).length;
+  const bytes = (path: KnownPath): number => Math.max(...path.forms.map(length));
 
   return paths.sort((a, b) => bytes(b) - bytes(a) || (a.text < b.text ? -1 : a.text > b.text ? 1 : 0));
 }
 
 /** Whether the sheet shows `path` (a path as the backend wrote it) for more than one folder. */
 export function isAmbiguous(known: readonly KnownPath[], path: string): boolean {
-  const text = plain(path.replace(/\/+$/, ''));
+  const text = withoutQuotes(plain(path.replace(/\/+$/, '')));
 
   return known.some((entry) => entry.ambiguous && entry.text === text);
 }
@@ -232,10 +248,11 @@ export function segmentsOf(text: string, known: readonly KnownPath[]): Segment[]
   let at = 0;
 
   while (at < read.length) {
-    const index = startsAWord(read, at)
-      ? known.findIndex((path) => read.startsWith(path.text, at) && endsAWord(read, at + path.text.length))
-      : -1;
-    const path = known[index];
+    // A path is found as it is, or as `quoteName` wrote it (its own quotes shown as `‟` or `〃`).
+    const fits = (candidate: string): boolean =>
+      read.startsWith(candidate, at) && endsAWord(read, at + candidate.length);
+    const path = startsAWord(read, at) ? known.find((entry) => entry.forms.some(fits)) : undefined;
+    const form = path?.forms.find(fits) ?? '';
 
     if (path === undefined) {
       const char = String.fromCodePoint(read.codePointAt(at) as number);
@@ -246,7 +263,7 @@ export function segmentsOf(text: string, known: readonly KnownPath[]): Segment[]
       continue;
     }
 
-    at += path.text.length;
+    at += form.length;
 
     // A path that the text put in quotes loses them.
     const closer = CLOSER_OF[buffer.at(-1) ?? ''];
@@ -263,7 +280,7 @@ export function segmentsOf(text: string, known: readonly KnownPath[]): Segment[]
     } else {
       pushText(segments, buffer);
       buffer = '';
-      segments.push({ kind: 'path', path: path.text, place });
+      segments.push({ kind: 'path', path: path.real, place });
     }
   }
 

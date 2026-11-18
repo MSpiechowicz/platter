@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use platter_ai::{
     By, FactRow, FactSheet, FactTotal, FileFact, Intent, Kind, MediaKind, OUTDATED_NOTE, Place, ScanQuestion,
-    Segment, TotalKind, Units, WellKnown, clean_question, format_size, render, template_segments,
+    Segment, TotalKind, Units, WellKnown, clean_question, format_size, quote_name, render, template_segments,
 };
 use platter_core::dto::{AgeBucket, ScanId, Verdict, VerdictTotals};
 use platter_core::query::{MAX_ENTRY_MATCHES, find_entries, find_folders, summary};
@@ -33,8 +33,8 @@ use tauri::State;
 
 use self::reading::{Subject, read};
 use self::record::Trace;
-use self::resolve::{Clarify, Resolved};
-use super::{GUARD_DETAIL, Review, clamp};
+use self::resolve::{Choice, ChoiceKey, Clarify, Resolved};
+use super::{GUARD_DETAIL, ModelRead, Review, clamp};
 use crate::commands::suggestions;
 use crate::error::{CommandError, CommandResult};
 use crate::state::AppState;
@@ -82,6 +82,10 @@ const NOTE_CHARS: usize = 240;
 const KEPT_SCAN_NOTE: &str = "This scan starts inside a folder you keep, so nothing in it is suggested.";
 const LABELLED_BY_MODEL: &str = "Labelled by the local model";
 /// What to do about it, when the model has labelled nothing (the answer itself says that nothing is labelled).
+/// The note of a question the model was asked to read and could not (it ran out of time or wrote no query),
+/// when the words name nothing either: the answer is about the whole scan, and says so.
+pub(crate) const UNREAD_NOTE: &str =
+    "Platter could not tell which part of the scan you meant, so this answer covers the whole scan.";
 const NO_LABELS_NOTE: &str = "Use “Label folders” in the Advisor view.";
 const ENGLISH_NOTE: &str = "Answers are in English.";
 const NOT_FROM_HERE_NOTE: &str = "Platter does not delete anything from here. Use Cleanup to choose.";
@@ -335,16 +339,13 @@ pub async fn answer_scan_picking(
     let ask = state.advisor.begin_ask()?;
 
     let labels = state.scans.labels(scan)?;
-    let outdated = state.scans.is_outdated(scan);
     let enabled = state.advisor.enabled();
     let advisor = Arc::clone(&state.advisor);
     let scans = Arc::clone(&state.scans);
     let platform = Arc::clone(&state.platform);
-    // The log is used when the user's switch is on; each question reads the switch when it is taken.
-    let log = state
-        .advisor
-        .log_questions()
-        .then(|| Arc::clone(&state.question_log));
+    // The log is written when the user's switch is on as the answer is made.
+    let log = Arc::clone(&state.question_log);
+    let asked_back = Arc::clone(&state.asked_back);
 
     // The model takes seconds and the rules walk the tree: all of it is off the async runtime.
     tauri::async_runtime::spawn_blocking(move || {
@@ -378,6 +379,8 @@ pub async fn answer_scan_picking(
             _ => None,
         };
 
+        // Read once the question is read, so a cleanup that ended meanwhile is not missed.
+        let outdated = scans.is_outdated(scan);
         let dirs = review
             .env()
             .home
@@ -393,6 +396,9 @@ pub async fn answer_scan_picking(
             polish: reading.polish,
             everything: reading.everything,
             pick,
+            // A pick must be a choice this backend showed for this question.
+            shown: pick.map(|_| asked_back.shown(scan, &question)),
+            unread: matches!(trace.model, Some(ModelRead::TimedOut | ModelRead::Unreadable)),
             dirs,
         };
         let labels = labels.as_deref().map_or(&[][..], |set| &set.labels[..]);
@@ -405,16 +411,14 @@ pub async fn answer_scan_picking(
         };
         let answer = render(&written);
         let segments = segment_dtos(written, &collected);
-
-        if let Some(log) = &log {
-            log.append(&record::entry(
-                &trace,
-                &reading,
-                &collected,
-                &answer,
-                started.elapsed(),
-            ));
+        if let Some(clarify) = &collected.clarify {
+            asked_back.remember(scan, &question, clarify.choices.iter().map(Choice::key).collect());
         }
+
+        log.append_if(
+            &record::entry(&trace, &reading, &collected, &answer, started.elapsed()),
+            || advisor.log_questions(),
+        );
 
         Ok(ScanAnswerDto {
             scan,
@@ -507,6 +511,11 @@ struct Asked<'a> {
     everything: bool,
     /// The id of a choice of the same question asked back before.
     pick: Option<u8>,
+    /// The choices the user was shown when this question was asked back, as far as the backend knows
+    /// (empty: none). `None` in tests that pick without having asked.
+    shown: Option<Vec<ChoiceKey>>,
+    /// The model was asked to read the question and could not (it ran out of time or wrote no query).
+    unread: bool,
     /// Downloads, Templates and Public, where this machine has them (the environment lists the others).
     dirs: Vec<(WellKnown, PathBuf)>,
 }
@@ -533,6 +542,8 @@ impl<'a> Asked<'a> {
             polish: false,
             everything: false,
             pick: None,
+            shown: None,
+            unread: false,
             dirs: Vec::new(),
         }
     }
@@ -662,9 +673,15 @@ fn collect(
 
     // `find` looks for a name, so a name is not a folder to resolve; an overview is of the whole scan.
     let resolved = match (intent, &asked.subject) {
+        // A choice was asked for this question before, but this reading asks nothing back.
+        (Intent::General | Intent::Offtopic, _) | (Intent::Find, Subject::Name(_) | Subject::None)
+            if asked.pick.is_some() =>
+        {
+            return Err(CommandError::invalid(resolve::STALE_CHOICE));
+        }
         (Intent::General | Intent::Offtopic, _) => Resolved::whole(),
         (Intent::Find, Subject::Name(_) | Subject::None) => Resolved::whole(),
-        _ => lens.resolve(&asked.subject, asked.pick)?,
+        _ => lens.resolve(&asked.subject, asked.pick, asked.shown.as_deref())?,
     };
     if let Some(clarify) = resolved.clarify {
         return Ok(clarified(asked, intent, clarify));
@@ -675,6 +692,9 @@ fn collect(
     let mut meta = Vec::new();
     if asked.outdated {
         notes.push(OUTDATED_NOTE.to_owned());
+    }
+    if asked.unread && asked.subject == Subject::None && intent != Intent::Offtopic {
+        notes.push(UNREAD_NOTE.to_owned());
     }
     let place_notes = resolved.notes;
     let mut context_paths = Vec::new();
@@ -880,9 +900,10 @@ fn clarified(asked: &Asked<'_>, intent: Intent, clarify: Clarify) -> Collected {
     }
 }
 
-/// A text of the user's disk or of the user's words, set apart in “ ” quotes.
+/// A text of the user's disk or of the user's words, set apart in “ ” quotes. A quote inside it is shown as
+/// `‟` or `〃`, so the text cannot close the quotes it is in.
 fn quoted(text: &str) -> String {
-    format!("“{text}”")
+    quote_name(text)
 }
 
 /// `No file or folder called “x” is in this scan`, and where the rules look for what `x` names, when they know.
@@ -1458,7 +1479,7 @@ impl<'a> Lens<'a> {
                 } else {
                     found.notes.push(format!(
                         "{} is kept by {}.",
-                        self.review.display(node),
+                        quoted(&self.review.display(node)),
                         covering.title
                     ));
                 }
@@ -2258,3 +2279,39 @@ mod record;
 mod resolve;
 #[cfg(test)]
 mod tests;
+
+/// The questions asked back lately, with the choices the user was shown for each. A `pick` is checked
+/// against them: the web view sends only the id, and the backend reads the question again, so the choice it
+/// finds under that id must be the one that was shown.
+#[derive(Debug, Default)]
+pub struct AskedBack {
+    recent: std::sync::Mutex<std::collections::VecDeque<(ScanId, String, Vec<ChoiceKey>)>>,
+}
+
+impl AskedBack {
+    /// How many questions asked back are kept (the newest first to stay).
+    const KEPT: usize = 8;
+
+    fn remember(&self, scan: ScanId, question: &str, choices: Vec<ChoiceKey>) {
+        let mut recent = self
+            .recent
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        recent.retain(|(at, asked, _)| !(*at == scan && asked == question));
+        recent.push_front((scan, question.to_owned(), choices));
+        recent.truncate(Self::KEPT);
+    }
+
+    /// The choices shown for `question` of `scan`, or none when it was not asked back lately.
+    fn shown(&self, scan: ScanId, question: &str) -> Vec<ChoiceKey> {
+        let recent = self
+            .recent
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        recent
+            .iter()
+            .find(|(at, asked, _)| *at == scan && asked == question)
+            .map(|(_, _, choices)| choices.clone())
+            .unwrap_or_default()
+    }
+}

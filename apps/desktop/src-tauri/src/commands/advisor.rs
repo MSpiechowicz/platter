@@ -46,7 +46,7 @@ use platter_core::dto::{
 use platter_core::{
     EntryProbe, Environment, ModelLabel, ModelVerdict, NodeId, NodeKind, Tree, UserRule, UserVerdict,
 };
-use platter_core::{find_entries_until as search_entries_until, find_folders as search_folders};
+use platter_core::{find_entries_until as search_entries_until, find_folders_until as search_folders_until};
 use platter_platform::Platform;
 use platter_platform::environment::current_os;
 use platter_platform::paths::node_path;
@@ -432,20 +432,45 @@ impl View {
     }
 }
 
-/// The one download dialog: shown at most once at a time, and not again right after it was declined.
+/// One kind of dialog (the download, or clearing a log): shown at most once at a time, and not again right
+/// after it was declined.
 struct DialogGate {
     open: AtomicBool,
     /// When the user last declined (or the dialog failed).
     declined: Mutex<Option<Instant>>,
     pause: Duration,
+    /// The refusal while the dialog is open.
+    open_text: &'static str,
+    /// The refusal right after a decline.
+    declined_text: &'static str,
 }
 
 impl DialogGate {
+    /// The gate of the download dialog.
     fn new(pause: Duration) -> Arc<Self> {
+        Self::named(
+            pause,
+            "the download is already being asked about",
+            "the download was just declined, so wait a moment",
+        )
+    }
+
+    /// The gate of the dialogs that clear a log (the question log and the graphics card problem log).
+    fn clearing(pause: Duration) -> Arc<Self> {
+        Self::named(
+            pause,
+            "clearing a log is already being asked about",
+            "clearing a log was just declined, so wait a moment",
+        )
+    }
+
+    fn named(pause: Duration, open_text: &'static str, declined_text: &'static str) -> Arc<Self> {
         Arc::new(Self {
             open: AtomicBool::new(false),
             declined: Mutex::new(None),
             pause,
+            open_text,
+            declined_text,
         })
     }
 }
@@ -473,7 +498,7 @@ impl DialogSlot {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return Err(CommandError::invalid("the download is already being asked about"));
+            return Err(CommandError::invalid(gate.open_text));
         }
 
         // From here on the slot gives itself back when it is dropped, on a refusal too.
@@ -483,9 +508,7 @@ impl DialogSlot {
         between();
 
         if lock(&gate.declined).is_some_and(|at| at.elapsed() < gate.pause) {
-            return Err(CommandError::invalid(
-                "the download was just declined, so wait a moment",
-            ));
+            return Err(CommandError::invalid(gate.declined_text));
         }
 
         Ok(slot)
@@ -512,6 +535,8 @@ pub struct AdvisorService {
     /// The options kept while there is no worker to keep them.
     options: Mutex<Options>,
     dialog: Arc<DialogGate>,
+    /// The dialogs that clear a log: one at a time, none for a moment after a no.
+    clearing: Arc<DialogGate>,
     /// A free question is being answered (see [`AdvisorService::begin_ask`]).
     asking: AtomicBool,
 }
@@ -598,6 +623,7 @@ impl AdvisorService {
             watcher: Arc::default(),
             options: Mutex::new(Options::default()),
             dialog: DialogGate::new(DECLINE_PAUSE),
+            clearing: DialogGate::clearing(DECLINE_PAUSE),
             asking: AtomicBool::new(false),
         }
     }
@@ -606,6 +632,7 @@ impl AdvisorService {
     #[cfg(test)]
     fn with_decline_pause(mut self, pause: Duration) -> Self {
         self.dialog = DialogGate::new(pause);
+        self.clearing = DialogGate::clearing(pause);
         self
     }
 
@@ -646,6 +673,7 @@ impl AdvisorService {
             watcher,
             options: Mutex::new(Options::default()),
             dialog: DialogGate::new(DECLINE_PAUSE),
+            clearing: DialogGate::clearing(DECLINE_PAUSE),
             asking: AtomicBool::new(false),
         })
     }
@@ -1795,21 +1823,22 @@ pub async fn ask_about_in(
     let platform = Arc::clone(&state.platform);
     let user = user_rules::current(&state.user_rules).await?;
     user.usable()?;
-    // The log is used when the user's switch is on; each ask reads the switch when it is taken.
-    let log = state
-        .advisor
-        .log_questions()
-        .then(|| Arc::clone(&state.question_log));
+    // The rules walk the whole tree: one of the few walks that may run at once.
+    let walk = state.walks.take()?;
+    // The log is written when the user's switch is on as the answer is made.
+    let log = Arc::clone(&state.question_log);
+    let advisor = Arc::clone(&state.advisor);
 
     // The rules walk the tree: off the async runtime.
     let answered = tauri::async_runtime::spawn_blocking(move || {
+        let _walk = walk;
         let started = Instant::now();
         let review = Review::new(&tree, &platform, user.rules);
         let answered = folder::answer(&review, set.as_deref(), node, units.into());
 
-        if let Some(log) = &log {
-            log.append(&folder::entry(scan, &answered, started.elapsed()));
-        }
+        log.append_if(&folder::entry(scan, &answered, started.elapsed()), || {
+            advisor.log_questions()
+        });
 
         answered.dto
     })
@@ -1818,20 +1847,39 @@ pub async fn ask_about_in(
     Ok(answered)
 }
 
+/// [`find_folders`] for the state itself. Like [`find_entries_in`], the walk stops as soon as a newer call
+/// has started, and at most a few walks run at once (`invalid` beyond them).
 pub async fn find(
     state: &AppState,
     scan: ScanId,
     query: String,
     limit: u32,
 ) -> CommandResult<Vec<FolderMatchDto>> {
+    let number = state.folder_searches.fetch_add(1, Ordering::SeqCst) + 1;
+
+    find_numbered(state, scan, query, limit, number).await
+}
+
+/// [`find`] as the search that took `number`.
+async fn find_numbered(
+    state: &AppState,
+    scan: ScanId,
+    query: String,
+    limit: u32,
+    number: u64,
+) -> CommandResult<Vec<FolderMatchDto>> {
     let tree = state.scans.tree(scan)?;
     let platform = Arc::clone(&state.platform);
+    let searches = Arc::clone(&state.folder_searches);
     let limit = limit.clamp(1, MAX_FOUND) as usize;
+    let walk = state.walks.take()?;
 
     // A walk over every folder of the tree.
     tauri::async_runtime::spawn_blocking(move || {
+        let _walk = walk;
         let env = platform.environment_for(tree.root_path());
-        let found = search_folders(&tree, env.home.as_deref(), &query, limit)?;
+        let superseded = || searches.load(Ordering::SeqCst) != number;
+        let found = search_folders_until(&tree, env.home.as_deref(), &query, limit, superseded)?;
 
         Ok(found
             .into_iter()
@@ -1871,9 +1919,11 @@ async fn find_entries_numbered(
     let platform = Arc::clone(&state.platform);
     let searches = Arc::clone(&state.entry_searches);
     let limit = limit.clamp(1, MAX_FOUND) as usize;
+    let walk = state.walks.take()?;
 
     // A walk over every entry of the tree.
     tauri::async_runtime::spawn_blocking(move || {
+        let _walk = walk;
         let env = platform.environment_for(tree.root_path());
         let superseded = || searches.load(Ordering::SeqCst) != number;
         let found = search_entries_until(&tree, env.home.as_deref(), &query, limit, superseded)?;
@@ -1891,8 +1941,9 @@ async fn find_entries_numbered(
     .await?
 }
 
-/// Deletes the question log (`advisor-questions.jsonl`). Succeeds when there is none, and when the
-/// settings place is not known. A link or a folder at its name is left alone (`io`).
+/// Deletes the question log (`advisor-questions.jsonl`), once the user said yes in the native dialog (a no
+/// is `cancelled`). Succeeds when there is none, and when the settings place is not known. A link or a
+/// folder at its name is left alone (`io`).
 #[tauri::command]
 pub async fn clear_question_log(state: State<'_, AppState>) -> CommandResult<()> {
     clear_question_log_for(&state).await
@@ -1900,9 +1951,56 @@ pub async fn clear_question_log(state: State<'_, AppState>) -> CommandResult<()>
 
 /// [`clear_question_log`] for the state itself.
 pub async fn clear_question_log_for(state: &AppState) -> CommandResult<()> {
+    confirm_clear(state, CLEAR_QUESTION_LOG).await?;
     let log = Arc::clone(&state.question_log);
 
     tauri::async_runtime::spawn_blocking(move || log.clear()).await?
+}
+
+/// What the user is asked before the question log is deleted.
+const CLEAR_QUESTION_LOG: (&str, &str) = (
+    "Clear the question log?",
+    "Platter deletes its local log of the questions you asked and the answers it gave. This cannot be undone.",
+);
+
+/// What the user is asked before the graphics card problem log is deleted.
+const CLEAR_GPU_LOG: (&str, &str) = (
+    "Clear the graphics card problem log?",
+    "Platter deletes its record of problems with the graphics card. This cannot be undone.",
+);
+
+/// Asks `(title, text)` in the native dialog, with "Clear log" to approve. A no (or no dialog) is `cancelled`.
+/// One such dialog is open at a time, and none for a moment after a no (`invalid`), like the download's: a
+/// page cannot stack dialogs, or bury another one among them.
+async fn confirm_clear(state: &AppState, (title, text): (&str, &str)) -> CommandResult<()> {
+    let slot = DialogSlot::take(&state.advisor.clearing)?;
+    let question = Question {
+        title: title.to_owned(),
+        text: text.to_owned(),
+        accept: "Clear log",
+    };
+    let confirm = state.confirm();
+    // The slot goes with the dialog, so it is given back when the dialog has ended and not before.
+    let approved = tauri::async_runtime::spawn_blocking(move || {
+        let approved = catch_unwind(AssertUnwindSafe(|| confirm.confirm(&question))).unwrap_or(false);
+        if !approved {
+            slot.declined();
+        }
+        drop(slot);
+
+        approved
+    })
+    .await
+    .unwrap_or(false);
+
+    if approved {
+        Ok(())
+    } else {
+        Err(CommandError::new(
+            ApiErrorCode::Cancelled,
+            "clearing the log was not confirmed",
+        ))
+    }
 }
 
 /// What the user chose to do about the graphics card problem `id` of the status (`gpuProblem`): `useCpu` or
@@ -1918,10 +2016,12 @@ pub async fn answer_gpu_problem(
     tauri::async_runtime::spawn_blocking(move || advisor.answer_gpu_problem(id, choice)).await?
 }
 
-/// Deletes the graphics card problem log (`advisor-gpu.log`) and with it `lastGpuProblem`. Succeeds when there
-/// is none. A link or a folder at its name is left alone (`io`). A problem that waits for an answer still does.
+/// Deletes the graphics card problem log (`advisor-gpu.log`) and with it `lastGpuProblem`, once the user
+/// said yes in the native dialog (a no is `cancelled`). Succeeds when there is none. A link or a folder at its
+/// name is left alone (`io`). A problem that waits for an answer still does.
 #[tauri::command]
 pub async fn clear_gpu_log(state: State<'_, AppState>) -> CommandResult<()> {
+    confirm_clear(&state, CLEAR_GPU_LOG).await?;
     let advisor = Arc::clone(&state.advisor);
 
     tauri::async_runtime::spawn_blocking(move || advisor.clear_gpu_log()).await?

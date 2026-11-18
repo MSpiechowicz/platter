@@ -29,6 +29,7 @@ use platter_platform::Platform;
 
 use crate::commands::advisor::AdvisorService;
 use crate::commands::advisor::log::QuestionLog;
+use crate::commands::advisor::question::AskedBack;
 use crate::commands::cleanup::{CleanupRegistry, Confirm, RefuseAll};
 use crate::commands::history::{FixedVolumes, HistoryService};
 use crate::error::{CommandError, CommandResult};
@@ -49,9 +50,19 @@ pub struct AppState {
     pub user_rules: Arc<UserRulesStore>,
     /// The local log of free questions (`advisor-questions.jsonl`), written only when the user's switch is on.
     pub question_log: Arc<QuestionLog>,
+    /// The free questions asked back lately and the choices shown for each, to check a `pick` against.
+    pub asked_back: Arc<AskedBack>,
     /// How many `find_entries` calls have started. A walk over the tree stops once a newer call has taken
     /// a higher number, so the walks of keystrokes that were typed over do not pile up.
     pub entry_searches: Arc<AtomicU64>,
+    /// How many `find_folders` calls have started, for the same reason as `entry_searches`.
+    pub folder_searches: Arc<AtomicU64>,
+    /// The walks over a whole tree that the web view can start (searches, asks about a folder) and that run
+    /// now: at most [`WalkSlots::MAX`], so a page that calls in a loop cannot pile them up.
+    pub walks: Arc<WalkSlots>,
+    /// The same for `get_summary`, which walks a whole subtree: a pool of its own, so a search never keeps the
+    /// Overview's summary out.
+    pub summaries: Arc<WalkSlots>,
     /// The scan roots the backend handed to the UI itself: volume mount points from `list_volumes`
     /// and folders from its own folder dialog. `start_scan` accepts nothing else.
     pub roots: Mutex<HashMap<String, Option<(u64, u64)>>>,
@@ -102,7 +113,11 @@ impl AppState {
             advisor: Arc::new(advisor),
             user_rules: Arc::new(user_rules),
             question_log: Arc::new(QuestionLog::new(None)),
+            asked_back: Arc::new(AskedBack::default()),
             entry_searches: Arc::new(AtomicU64::new(0)),
+            folder_searches: Arc::new(AtomicU64::new(0)),
+            walks: Arc::new(WalkSlots::default()),
+            summaries: Arc::new(WalkSlots::default()),
             roots: Mutex::new(HashMap::new()),
             confirm: OnceLock::new(),
         }
@@ -878,5 +893,59 @@ mod tests {
 
         assert_eq!(rejected.code(), ApiErrorCode::Invalid);
         assert!(registry.begin().is_ok());
+    }
+}
+
+/// The walks over a whole tree that run now (see `AppState::walks`).
+#[derive(Debug, Default)]
+pub struct WalkSlots {
+    running: std::sync::atomic::AtomicUsize,
+}
+
+/// One running walk. Its slot is given back when it is dropped.
+#[derive(Debug)]
+pub struct WalkSlot(Arc<WalkSlots>);
+
+impl WalkSlots {
+    /// The most walks that run at once. The web view waits for each answer, so it never needs more.
+    pub const MAX: usize = 4;
+
+    /// Takes a slot, or refuses (`invalid`) while [`Self::MAX`] walks run.
+    pub fn take(self: &Arc<Self>) -> crate::error::CommandResult<WalkSlot> {
+        use std::sync::atomic::Ordering;
+
+        self.running
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |running| {
+                (running < Self::MAX).then_some(running + 1)
+            })
+            .map_err(|_| crate::error::CommandError::invalid(BUSY_WALKING))?;
+
+        Ok(WalkSlot(Arc::clone(self)))
+    }
+}
+
+impl Drop for WalkSlot {
+    fn drop(&mut self) {
+        self.0.running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The refusal of a walk while [`WalkSlots::MAX`] run.
+pub const BUSY_WALKING: &str = "Platter is busy with other work on this scan. Try again in a moment.";
+
+#[cfg(test)]
+mod walk_tests {
+    use super::*;
+
+    #[test]
+    fn at_most_four_walks_run_and_a_finished_one_gives_its_slot_back() {
+        let slots = Arc::new(WalkSlots::default());
+        let held: Vec<WalkSlot> = (0..WalkSlots::MAX).map(|_| slots.take().unwrap()).collect();
+
+        let refused = slots.take().expect_err("a fifth walk is refused");
+        assert_eq!(serde_json::to_value(&refused).unwrap()["message"], BUSY_WALKING);
+
+        drop(held);
+        assert!(slots.take().is_ok());
     }
 }

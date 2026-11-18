@@ -45,6 +45,27 @@ pub(super) struct Choice {
     pub target: Scope,
 }
 
+/// What the user saw of a choice, and what it stood for: a pick is taken only when this reading finds the
+/// same under its id (a tool's choice with the same title but other folders is not the same choice).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChoiceKey {
+    label: String,
+    path: Option<String>,
+    node: Option<NodeId>,
+    target: Scope,
+}
+
+impl Choice {
+    pub(super) fn key(&self) -> ChoiceKey {
+        ChoiceKey {
+            label: self.label.clone(),
+            path: self.path.clone(),
+            node: self.node,
+            target: self.target.clone(),
+        }
+    }
+}
+
 /// A question asked back: what the words could mean.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Clarify {
@@ -100,8 +121,15 @@ fn base_name(path: &str) -> &str {
 
 impl Lens<'_> {
     /// Resolves what the question names. `pick` is the id of a choice of the same question asked back
-    /// before; one that fits no choice (or a question that is not asked back now) is refused.
-    pub(super) fn resolve(&self, subject: &Subject, pick: Option<u8>) -> CommandResult<Resolved> {
+    /// before; one that fits no choice (or a question that is not asked back now) is refused. `shown` is
+    /// what the user was shown for that question, when the caller knows it: the choice this reading finds
+    /// under `pick` must be the one shown under it, so a reading that came out otherwise is refused too.
+    pub(super) fn resolve(
+        &self,
+        subject: &Subject,
+        pick: Option<u8>,
+        shown: Option<&[ChoiceKey]>,
+    ) -> CommandResult<Resolved> {
         let outcome = match subject {
             Subject::None => Outcome::Scope(Scope::Whole, Vec::new()),
             Subject::Path(text) => self.resolve_path(text),
@@ -122,6 +150,11 @@ impl Lens<'_> {
                 clarify: Some(clarify),
             }),
             (Outcome::Ask(clarify), Some(id)) => match clarify.choices.get(usize::from(id)) {
+                Some(choice)
+                    if shown.is_some_and(|shown| shown.get(usize::from(id)) != Some(&choice.key())) =>
+                {
+                    Err(CommandError::invalid(STALE_CHOICE))
+                }
                 Some(choice) => Ok(Resolved {
                     scope: choice.target.clone(),
                     notes: Vec::new(),

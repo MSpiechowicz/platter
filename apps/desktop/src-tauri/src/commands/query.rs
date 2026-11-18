@@ -88,9 +88,20 @@ pub async fn get_summary(
     scan: ScanId,
     node: NodeId,
 ) -> CommandResult<SummaryDto> {
-    let tree = state.scans.tree(scan)?;
+    summary_in(&state, scan, node).await
+}
 
-    blocking(tree, move |tree| query::summary(tree, node)).await
+/// [`get_summary`] for the state itself. The summary walks the node's whole subtree, so at most a few run at
+/// once (`invalid` beyond them, see `AppState::summaries`).
+pub async fn summary_in(state: &AppState, scan: ScanId, node: NodeId) -> CommandResult<SummaryDto> {
+    let tree = state.scans.tree(scan)?;
+    let walk = state.summaries.take()?;
+
+    blocking(tree, move |tree| {
+        let _walk = walk;
+        query::summary(tree, node)
+    })
+    .await
 }
 
 /// Caps a client-supplied count at `max`.
@@ -119,5 +130,37 @@ mod tests {
         assert_eq!(clamp(MAX_PAGE, MAX_PAGE), MAX_PAGE as usize);
         assert_eq!(clamp(u32::MAX, MAX_PAGE), MAX_PAGE as usize);
         assert_eq!(clamp(u32::MAX, MAX_LOD_NODES), MAX_LOD_NODES as usize);
+    }
+
+    #[test]
+    fn a_summary_takes_a_slot_of_its_own_pool_and_searches_do_not_keep_it_out() {
+        let state = AppState::for_test();
+        let mut fs = platter_core::testing::FakeFs::new();
+        fs.file("/d/a", 10);
+        let (scan, _) = state.scans.begin().unwrap();
+        state
+            .scans
+            .finish(scan, platter_core::testing::scan_fake(&fs, false))
+            .unwrap();
+        let root = state.scans.tree(scan).unwrap().root();
+        let summary = || tauri::async_runtime::block_on(summary_in(&state, scan, root));
+
+        // Every search slot taken: the summary still runs.
+        let searches: Vec<_> = (0..crate::state::WalkSlots::MAX)
+            .map(|_| state.walks.take().unwrap())
+            .collect();
+        assert!(summary().is_ok());
+
+        // Every summary slot taken: refused, and fine again once one is given back.
+        let summaries: Vec<_> = (0..crate::state::WalkSlots::MAX)
+            .map(|_| state.summaries.take().unwrap())
+            .collect();
+        let refused = summary().expect_err("refused while four summaries run");
+        assert_eq!(
+            serde_json::to_value(&refused).unwrap()["message"],
+            crate::state::BUSY_WALKING
+        );
+        drop((searches, summaries));
+        assert!(summary().is_ok());
     }
 }

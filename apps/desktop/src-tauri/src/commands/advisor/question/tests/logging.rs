@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use platter_core::{ModelLabel, ModelVerdict};
 
-use super::super::super::tests::{World, block_on, node_at, register, world};
+use super::super::super::tests::{Dialog, World, block_on, node_at, register, world};
 use super::super::super::{AdvisorOptionsDto, ask_about};
 use super::flow::{APT, QUERY_CLEANABLE, ask, disk, has_home, message_of, options};
 use crate::commands::advisor::log::{FILE_NAME, QuestionLog};
@@ -212,6 +212,8 @@ fn a_refused_question_is_not_logged() {
 #[test]
 fn clear_question_log_deletes_the_log_and_is_fine_when_there_is_none() {
     let (w, path) = logged(false);
+    let dialog = Dialog::answering(true);
+    w.state.set_confirm(dialog.clone());
     let clear = || block_on(crate::commands::advisor::clear_question_log_for(&w.state));
 
     assert!(clear().is_ok(), "no log yet");
@@ -221,6 +223,47 @@ fn clear_question_log_deletes_the_log_and_is_fine_when_there_is_none() {
     assert!(clear().is_ok());
     assert!(!path.exists());
     assert!(clear().is_ok());
+    assert_eq!(dialog.asked().len(), 3, "every clear asks first");
+    assert_eq!(dialog.asked()[0].accept, "Clear log");
+}
+
+#[test]
+fn clear_question_log_asks_first_and_a_no_keeps_the_log() {
+    let (w, path) = logged(false);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"{}\n").unwrap();
+
+    let dialog = Dialog::answering(false);
+    w.state.set_confirm(dialog.clone());
+    let clear = || {
+        let error = block_on(crate::commands::advisor::clear_question_log_for(&w.state)).unwrap_err();
+        serde_json::to_value(&error).unwrap()
+    };
+
+    assert_eq!(clear()["code"], "cancelled");
+    assert_eq!(dialog.asked()[0].title, "Clear the question log?");
+    assert!(path.exists(), "the log is kept");
+
+    // Right after a no, a page cannot ask again at once: refused, and no dialog is shown.
+    let again = clear();
+    assert_eq!(again["code"], "invalid");
+    assert_eq!(
+        again["message"],
+        "clearing a log was just declined, so wait a moment"
+    );
+    assert_eq!(dialog.asked().len(), 1);
+}
+
+#[test]
+fn clear_question_log_without_a_dialog_is_not_approved() {
+    let (w, path) = logged(false);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"{}\n").unwrap();
+
+    // No dialog set (the app before setup): nothing is approved.
+    let refused = block_on(crate::commands::advisor::clear_question_log_for(&w.state)).unwrap_err();
+    assert_eq!(serde_json::to_value(&refused).unwrap()["code"], "cancelled");
+    assert!(path.exists());
 }
 
 /// The model's labels of a scan, as a labelling run would have stored them.
@@ -354,5 +397,52 @@ fn what_did_the_model_label_lists_folders_and_verdicts_and_keeps_the_reasons_for
     assert!(
         meta.contains(PHOTOS_REASON) && meta.contains("Cache nobody needs."),
         "{meta}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_log_switch_and_an_outdated_scan_are_read_when_the_answer_is_written() {
+    if !has_home() {
+        return;
+    }
+    let (w, path) = logged(true);
+    let scan = register(&w.state, &disk());
+    w.control.push_reply(QUERY_CLEANABLE);
+    // The model's load waits at the gate: the question has been taken, and is not read yet.
+    let gate = platter_ai::testing::Gate::new();
+    w.control.hold_loads_at(&gate);
+    // Opened however the test ends, so a failure fails the test and never leaves the question waiting.
+    struct OpenOnDrop(std::sync::Arc<platter_ai::testing::Gate>);
+    impl Drop for OpenOnDrop {
+        fn drop(&mut self) {
+            self.0.open();
+        }
+    }
+
+    let answer = std::thread::scope(|scope| {
+        // Inside the scope: dropped while a panic unwinds out of it, before the scope waits for the question.
+        let _open = OpenOnDrop(std::sync::Arc::clone(&gate));
+        let asking = scope.spawn(|| ask(&w, scan, "what can I clean?"));
+        assert!(gate.wait_for_visitor(std::time::Duration::from_secs(5)));
+
+        // Meanwhile the user turns the log off, and a cleanup ends.
+        let mut off = options(true);
+        off.log_questions = false;
+        w.state.advisor.configure(off).unwrap();
+        w.state.scans.disk_changed();
+        gate.open();
+
+        asking.join().unwrap().unwrap()
+    });
+
+    assert!(
+        !path.exists(),
+        "a question answered after the switch went off is not logged"
+    );
+    assert!(
+        answer.answer.contains(platter_ai::OUTDATED_NOTE),
+        "the cleanup that ended while the question was read is said: {}",
+        answer.answer
     );
 }

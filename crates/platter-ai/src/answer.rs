@@ -138,17 +138,19 @@ const CLOSE_SUBSTITUTE: char = '〃';
 /// A name set apart in the text, so that a folder name with a full stop or a command in it cannot be read
 /// as part of the sentence: `“~/Projekty/app”`. A `“`, `”` or `"` in the name is shown as `‟` or `〃`, so
 /// the name cannot close the quote it is in.
-pub(crate) fn quote_name(path: &str) -> String {
-    let name: String = path
-        .chars()
+pub fn quote_name(path: &str) -> String {
+    format!("“{}”", without_quotes(path))
+}
+
+/// `path` with every `“`, `”` or `"` in it shown as `‟` or `〃`: the text [`quote_name`] sets in quotes.
+fn without_quotes(path: &str) -> String {
+    path.chars()
         .map(|c| match c {
             '“' => OPEN_SUBSTITUTE,
             '”' | '"' => CLOSE_SUBSTITUTE,
             other => other,
         })
-        .collect();
-
-    format!("“{name}”")
+        .collect()
 }
 
 /// Adds `text` to the segments, to the text before it when there is one.
@@ -417,7 +419,13 @@ fn plain(text: &str) -> String {
 
 /// A path the sheet holds.
 struct KnownPath {
+    /// The path as [`quote_name`] shows it: its own quotes as `‟` or `〃`. Two folders whose paths read the
+    /// same this way are one text, so `ambiguous`.
     text: String,
+    /// The path as the sheet holds it, for the path segment.
+    real: String,
+    /// The ways the path can stand in a text: `text`, and each path as the sheet holds it when that differs.
+    forms: Vec<String>,
     /// The rows shown with this text (none for the scope and the context paths).
     rows: Vec<usize>,
     /// Whether it is the scope.
@@ -502,21 +510,25 @@ impl Known {
             add(path, before, None, false);
         }
 
-        // Per text: the folders behind it.
-        let mut grouped: Vec<(String, Vec<Folder>)> = Vec::new();
+        // Per text (as `quote_name` shows it): the ways it is written, and the folders behind it.
+        let mut grouped: Vec<(String, String, Vec<String>, Vec<Folder>)> = Vec::new();
         for item in listed {
             if item.text.chars().count() < 2 {
                 continue;
             }
 
-            let at = match grouped.iter().position(|(text, _)| *text == item.text) {
+            let key = without_quotes(&item.text);
+            let at = match grouped.iter().position(|(text, ..)| *text == key) {
                 Some(at) => at,
                 None => {
-                    grouped.push((item.text.clone(), Vec::new()));
+                    grouped.push((key.clone(), item.text.clone(), vec![key], Vec::new()));
                     grouped.len() - 1
                 }
             };
-            let folders = &mut grouped[at].1;
+            let (_, _, forms, folders) = &mut grouped[at];
+            if !forms.contains(&item.text) {
+                forms.push(item.text.clone());
+            }
 
             // A row is a folder of its own; the scope and a context path are the folder they say.
             let same = match item.row {
@@ -535,7 +547,13 @@ impl Known {
 
         let mut paths: Vec<KnownPath> = grouped
             .into_iter()
-            .map(|(text, folders)| KnownPath {
+            .map(|(text, real, mut forms, folders)| KnownPath {
+                real,
+                // Longest first, like the paths themselves.
+                forms: {
+                    forms.sort_by_key(|form| std::cmp::Reverse(form.len()));
+                    forms
+                },
                 rows: folders.iter().filter_map(|folder| folder.row).collect(),
                 scope: folders.iter().any(|folder| folder.scope),
                 ambiguous: folders.len() > 1,
@@ -543,13 +561,14 @@ impl Known {
             })
             .collect();
 
-        paths.sort_by(|a, b| b.text.len().cmp(&a.text.len()).then_with(|| a.text.cmp(&b.text)));
+        let longest = |path: &KnownPath| path.forms.iter().map(String::len).max().unwrap_or(0);
+        paths.sort_by(|a, b| longest(b).cmp(&longest(a)).then_with(|| a.text.cmp(&b.text)));
         Self { paths }
     }
 
     /// Whether the sheet shows `path` (a path as the backend wrote it) for more than one folder.
     fn is_ambiguous(&self, path: &str) -> bool {
-        let text = plain(path.trim_end_matches('/'));
+        let text = without_quotes(&plain(path.trim_end_matches('/')));
 
         self.paths
             .iter()
@@ -562,10 +581,14 @@ impl Known {
             return None;
         }
 
+        // A path is found as it is, or as `quote_name` wrote it (its own quotes shown as `‟` or `〃`).
         self.paths.iter().enumerate().find_map(|(index, path)| {
-            let end = at + path.text.len();
+            path.forms.iter().find_map(|form| {
+                let end = at + form.len();
 
-            (text[at..].starts_with(&path.text) && ends_a_word(text, end)).then_some((index, path.text.len()))
+                (text[at..].starts_with(form.as_str()) && ends_a_word(text, end))
+                    .then_some((index, form.len()))
+            })
         })
     }
 
@@ -600,7 +623,7 @@ impl Known {
                     push_text(&mut segments, &loose);
                     loose.clear();
                     segments.push(Segment::Path {
-                        path: path.text.clone(),
+                        path: path.real.clone(),
                         place,
                     });
                 }

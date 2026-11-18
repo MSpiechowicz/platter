@@ -353,7 +353,7 @@ pub(crate) fn is_invisible(c: char) -> bool {
 
 /// Writes every invisible character and every `<` of a JSON text as `\uXXXX` (a pair for one beyond the
 /// first plane). Only characters inside strings can be among them; the JSON's own syntax has no `<`.
-pub(crate) fn escape_unsafe(json: &str) -> String {
+pub fn escape_unsafe(json: &str) -> String {
     let mut out = String::with_capacity(json.len());
 
     for c in json.chars() {

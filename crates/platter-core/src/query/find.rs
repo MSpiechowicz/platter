@@ -38,6 +38,18 @@ pub fn find_folders(
     query: &str,
     limit: usize,
 ) -> Result<Vec<FolderMatch>, QueryError> {
+    find_folders_until(tree, home, query, limit, || false)
+}
+
+/// [`find_folders`] that gives up early, like [`find_entries_until`]: `stop` is asked before the walk and
+/// every few thousand entries, and once it says `true` nothing is found (an empty list).
+pub fn find_folders_until(
+    tree: &Tree,
+    home: Option<&Path>,
+    query: &str,
+    limit: usize,
+    stop: impl Fn() -> bool,
+) -> Result<Vec<FolderMatch>, QueryError> {
     if query.len() > MAX_FIND_QUERY_BYTES {
         return Err(QueryError::QueryTooLong(MAX_FIND_QUERY_BYTES));
     }
@@ -52,7 +64,9 @@ pub fn find_folders(
         found.push(node);
     }
 
-    let (prefix, inside) = by_name(tree, &filter, query, found.first().copied());
+    let Some((prefix, inside)) = by_name(tree, &filter, query, found.first().copied(), limit, stop) else {
+        return Ok(Vec::new());
+    };
     found.extend(prefix);
     found.extend(inside);
     found.truncate(limit);
@@ -339,22 +353,29 @@ fn absolute(home: Option<&Path>, query: &str) -> Option<PathBuf> {
 }
 
 /// Folders whose name starts with the query, and those that only contain it; each largest first.
+/// The folders whose name starts with the query and those whose name holds it, each tier largest first and
+/// at most `limit` long (only the best are kept while the tree is walked). `None` when `stop` said so.
 fn by_name(
     tree: &Tree,
     filter: &NameFilter,
     query: &str,
     exact: Option<NodeId>,
-) -> (Vec<NodeId>, Vec<NodeId>) {
+    limit: usize,
+    stop: impl Fn() -> bool,
+) -> Option<(Vec<NodeId>, Vec<NodeId>)> {
     let mut prefix = Vec::new();
     let mut inside = Vec::new();
 
     // A name never holds a separator, so a path query cannot match one.
     if query.contains('/') {
-        return (prefix, inside);
+        return Some((Vec::new(), Vec::new()));
     }
 
     let lowered = query.to_lowercase();
     for index in 1..tree.len() {
+        if (index - 1) % STOP_CHECK_INTERVAL == 0 && stop() {
+            return None;
+        }
         let node = NodeId(index as u32);
         if tree.kind(node) != NodeKind::Dir || exact == Some(node) {
             continue;
@@ -365,17 +386,16 @@ fn by_name(
             continue;
         }
 
-        if starts_with_ignoring_case(name, &lowered) {
-            prefix.push(node);
+        let tier = if starts_with_ignoring_case(name, &lowered) {
+            &mut prefix
         } else {
-            inside.push(node);
-        }
+            &mut inside
+        };
+        keep_best(tier, limit, tree, node);
     }
 
-    for tier in [&mut prefix, &mut inside] {
-        tier.sort_unstable_by_key(|&node| (Reverse(tree.allocated(node)), node));
-    }
-    (prefix, inside)
+    let nodes = |tier: Vec<(Reverse<u64>, NodeId)>| tier.into_iter().map(|(_, node)| node).collect();
+    Some((nodes(prefix), nodes(inside)))
 }
 
 /// Whether `name` starts with `lowered`, a lower-cased query. A name that is not valid UTF-8 is compared
@@ -917,6 +937,35 @@ mod tests {
         .unwrap();
         assert_eq!(found.len(), 20);
         assert!(looks.get() >= 3, "looked {} times", looks.get());
+    }
+
+    #[test]
+    fn a_folder_walk_stops_when_told_to_and_keeps_only_the_best_of_each_tier() {
+        let mut fs = FakeFs::new();
+        for number in 0..(3 * STOP_CHECK_INTERVAL) {
+            fs.file(&format!("/d/dir{number}/f"), number as u64 + 1);
+        }
+        let tree = scan_fake(&fs, true);
+
+        let looks = std::cell::Cell::new(0);
+        let found = find_folders_until(&tree, None, "dir", 20, || {
+            looks.set(looks.get() + 1);
+            looks.get() >= 2
+        })
+        .unwrap();
+        assert!(found.is_empty());
+        assert_eq!(looks.get(), 2);
+
+        // Never told to stop: the largest folders of the whole tree, as before.
+        let found = find_folders_until(&tree, None, "dir", 5, || false).unwrap();
+        let names: Vec<&str> = found.iter().map(|found| found.path.as_str()).collect();
+        let top = 3 * STOP_CHECK_INTERVAL - 1;
+        assert_eq!(
+            names,
+            (0..5)
+                .map(|back| format!("/d/dir{}", top - back))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -1685,6 +1685,26 @@ describe('askScan: questions the words settle, and questions asked back', () => 
     // And the model is free again after a refusal.
     expect((await ask(api, timers, id, 'what takes the most space?')).understood.intent).toBe('largest');
   });
+
+  it('takes a pick only for a question it asked back, as the backend keeps the choices it showed', async () => {
+    const { api, timers, scan } = setup();
+    const id = await scan;
+    const pickOf = async (question: string, choice: number): Promise<ScanAnswerDto> => {
+      const picked = api.askScan(id, question, 'GB', choice);
+
+      timers.advance(ASK_MS);
+
+      return picked;
+    };
+
+    // Never asked back: refused, though this reading would ask back and has a choice under the id.
+    expect(await expectCode(pickOf(ASKED_BACK, 0), 'invalid')).toBe(STALE);
+
+    // Asked back once: its choices can be picked, also with the question written with other spaces.
+    await ask(api, timers, id, ASKED_BACK);
+    expect((await pickOf(ASKED_BACK, 0)).clarify).toBeUndefined();
+    expect((await pickOf(`  ${ASKED_BACK.replace(' ', '  ')} `, 1)).clarify).toBeUndefined();
+  });
 });
 
 describe('the keyword reading', () => {

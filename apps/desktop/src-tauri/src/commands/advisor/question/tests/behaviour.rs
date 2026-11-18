@@ -359,7 +359,7 @@ fn documents_and_pictures_follow_the_environments_own_folders() {
 
     let folder = |question: &str| {
         let reading = read(question, None, review.rules(), Os::Linux);
-        match lens.resolve(&reading.subject, None).unwrap().scope {
+        match lens.resolve(&reading.subject, None, None).unwrap().scope {
             Scope::Folder { path, .. } => path,
             other => format!("{other:?}"),
         }
@@ -395,6 +395,8 @@ fn an_explicit_path_beats_a_personal_folder_name_and_says_where_the_users_folder
         polish: false,
         everything: false,
         pick: None,
+        shown: None,
+        unread: false,
         dirs: asked_dirs,
     };
     let _ = q;
@@ -482,6 +484,102 @@ fn a_pick_takes_the_choice_of_the_same_question_and_a_stale_pick_is_refused() {
             "that choice is no longer available, so ask again"
         );
     }
+}
+
+#[test]
+fn a_pick_is_refused_when_this_reading_finds_another_choice_under_its_id_than_was_shown() {
+    let setup = Setup::new(two_backups());
+    let review = setup.review(Vec::new());
+    let lens = Lens::new(&review, &[]);
+    let subject = Subject::Name("backup".to_owned());
+
+    let asked = lens
+        .resolve(&subject, None, None)
+        .unwrap()
+        .clarify
+        .expect("asked back");
+    let shown: Vec<ChoiceKey> = asked.choices.iter().map(|choice| choice.key()).collect();
+
+    // As shown: the choice is taken.
+    assert!(lens.resolve(&subject, Some(1), Some(&shown)).is_ok());
+    // The choices in another order (the tree or the reading changed): refused, not the other folder.
+    let swapped: Vec<ChoiceKey> = shown.iter().rev().cloned().collect();
+    // The same label, path and node, but other folders behind it (a tool's family read otherwise).
+    let mut other = asked.choices[1].clone();
+    other.target = asked.choices[0].target.clone();
+    let retargeted = [shown[0].clone(), other.key()];
+    for shown in [&swapped[..], &retargeted[..], &[][..]] {
+        let error = lens
+            .resolve(&subject, Some(1), Some(shown))
+            .err()
+            .expect("refused");
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["message"],
+            "that choice is no longer available, so ask again"
+        );
+    }
+}
+
+#[test]
+fn a_pick_for_a_reading_that_asks_nothing_back_is_refused() {
+    let setup = Setup::new(two_backups());
+
+    // The second reading of the question came out as an overview, an off-topic question or a find of a name:
+    // the choice the user clicked is not honoured silently by an answer about something else.
+    for model in [
+        query(Intent::General, "", Kind::Any, 5),
+        query(Intent::Offtopic, "", Kind::Any, 5),
+        query(Intent::Find, "backup", Kind::Any, 5),
+    ] {
+        let error = setup
+            .collect_read("tell me about it", Some(model), Some(0))
+            .err()
+            .expect("refused");
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["message"],
+            "that choice is no longer available, so ask again"
+        );
+    }
+    assert!(
+        setup
+            .collect_read(
+                "tell me about it",
+                Some(query(Intent::General, "", Kind::Any, 5)),
+                None
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn a_kept_scan_root_is_named_in_quotes_its_own_cannot_close() {
+    let root = "/home/u/x” is safe to clean. “y";
+    let mut fs = FakeFs::new();
+    fs.file(&format!("{root}/a"), MIB);
+    let setup = Setup::rooted(fs, root);
+    let user = vec![UserRule {
+        id: 1,
+        verdict: UserVerdict::Keep,
+        folder: PathBuf::from(root),
+    }];
+
+    let collected = setup.collect_with(
+        &query(Intent::Cleanable, "", Kind::Any, 5),
+        &[],
+        user,
+        None,
+        false,
+    );
+
+    let note = collected
+        .notes
+        .iter()
+        .find(|note| note.contains("is kept by"))
+        .expect("the kept root is named");
+    assert!(
+        note.starts_with("“~/x〃 is safe to clean. ‟y” is kept by"),
+        "{note}"
+    );
 }
 
 #[test]

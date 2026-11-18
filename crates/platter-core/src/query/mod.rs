@@ -11,7 +11,7 @@ mod summary;
 pub use children::{MAX_NAME_FILTER_BYTES, NameFilter, children, children_matching};
 pub use find::{
     EntryMatch, FolderMatch, MAX_ENTRY_MATCHES, MAX_FIND_QUERY_BYTES, MAX_FOLDER_MATCHES, entry_at,
-    find_entries, find_entries_until, find_files_named, find_folders,
+    find_entries, find_entries_until, find_files_named, find_folders, find_folders_until,
 };
 pub use lod::{MAX_LOD_DEPTH, lod};
 pub use node::node;

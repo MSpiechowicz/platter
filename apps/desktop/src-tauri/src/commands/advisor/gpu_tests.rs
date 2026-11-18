@@ -12,7 +12,7 @@ use platter_ai::testing::{FakeEngine, FakeFetch, card, tiny_spec};
 use platter_core::dto::ApiErrorCode;
 use serde_json::{Value, json};
 
-use super::tests::{Rig, app, content, invoke};
+use super::tests::{Dialog, Rig, app, app_asking, content, invoke};
 use super::*;
 
 const XTX: &str = "AMD Radeon RX 7900 XTX (RADV NAVI31)";
@@ -366,4 +366,24 @@ fn an_unreadable_log_file_does_not_stop_the_advisor() {
 
     assert!(rig.service.status().gpu_problem.is_none());
     assert_eq!(rig.service.load().unwrap().state, ModelStateDto::Loaded);
+}
+
+#[test]
+fn clearing_the_log_asks_first_and_a_no_keeps_the_last_problem() {
+    let logs = tempfile::tempdir().unwrap();
+    let (log, _) = log_in(&logs);
+    let rig = rig_with(log);
+    the_card_fails(&rig);
+    let id = rig.service.status().gpu_problem.unwrap().id;
+    rig.service
+        .answer_gpu_problem(id, GpuChoiceDto::TryAgain)
+        .unwrap();
+    let dialog = Dialog::answering(false);
+    let (_app, window) = app_asking(rig.service, dialog.clone());
+
+    let declined = invoke(&window, "clear_gpu_log", json!({})).unwrap_err();
+    assert_eq!(declined["code"], "cancelled");
+    assert_eq!(dialog.asked()[0].title, "Clear the graphics card problem log?");
+    let status = invoke(&window, "advisor_status", json!({})).unwrap();
+    assert_eq!(status["lastGpuProblem"]["id"], id, "the log is kept");
 }

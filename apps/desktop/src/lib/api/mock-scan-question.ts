@@ -1,7 +1,7 @@
 import type { Segment } from './mock-answer-segments';
 import { OFFTOPIC_TEXT, OUTDATED_NOTE, templateSegments, verdictTotal } from './mock-answer-template';
 import type { FactRow, FactSheet, FactTotal } from './mock-answer-template';
-import { render } from './mock-answer-segments';
+import { quoteName, render } from './mock-answer-segments';
 import {
   DEFAULT_LIMIT,
   ground,
@@ -138,6 +138,20 @@ export interface ScanQuestionContext {
   guard(node: MockNode): string | null;
   /** The summary of a folder: its shares by category and by age. */
   summary(node: MockNode): SummaryDto;
+  /**
+   * The choices shown when this question was asked back, as the backend's `AskedBack` keeps them, and where to keep
+   * the choices of a question asked back now. Left out (tests that pick without asking first): no check.
+   */
+  askedBack?: {
+    /** The keys of the choices shown for this question (empty: it was not asked back lately). */
+    shown?: readonly string[];
+    remember(keys: string[]): void;
+  };
+}
+
+/** What the user saw of a choice and what it stood for, as one text: a pick must find the same under its id. */
+function choiceKey(choice: Choice): string {
+  return JSON.stringify([choice.label, choice.path ?? null, choice.node ?? null, choice.target]);
 }
 
 /** A folder of the answer before it is shown: the row, and what only the template needs of it. */
@@ -249,7 +263,7 @@ const total = (label: string, bytes: number, count: number): FactTotal => ({
 });
 
 /** A text of the user's disk or of the user's words, set apart in “ ” quotes. */
-const quoted = (text: string): string => `“${text}”`;
+const quoted = (text: string): string => quoteName(text);
 
 /** `No file or folder called “x” is in this scan`, and where the rules look for what `x` names, when they know. */
 const notInScan = (text: string, absent?: Absent): string => {
@@ -910,7 +924,9 @@ function answerReading(
 
       const choice = Number.isInteger(pick) ? outcome.ask.choices[pick] : undefined;
 
-      if (!choice) {
+      const shown = context.askedBack?.shown;
+
+      if (!choice || (shown !== undefined && shown[pick] !== choiceKey(choice))) {
         throw new ApiRequestError('invalid', STALE_CHOICE);
       }
 
@@ -925,14 +941,19 @@ function answerReading(
   };
 
   // `find` looks for a name, so a name is not a folder to resolve; an overview is of the whole scan.
-  const resolved: Resolved =
+  // A choice asked for this question before, when this reading asks nothing back, is not honoured silently.
+  const whole =
     intent === 'general' ||
     intent === 'offtopic' ||
-    (intent === 'find' && (reading.subject.kind === 'name' || reading.subject.kind === 'none'))
-      ? { scope: { at: 'whole' }, notes: [] }
-      : resolve(reading.subject);
+    (intent === 'find' && (reading.subject.kind === 'name' || reading.subject.kind === 'none'));
+  if (whole && pick !== undefined) {
+    throw new ApiRequestError('invalid', STALE_CHOICE);
+  }
+  const resolved: Resolved = whole ? { scope: { at: 'whole' }, notes: [] } : resolve(reading.subject);
 
   if (resolved.clarify) {
+    context.askedBack?.remember(resolved.clarify.choices.map(choiceKey));
+
     return clarified(context, intent, query, resolved.clarify);
   }
 
@@ -1162,7 +1183,7 @@ function answerReading(
         if (named) {
           found.rows.push(row);
         } else {
-          found.notes.push(`${display(node)} is kept by ${cover.title}.`);
+          found.notes.push(`${quoted(display(node))} is kept by ${cover.title}.`);
         }
       } else if (detail !== null) {
         // A folder that could not be read says so in its row (and in the answer).

@@ -296,6 +296,15 @@ describe('watch and configure', () => {
     expect(blocked.store.failure).toBe('The question log could not be removed.');
   });
 
+  it('takes a no in the dialog before a log is cleared quietly', async () => {
+    const declined = setup({ state: 'disk', confirmClearLog: () => false });
+
+    expect(await declined.store.clearQuestionLog()).toBe(false);
+    expect(declined.store.failure).toBeUndefined();
+    expect(await declined.store.clearGpuLog()).toBe(false);
+    expect(declined.store.failure).toBeUndefined();
+  });
+
   it('sends the options of the settings, and saves a change before it sends it', async () => {
     const { store, settings, storage, api } = setup({ state: 'disk' });
     const configure = vi.spyOn(api, 'configureAdvisor');

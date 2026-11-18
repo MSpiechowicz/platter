@@ -35,20 +35,20 @@ pub(super) struct Rig {
 }
 
 /// The user's answer to the native dialog, and what the dialog was asked.
-struct Dialog {
+pub(super) struct Dialog {
     approve: bool,
     asked: Mutex<Vec<Question>>,
 }
 
 impl Dialog {
-    fn answering(approve: bool) -> Arc<Self> {
+    pub(super) fn answering(approve: bool) -> Arc<Self> {
         Arc::new(Self {
             approve,
             asked: Mutex::new(Vec::new()),
         })
     }
 
-    fn asked(&self) -> Vec<Question> {
+    pub(super) fn asked(&self) -> Vec<Question> {
         lock(&self.asked).clone()
     }
 }
@@ -411,7 +411,7 @@ pub(super) fn app(rig_service: AdvisorService) -> (App<MockRuntime>, WebviewWind
 }
 
 /// The commands over Tauri's IPC, with `dialog` as the user's answer to the native confirmation.
-fn app_asking(
+pub(super) fn app_asking(
     rig_service: AdvisorService,
     dialog: Arc<dyn Confirm>,
 ) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
@@ -2027,6 +2027,46 @@ fn a_search_that_a_newer_one_has_overtaken_stops_and_finds_nothing() {
         assert_eq!(found.len(), 5);
     }
     assert_eq!(w.state.entry_searches.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn while_four_walks_run_a_search_or_a_folder_ask_is_refused_and_works_again_after() {
+    let w = world(false);
+    let scan = register(&w.state, &many_folders());
+    let folder = node_at(&w.state, scan, "/d/app3");
+    let held: Vec<_> = (0..crate::state::WalkSlots::MAX)
+        .map(|_| w.state.walks.take().unwrap())
+        .collect();
+
+    let busy = |result: Result<(), CommandError>| {
+        let error = result.expect_err("refused while four walks run");
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["message"],
+            crate::state::BUSY_WALKING
+        );
+    };
+    busy(block_on(find_entries_in(&w.state, scan, "app".to_owned(), 5)).map(drop));
+    busy(block_on(find(&w.state, scan, "app".to_owned(), 5)).map(drop));
+    busy(block_on(ask_about(&w.state, scan, folder)).map(drop));
+
+    drop(held);
+    assert!(block_on(find_entries_in(&w.state, scan, "app".to_owned(), 5)).is_ok());
+    assert!(block_on(find(&w.state, scan, "app".to_owned(), 5)).is_ok());
+    assert!(block_on(ask_about(&w.state, scan, folder)).is_ok());
+}
+
+#[test]
+fn a_folder_search_overtaken_by_a_newer_one_finds_nothing() {
+    let w = world(false);
+    let scan = register(&w.state, &many_folders());
+
+    let older = w.state.folder_searches.fetch_add(1, Ordering::SeqCst) + 1;
+    let newer = w.state.folder_searches.fetch_add(1, Ordering::SeqCst) + 1;
+
+    let older = block_on(find_numbered(&w.state, scan, "app".to_owned(), 5, older)).unwrap();
+    let newer = block_on(find_numbered(&w.state, scan, "app".to_owned(), 5, newer)).unwrap();
+    assert!(older.is_empty(), "the overtaken search found {older:?}");
+    assert_eq!(newer.len(), 5);
 }
 
 #[test]

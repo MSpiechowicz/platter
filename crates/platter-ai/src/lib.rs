@@ -56,7 +56,7 @@ pub mod worker;
 
 pub use answer::{
     By, FactRow, FactSheet, FactTotal, FileFact, OFFTOPIC_TEXT, OUTDATED_NOTE, Place, Segment, TotalKind,
-    Units, format_size, render, template, template_segments,
+    Units, format_size, quote_name, render, template, template_segments,
 };
 pub use device::GpuPolicy;
 pub use download::{DownloadError, Helpers, SPACE_HEADROOM, download};
@@ -64,7 +64,7 @@ pub use engine::{
     AiError, Engine, Exit, Generation, GpuDevice, IncidentKind, LoadInfo, Placement, ProgressHook,
     RuntimeIncident,
 };
-pub use facts::{AgeShares, FolderFacts, RuleContext, facts};
+pub use facts::{AgeShares, FolderFacts, RuleContext, escape_unsafe, facts};
 pub use fetch::{Fetch, FetchResponse, UreqFetch, unreadable_proxy_variable};
 pub use interpret::{INTERPRET_SHOTS, INTERPRET_SYSTEM, interpret_prompt, parse_question};
 pub use label::{Budget, LabelRun, StageLimit, Stopped, label};

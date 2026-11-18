@@ -41,5 +41,6 @@ pub use ports::{
 };
 pub use query::{
     EntryMatch, FolderMatch, entry_at, find_entries, find_entries_until, find_files_named, find_folders,
+    find_folders_until,
 };
 pub use scan::{CancelToken, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_MEMORY_BYTES, ProgressFn, ScanConfig, scan};

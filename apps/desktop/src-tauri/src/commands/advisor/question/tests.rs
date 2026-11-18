@@ -167,6 +167,8 @@ impl Setup {
             polish: reading.polish,
             everything: reading.everything,
             pick,
+            shown: None,
+            unread: false,
             dirs,
         };
 

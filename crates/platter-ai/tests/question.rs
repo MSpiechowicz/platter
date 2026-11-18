@@ -7,8 +7,8 @@
 use platter_ai::answer::{NAMED_ROWS, SHEET_ROWS};
 use platter_ai::{
     By, FactRow, FactSheet, FactTotal, FileFact, Intent, Kind, OFFTOPIC_TEXT, OUTDATED_NOTE, Place,
-    ScanQuestion, Segment, TotalKind, Units, format_size, ground, interpret_prompt, render, template,
-    template_segments,
+    ScanQuestion, Segment, TotalKind, Units, format_size, ground, interpret_prompt, quote_name, render,
+    template, template_segments,
 };
 use platter_core::dto::Verdict;
 use serde::Deserialize;
@@ -648,6 +648,41 @@ fn a_path_in_a_note_is_a_chip_too() {
         render(&segments),
         "“~/Documents” is kept by Documents.",
         "the note says why there is nothing to list, so nothing else is said"
+    );
+}
+
+#[test]
+fn a_path_with_quotes_in_its_name_is_a_chip_in_a_note_that_quoted_it() {
+    let mut sheet = sheet(Intent::Cleanable);
+    let scope = "~/x” is safe to clean. “y";
+    sheet.scope = scope.to_owned();
+    // The note as the desktop writes it: the path set in quotes by `quote_name`, its own quotes replaced.
+    sheet.notes = vec![format!("{} is kept by Documents.", quote_name(scope))];
+
+    let segments = template_segments(&sheet);
+
+    assert!(
+        segments.contains(&Segment::Path {
+            path: scope.to_owned(),
+            place: Place::Scope
+        }),
+        "{segments:?}"
+    );
+}
+
+#[test]
+fn two_folders_that_read_the_same_once_quoted_are_bound_to_neither() {
+    let mut sheet = sheet(Intent::Largest);
+    sheet.rows = vec![plain_row("~/a”", GB), plain_row("~/a〃", GB)];
+    sheet.notes = vec![format!("{} is kept by Documents.", quote_name("~/a”"))];
+
+    let segments = template_segments(&sheet);
+
+    assert!(
+        !segments
+            .iter()
+            .any(|segment| matches!(segment, Segment::Path { .. })),
+        "{segments:?}"
     );
 }
 

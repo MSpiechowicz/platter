@@ -14,6 +14,7 @@
   import { SEARCH_DELAY_MS } from './FolderPicker.svelte';
   import ScanAnswer from './ScanAnswer.svelte';
   import { askReadiness, noScanText, sourceLabel } from './model';
+  import { isBlankQuestion } from '../../question';
 
   /** The longest question the backend takes, in characters. */
   const MAX_QUESTION_CHARS = 500;
@@ -364,7 +365,7 @@
   function submit(event?: SubmitEvent): void {
     event?.preventDefault();
 
-    if (scan === undefined || !canType || question.trim() === '') {
+    if (scan === undefined || !canType || isBlankQuestion(question)) {
       return;
     }
 
@@ -536,7 +537,7 @@
         </div>
       {/if}
     </div>
-    <Button type="submit" variant="primary" disabled={!canType || question.trim() === ''}>Ask</Button>
+    <Button type="submit" variant="primary" disabled={!canType || isBlankQuestion(question)}>Ask</Button>
     <!-- Always there, so the field keeps its width; nothing to clear or a question on its way disables it. -->
     <Button type="button" disabled={waiting || exchanges.length === 0} onclick={clear}>Clear</Button>
   </form>

@@ -303,6 +303,17 @@ describe('a name that fits two folders is asked back', () => {
     }
   });
 
+  it('refuses a pick when the reading asks nothing back (an overview, off topic, a find of a name)', () => {
+    for (const asked of [
+      'give me an overview of this scan',
+      'what is the weather today?',
+      'find files named backup',
+    ]) {
+      expect(askSketch(twoBackups(), asked).clarify).toBeUndefined();
+      expect(() => askSketch(twoBackups(), asked, 0)).toThrowError(STALE);
+    }
+  });
+
   it('does not ask back when one folder of the name is clearly the largest', () => {
     const sketch = twoBackups();
 

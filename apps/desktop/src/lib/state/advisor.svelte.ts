@@ -15,6 +15,7 @@ import type {
   UnloadAfter,
 } from '../api/types';
 import { settings as defaultSettings, type SettingsStore } from './settings.svelte';
+import { isBlankQuestion } from '../question';
 
 /**
  * The local model as the interface sees it: its status (pushed by the backend), the labels of the scan, the
@@ -239,7 +240,10 @@ export class AdvisorStore {
 
       return true;
     } catch (error) {
-      this.failure = describeError(error);
+      // A no in the backend's dialog is quiet.
+      if (!isApiError(error) || error.code !== 'cancelled') {
+        this.failure = describeError(error);
+      }
 
       return false;
     }
@@ -295,7 +299,10 @@ export class AdvisorStore {
     try {
       await this.#api.clearGpuLog();
     } catch (error) {
-      this.failure = describeError(error);
+      // A no in the backend's dialog is quiet.
+      if (!isApiError(error) || error.code !== 'cancelled') {
+        this.failure = describeError(error);
+      }
 
       return false;
     }
@@ -435,7 +442,7 @@ export class AdvisorStore {
   async askScan(scan: ScanId, question: string, pick?: ChoiceDto): Promise<void> {
     const text = question.trim();
 
-    if (text === '' || this.scanWaiting) {
+    if (isBlankQuestion(text) || this.scanWaiting) {
       return;
     }
 

@@ -76,16 +76,29 @@ impl QuestionLog {
 
     /// Appends `entry` as one line. A failure (no place, a link or a folder at the name, a full disk) is
     /// skipped without a word: the log never fails a question.
+    #[cfg(test)]
     pub fn append(&self, entry: &Entry) {
+        self.append_if(entry, || true);
+    }
+
+    /// [`Self::append`] when `on` says so, asked under the log's lock: a switch turned off, or a clear, that
+    /// came before is never followed by this line.
+    pub fn append_if(&self, entry: &Entry, on: impl FnOnce() -> bool) {
         let Some(path) = &self.path else {
             return;
         };
-        let Ok(mut line) = serde_json::to_vec(entry) else {
+        let Ok(json) = serde_json::to_string(entry) else {
             return;
         };
+        // Names from the disk may carry terminal controls (C1, DEL) and bidi marks; written as `\uXXXX`,
+        // a `cat` of the log cannot be steered by them, and each line still reads back the same.
+        let mut line = platter_ai::escape_unsafe(&json).into_bytes();
         line.push(b'\n');
 
         let _busy = self.busy.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !on() {
+            return;
+        }
         let _ = jsonl::append_line(path, &line, MAX_BYTES);
     }
 

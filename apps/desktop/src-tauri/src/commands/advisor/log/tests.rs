@@ -263,3 +263,33 @@ fn a_write_that_fails_is_skipped_without_a_word() {
     assert_eq!(std::fs::read(&file).unwrap(), b"x");
     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
 }
+
+#[test]
+fn controls_and_bidi_marks_from_disk_names_are_escaped_and_read_back_the_same() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("data/platter").join(FILE_NAME);
+    let log = QuestionLog::new(Some(path.clone()));
+    let hostile = "~/a\u{9b}31m\u{9d}0;title\u{7}\u{7f}b\u{202e}gpj.exe\u{2028}c\u{1b}[2J";
+
+    let mut written = entry(1, hostile);
+    written.meta = vec![hostile.to_owned()];
+    written.understood = json!({ "scope": hostile });
+    log.append(&written);
+
+    let bytes = std::fs::read(&path).unwrap();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(
+        !text.chars().any(|c| c != '\n' && must_be_escaped(c)),
+        "no control or bidi character is written raw: {text:?}"
+    );
+    assert_eq!(text.lines().count(), 1);
+    let line = &lines(&path)[0];
+    assert_eq!(line["answer"], hostile);
+    assert_eq!(line["meta"][0], hostile);
+    assert_eq!(line["understood"]["scope"], hostile);
+}
+
+/// The characters the log must never carry raw: controls (C0, DEL, C1) and the format and separator marks.
+fn must_be_escaped(c: char) -> bool {
+    c.is_control() || matches!(c as u32, 0x200B..=0x200F | 0x2028..=0x202E | 0x2060..=0x206F | 0xFEFF)
+}
