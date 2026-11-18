@@ -6,7 +6,7 @@ use super::cancel::CancelToken;
 use super::chunk::{Chunk, ChunkEntry, LinkRef};
 use super::progress::{Delta, PathChain, Reporter};
 use crate::budget::{EntryBudget, LimitHit, memory_cost};
-use crate::model::{Category, EntryKind, NodeKind, SkipReason};
+use crate::model::{Category, EntryKind, NodeKind, ScannedMount, SkipReason};
 use crate::ports::{DirListing, DirSource, RawEntry};
 
 /// Directories nested deeper than this are not read (counted as an error). It bounds recursion depth,
@@ -183,6 +183,7 @@ impl<S: DirSource> Walker<'_, S> {
         chunk.names.reserve_exact(usize::try_from(name_bytes).ok()?);
         let mut jobs = Vec::new();
         let mut skips = Vec::new();
+        let mut mounts = Vec::new();
         let mut delta = Delta {
             errors: u64::from(errors),
             ..Delta::default()
@@ -243,6 +244,20 @@ impl<S: DirSource> Walker<'_, S> {
                     } else {
                         entry.kind = NodeKind::Dir;
                         if let Some(child) = raw.child {
+                            // A mount root that was entered is remembered as it was seen: cleanup acts
+                            // below it only while it is still this mount.
+                            if meta.is_mount_root {
+                                mounts.push((
+                                    index as u32,
+                                    ScannedMount {
+                                        dev: meta.dev,
+                                        ino: meta.ino,
+                                        mount_id: raw.mount.mount_id,
+                                        own_filesystem: raw.mount.own_filesystem,
+                                    },
+                                ));
+                            }
+
                             entry.descended = true;
                             jobs.push((index, child, (meta.dev, meta.ino)));
                         }
@@ -277,6 +292,7 @@ impl<S: DirSource> Walker<'_, S> {
         }
 
         chunk.skips = (!skips.is_empty()).then(|| skips.into_boxed_slice());
+        chunk.mounts = (!mounts.is_empty()).then(|| mounts.into_boxed_slice());
 
         Some((chunk, jobs, delta))
     }

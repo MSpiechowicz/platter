@@ -8,7 +8,7 @@ use rustix::fs::{major, minor};
 
 use super::exclusions::ExclusionRules;
 use super::mountinfo::MountEntry;
-use super::same_fs::Decision;
+use super::same_fs::{BTRFS_SUBVOLUME_ROOT_INO, Decision};
 
 /// Which mounts exist, which the rules exclude and, when the scan stays on one disk (or has to avoid
 /// counting a filesystem twice), which of them the walk may enter (see [`super::same_fs`]).
@@ -36,6 +36,9 @@ pub struct MountSnapshot {
     decision: Option<Decision>,
     /// For kernels without mount ids: `major:minor` of every mount in the table, with the ids that have it.
     by_device: HashMap<String, Vec<u64>>,
+    /// The mounts that count as the scan root's own filesystem (see `is_own_filesystem`), as the table
+    /// described them: what a mount met later has to still be (see `still_the_same_mount`).
+    own_entries: HashMap<u64, MountEntry>,
 }
 
 impl MountSnapshot {
@@ -50,6 +53,13 @@ impl MountSnapshot {
                 .push(mount.mount_id);
         }
 
+        let own_entries = decision
+            .iter()
+            .flat_map(|decision| decision.own.iter().chain(&decision.subvolumes))
+            .filter_map(|id| mounts.iter().find(|mount| mount.mount_id == *id))
+            .map(|mount| (mount.mount_id, mount.clone()))
+            .collect();
+
         Self {
             points: mounts
                 .iter()
@@ -58,6 +68,7 @@ impl MountSnapshot {
             excluded: rules.excluded_mount_ids(mounts),
             decision,
             by_device,
+            own_entries,
         }
     }
 
@@ -94,6 +105,46 @@ impl MountSnapshot {
         } else {
             Err(SkipReason::Unknown)
         }
+    }
+
+    /// Whether the mount root with kernel mount id `mount_id` and inode `ino`, which the walk enters, is
+    /// part of the scan root's own filesystem and not a view of some folder from elsewhere (see
+    /// "Own filesystem" in [`super::same_fs`]). Nothing is own when the table could not place the scan
+    /// root.
+    pub fn is_own_filesystem(&self, mount_id: u64, ino: u64) -> bool {
+        let Some(decision) = &self.decision else {
+            return false;
+        };
+
+        decision.own.contains(&mount_id)
+            || (decision.subvolumes.contains(&mount_id) && ino == BTRFS_SUBVOLUME_ROOT_INO)
+    }
+
+    /// Whether the mount root met now, with mount id `mount_id` on device `dev` (its `st_dev`), is still
+    /// the mount the table described for that id, judged by `live`, the table read again just now: the id
+    /// is there with the same mount point, device, type and root, and, where `st_dev` is the superblock's
+    /// device (everything but btrfs and bcachefs, whose subvolumes have devices of their own), the
+    /// device of the entry agrees with the table.
+    ///
+    /// Mount ids are handed out again, so a mount swapped in at the same place during a scan would
+    /// otherwise inherit the verdict of the mount that was there when the table was first read. A
+    /// btrfs filesystem is not told apart by its UUID because that needs an ioctl and the workspace
+    /// forbids `unsafe`; the table read again is the check.
+    pub fn still_the_same_mount(&self, mount_id: u64, dev: u64, live: &[MountEntry]) -> bool {
+        let Some(planned) = self.own_entries.get(&mount_id) else {
+            return false;
+        };
+        let Some(now) = live.iter().find(|mount| mount.mount_id == mount_id) else {
+            return false;
+        };
+
+        let same_place = now.mount_point == planned.mount_point
+            && now.device == planned.device
+            && now.fs_type == planned.fs_type
+            && now.root == planned.root;
+        let device_of_superblock = !matches!(planned.fs_type.as_str(), "btrfs" | "bcachefs");
+
+        same_place && (!device_of_superblock || device_text(dev) == planned.device)
     }
 
     /// The same decision for a kernel that reports no mount ids (before 5.8): the mount root is known
@@ -181,6 +232,7 @@ mod tests {
             enter: HashSet::new(),
             duplicate: HashSet::from([4]),
             other_disk: HashSet::from([3, 5]),
+            ..Decision::default()
         };
         let snapshot = MountSnapshot::new(&ExclusionRules::DEFAULT, &parse(table.as_bytes()), Some(decision));
 
@@ -242,6 +294,117 @@ mod tests {
             Err(SkipReason::Unknown),
             "known, but the decision names no reason"
         );
+    }
+
+    #[test]
+    fn a_btrfs_mount_is_own_only_when_its_root_is_a_subvolume_and_nothing_is_own_without_a_decision() {
+        let table = "\
+1 0 0:32 /@ / rw - btrfs /dev/sda2 rw
+2 1 0:32 /@home /home rw - btrfs /dev/sda2 rw
+3 1 0:32 /@data/docs /srv/docs rw - btrfs /dev/sda2 rw
+4 1 8:33 / /mnt/usb rw - ext4 /dev/sdb1 rw
+";
+        let mounts = parse(table.as_bytes());
+        let decision = crate::linux::same_fs::enterable_mounts(
+            &mounts,
+            &ExclusionRules::DEFAULT,
+            1,
+            Path::new("/"),
+            false,
+        );
+        let snapshot = MountSnapshot::new(&ExclusionRules::DEFAULT, &mounts, decision);
+
+        assert!(
+            snapshot.is_own_filesystem(2, BTRFS_SUBVOLUME_ROOT_INO),
+            "a subvolume of the same filesystem"
+        );
+        assert!(
+            !snapshot.is_own_filesystem(2, 300),
+            "the same mount with a folder as its root"
+        );
+        assert!(
+            !snapshot.is_own_filesystem(3, 300),
+            "a bind mount of a folder inside a subvolume"
+        );
+        assert!(
+            !snapshot.is_own_filesystem(4, BTRFS_SUBVOLUME_ROOT_INO),
+            "another disk, entered because the scan may leave the root's"
+        );
+        assert!(
+            !snapshot.is_own_filesystem(99, BTRFS_SUBVOLUME_ROOT_INO),
+            "unknown mount"
+        );
+        assert!(
+            !MountSnapshot::default().is_own_filesystem(2, BTRFS_SUBVOLUME_ROOT_INO),
+            "no decision, nothing is own"
+        );
+    }
+
+    #[test]
+    fn an_own_mount_is_confirmed_by_the_table_read_again_and_the_device_of_the_entry() {
+        let table = "\
+1 0 8:1 / / rw - ext4 /dev/sda1 rw
+2 1 8:1 /home /home rw - ext4 /dev/sda1 rw
+3 1 0:32 /@ /srv rw - btrfs /dev/sdb1 rw
+4 1 0:33 /@ /var rw - btrfs /dev/sdb1 rw
+";
+        let mounts = parse(table.as_bytes());
+        let decision = crate::linux::same_fs::enterable_mounts(
+            &mounts,
+            &ExclusionRules::DEFAULT,
+            1,
+            Path::new("/"),
+            false,
+        );
+        let snapshot = MountSnapshot::new(&ExclusionRules::DEFAULT, &mounts, decision);
+        let ext4 = makedev(8, 1);
+        assert!(snapshot.is_own_filesystem(2, 256), "the table calls it own");
+
+        assert!(snapshot.still_the_same_mount(2, ext4, &mounts));
+
+        // The entry met at the place is on another device than the table says (a swapped mount that
+        // inherited the id).
+        assert!(!snapshot.still_the_same_mount(2, makedev(0, 77), &mounts));
+
+        // The table read again describes the id otherwise: another type, another root, another place,
+        // another device, or the id is gone.
+        for changed in [
+            "2 1 8:1 /home /home rw - xfs /dev/sda1 rw",
+            "2 1 8:1 /other /home rw - ext4 /dev/sda1 rw",
+            "2 1 8:1 /home /mnt rw - ext4 /dev/sda1 rw",
+            "2 1 8:17 /home /home rw - ext4 /dev/sdb1 rw",
+        ] {
+            let live = parse(format!("1 0 8:1 / / rw - ext4 /dev/sda1 rw\n{changed}\n").as_bytes());
+            assert!(!snapshot.still_the_same_mount(2, ext4, &live), "{changed}");
+        }
+        let gone = parse(b"1 0 8:1 / / rw - ext4 /dev/sda1 rw\n");
+        assert!(!snapshot.still_the_same_mount(2, ext4, &gone));
+
+        // A mount the table did not call own is never confirmed.
+        assert!(!snapshot.still_the_same_mount(9, ext4, &mounts));
+    }
+
+    #[test]
+    fn a_btrfs_subvolume_is_confirmed_by_the_table_although_its_device_is_its_own() {
+        let table = "\
+1 0 0:32 /@ / rw - btrfs /dev/sda2 rw
+2 1 0:32 /@home /home rw - btrfs /dev/sda2 rw
+";
+        let mounts = parse(table.as_bytes());
+        let decision = crate::linux::same_fs::enterable_mounts(
+            &mounts,
+            &ExclusionRules::DEFAULT,
+            1,
+            Path::new("/"),
+            false,
+        );
+        let snapshot = MountSnapshot::new(&ExclusionRules::DEFAULT, &mounts, decision);
+
+        // `st_dev` of the subvolume (0:49) is not the superblock's 0:32.
+        assert!(snapshot.still_the_same_mount(2, makedev(0, 49), &mounts));
+        let swapped =
+            parse(b"1 0 0:32 /@ / rw - btrfs /dev/sda2 rw\n2 1 0:50 /@home /home rw - btrfs /dev/sdc1 rw\n");
+        assert!(!snapshot.still_the_same_mount(2, makedev(0, 49), &swapped));
     }
 
     #[test]

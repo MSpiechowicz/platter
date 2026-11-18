@@ -122,6 +122,51 @@ fn mounts_are_descended_without_one_file_system() {
 }
 
 #[test]
+fn the_tree_remembers_the_mounts_it_went_into_as_the_scan_saw_them() {
+    let mut fs = FakeFs::new();
+    fs.same_filesystem_mount("/home")
+        .file("/home/me/f", 1)
+        .same_filesystem_bind_mount("/srv/bound")
+        .file("/srv/bound/g", 1)
+        .mount("/mnt/usb")
+        .file("/mnt/usb/h", 1)
+        .mount("/mnt/nas")
+        .skip_mount("/mnt/nas", SkipReason::System)
+        .dir("/plain/folder");
+
+    let tree = scan_fake(&fs, false);
+
+    let home = tree.entered_mount(find(&tree, "home")).expect("entered");
+    assert_eq!((home.dev, home.ino), fs.identity("/home"));
+    assert!(
+        home.own_filesystem,
+        "a subvolume of the scan root's own filesystem"
+    );
+
+    let bound = tree.entered_mount(find(&tree, "srv/bound")).expect("entered");
+    assert!(!bound.own_filesystem, "a bind mount of a folder from elsewhere");
+
+    let usb = tree.entered_mount(find(&tree, "mnt/usb")).expect("entered");
+    assert!(
+        !usb.own_filesystem,
+        "another disk, entered because the scan may leave the root's disk"
+    );
+
+    assert_eq!(
+        tree.entered_mount(find(&tree, "mnt/nas")),
+        None,
+        "a mount that was not entered is a mount node"
+    );
+    for plain in ["home/me", "plain/folder", "srv"] {
+        assert_eq!(
+            tree.entered_mount(find(&tree, plain)),
+            None,
+            "{plain} is no mount"
+        );
+    }
+}
+
+#[test]
 fn a_directory_the_source_withholds_is_not_descended_even_without_one_file_system() {
     let mut fs = FakeFs::new();
     fs.file("/proc/1/status", 100).mount("/proc");

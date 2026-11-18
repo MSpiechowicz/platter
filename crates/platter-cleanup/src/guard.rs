@@ -4,7 +4,7 @@ use std::fmt;
 use std::io;
 
 use platter_core::dto::Verdict;
-use platter_core::{BirthTime, EntryKind, EntryProbe, NodeId, NodeKind, Tree};
+use platter_core::{BirthTime, EnteredMount, EntryKind, EntryProbe, NodeId, NodeKind, ProbedEntry, Tree};
 
 use crate::kept::KeptFolders;
 use crate::path::{PathStyle, display};
@@ -84,6 +84,9 @@ pub struct VerifiedTarget {
     mount_id: Option<u64>,
     /// When the entry was created, as the plan saw it (when the filesystem records it).
     birth: Option<BirthTime>,
+    /// The mounts on the way below the scan root that the scan went into (a separate `/home` on the same
+    /// disk, say), with the identity they had. Acting on the target may pass through only these.
+    entered_mounts: Vec<EnteredMount>,
     /// Size and newest modification from the scan.
     allocated: u64,
     apparent: u64,
@@ -129,6 +132,7 @@ impl VerifiedTarget {
             ino: identity.1,
             mount_id: None,
             birth: None,
+            entered_mounts: Vec::new(),
             allocated: 1000,
             apparent: 1000,
             mtime: 0,
@@ -159,6 +163,10 @@ impl VerifiedTarget {
     }
     pub fn birth(&self) -> Option<BirthTime> {
         self.birth
+    }
+    /// The mounts on the way that the scan went into, as the plan saw them.
+    pub fn entered_mounts(&self) -> &[EnteredMount] {
+        &self.entered_mounts
     }
     /// Bytes the scan counted for it. What deleting frees can differ (hard links, shared blocks).
     pub fn allocated(&self) -> u64 {
@@ -247,6 +255,18 @@ impl<P: EntryProbe> Guard<'_, P> {
             return Err(Refusal::Changed("the path leads somewhere else".to_owned()));
         }
 
+        // Everything the scan saw lies below the folder it opened. Another folder at that path now (the
+        // root swapped, or mounted over) means the scan describes something else. The top (`/`) has no
+        // component to look at.
+        let scanned_root = tree.root_identity();
+        if let Some(root) = found.get(self.root.len().wrapping_sub(1))
+            && !scanned_root.is(root.meta.dev, root.meta.ino, root.mount_id)
+        {
+            return Err(Refusal::Changed(
+                "the scanned folder is not the one that was scanned. Scan again.".to_owned(),
+            ));
+        }
+
         // The same protected places by identity: another path to them (a bind mount) does not count.
         let way: Vec<(u64, u64)> = found
             .iter()
@@ -263,13 +283,9 @@ impl<P: EntryProbe> Guard<'_, P> {
             return Err(Refusal::Kept);
         }
 
-        // Below the scan root nothing may start a mount: not the target, not a folder on the way.
-        if found[self.root.len()..]
-            .iter()
-            .any(|entry| entry.meta.is_mount_root)
-        {
-            return Err(Refusal::Mount);
-        }
+        // Below the scan root nothing may start a mount: not the target, and on the way only a mount the
+        // scan went into.
+        let entered_mounts = self.entered_mounts(node, &found)?;
 
         let now = found[parts.len() - 1];
         match (now.meta.kind, is_dir) {
@@ -295,11 +311,56 @@ impl<P: EntryProbe> Guard<'_, P> {
             ino: now.meta.ino,
             mount_id: now.mount_id,
             birth: now.birth,
+            entered_mounts,
             allocated: tree.allocated(node),
             apparent: tree.apparent(node),
             mtime: tree.mtime(node),
             markers: markers.to_vec(),
         })
+    }
+}
+
+impl<P: EntryProbe> Guard<'_, P> {
+    /// The mounts that start on the way from the scan root to `node` (`found` is the probe's look at its
+    /// path), when every one of them is a mount the scan went into, of the scan root's own filesystem, and
+    /// still the very mount the scan saw: the same device and inode, and the same mount id when both are
+    /// known. A mount that is the target itself, one that appeared after the scan, one the scan did not
+    /// go into, another disk or a bind mount of a folder from elsewhere, or a different mount now at the
+    /// same place, is refused. What is recorded is what the scan saw, which is what acting on the target
+    /// compares with again.
+    fn entered_mounts(&self, node: NodeId, found: &[ProbedEntry]) -> Result<Vec<EnteredMount>, Refusal> {
+        let target = found.len() - 1;
+        let ancestry = self.tree.ancestry(node);
+        let mut entered = Vec::new();
+
+        for (depth, entry) in found.iter().enumerate().skip(self.root.len()) {
+            if !entry.meta.is_mount_root {
+                continue;
+            }
+            if depth == target {
+                return Err(Refusal::Mount);
+            }
+
+            // The tree starts at the scan root, which is the component `root.len() - 1`.
+            let scanned = ancestry
+                .get(depth + 1 - self.root.len())
+                .and_then(|folder| self.tree.entered_mount(*folder))
+                .ok_or(Refusal::Mount)?;
+
+            let mount = EnteredMount {
+                depth,
+                dev: scanned.dev,
+                ino: scanned.ino,
+                mount_id: scanned.mount_id,
+            };
+            if !scanned.own_filesystem || !mount.is(depth, entry.meta.dev, entry.meta.ino, entry.mount_id) {
+                return Err(Refusal::Mount);
+            }
+
+            entered.push(mount);
+        }
+
+        Ok(entered)
     }
 }
 

@@ -297,16 +297,21 @@ describe('marking in the Explorer', () => {
       ).toBe(false);
     });
 
-    it('shows what the backend refused as plain text', async () => {
+    it('says in a toast what the backend refused, and the footer keeps the marks', async () => {
       await openDemo();
       // `.local` holds the Steam library: no checkbox is kept for it, the backend says no.
       await fireEvent.click(box('.local'));
       await fireEvent.click(within(footer()).getByRole('button', { name: 'Clean (1)' }));
 
       await waitFor(() =>
-        expect(footer().textContent).toContain('Nothing from this selection can be cleaned.'),
+        expect(ui.toasts.at(-1)).toMatchObject({
+          title: 'Nothing could be cleaned',
+          description: '1 item was left out. Why: kept on purpose.',
+          kind: 'error',
+        }),
       );
-      expect(footer().textContent).toContain('Not cleaned: /home/demo/.local (kept on purpose)');
+      expect(footer().textContent).not.toContain('Not cleaned:');
+      expect(box('.local').checked).toBe(true);
       expect(document.querySelector('dialog[open]')).toBeNull();
     });
   });

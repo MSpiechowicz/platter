@@ -50,7 +50,7 @@ fn shorten(name: &[u8], max: usize) -> &[u8] {
 const MAX_NAMES: u32 = 10_000;
 
 pub(super) fn move_to_trash(path: &[u8], expected: &ExpectedEntry, home_trash: &Path) -> io::Result<Vec<u8>> {
-    let (parent, name) = open_parent(path, expected.root_depth)?;
+    let (parent, name) = open_parent(path, expected.root_depth, &expected.entered_mounts)?;
     let stat = check(&parent, &name, expected)?;
 
     let home = open_or_create_dir(home_trash.as_os_str().as_encoded_bytes())?;
@@ -240,7 +240,7 @@ pub(super) fn restore(trashed: &[u8], expected: &ExpectedEntry, original: &[u8])
 
     // The record must still say this entry came from `original`: after the trash was emptied, a
     // newer entry could carry the same name (and even a reused inode).
-    let (info_dir, info_name) = open_parent(&info, usize::MAX)?;
+    let (info_dir, info_name) = open_parent(&info, usize::MAX, &[])?;
     let recorded = recorded_path(&info_dir, &info_name)?;
     let top = &trash[..trash.iter().rposition(|&byte| byte == b'/').unwrap_or(0)];
     let from_record = if recorded.first() == Some(&b'/') {
@@ -257,9 +257,9 @@ pub(super) fn restore(trashed: &[u8], expected: &ExpectedEntry, original: &[u8])
         ));
     }
 
-    let (files, entry) = open_parent(trashed, usize::MAX)?;
+    let (files, entry) = open_parent(trashed, usize::MAX, &[])?;
     check(&files, &entry, expected)?;
-    let (folder, original_name) = open_parent(original, usize::MAX)?;
+    let (folder, original_name) = open_parent(original, usize::MAX, &[])?;
 
     rename_no_replace(&files, &entry, &folder, &original_name)?;
     let _ = unlinkat(&info_dir, info_name.as_c_str(), AtFlags::empty());

@@ -23,7 +23,7 @@ use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
 
-use platter_core::{EntryKind, EntryRemover, ExpectedEntry, RemoveMode, Removed};
+use platter_core::{EnteredMount, EntryKind, EntryRemover, ExpectedEntry, RemoveMode, Removed};
 use rustix::fs::{
     AtFlags, CWD, Mode, OFlags, RawDir, RenameFlags, SeekFrom, fchmod, fstatfs, openat, renameat_with, seek,
     statvfs, syncfs, unlinkat,
@@ -53,7 +53,7 @@ pub struct LinuxEntryRemover;
 
 impl EntryRemover for LinuxEntryRemover {
     fn remove(&self, path: &[u8], expected: &ExpectedEntry, mode: RemoveMode) -> io::Result<Removed> {
-        let (parent, name) = open_parent(path, expected.root_depth)?;
+        let (parent, name) = open_parent(path, expected.root_depth, &expected.entered_mounts)?;
         let stat = check(&parent, &name, expected)?;
         let mut removed = Removed::default();
 
@@ -120,8 +120,13 @@ impl EntryRemover for LinuxEntryRemover {
 }
 
 /// The descriptor of the folder holding `path` and the last name. No link is followed on the way, and
-/// below the first `root_depth` components no component may start a mount.
-pub(super) fn open_parent(path: &[u8], root_depth: usize) -> io::Result<(OwnedFd, CString)> {
+/// below the first `root_depth` components no component may start a mount, except one of `entered`: a
+/// mount the scan went into, still the same mount (device, inode and mount id) at the same place.
+pub(super) fn open_parent(
+    path: &[u8],
+    root_depth: usize,
+    entered: &[EnteredMount],
+) -> io::Result<(OwnedFd, CString)> {
     let parts = components(path)?;
     let Some((last, way)) = parts.split_last() else {
         return Err(io::Error::new(
@@ -144,9 +149,15 @@ pub(super) fn open_parent(path: &[u8], root_depth: usize) -> io::Result<(OwnedFd
         })?;
         let stat = stat_fd(&next)?;
 
-        // Component `position` sits at depth `position + 1`; the scan root's own components may be mounts.
-        if position + 1 > root_depth && is_boundary(stat.reported_mount_root, stat.meta.dev, dev) {
-            return Err(changed("a mount lies on the way"));
+        // The scan root's own components (the first `root_depth`) may be mounts.
+        if position >= root_depth && is_boundary(stat.reported_mount_root, stat.meta.dev, dev) {
+            let allowed = entered
+                .iter()
+                .any(|mount| mount.is(position, stat.meta.dev, stat.meta.ino, stat.mount_id));
+
+            if !allowed {
+                return Err(changed("a mount lies on the way"));
+            }
         }
 
         dev = stat.meta.dev;

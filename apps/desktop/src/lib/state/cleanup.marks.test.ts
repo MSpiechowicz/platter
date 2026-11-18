@@ -11,6 +11,8 @@ interface Setup {
   api: Api;
   scan: ScanStore;
   store: CleanupStore;
+  /** The toasts the store showed, as `[title, description, kind]`. */
+  toast: ReturnType<typeof vi.fn>;
   scanId: ScanId;
 }
 
@@ -27,7 +29,8 @@ async function setup(wrap: (api: Api) => Api = (api) => api, load = true): Promi
   }
 
   const scanId = scan.state.scanId;
-  const store = new CleanupStore(api, scan);
+  const toast = vi.fn();
+  const store = new CleanupStore(api, scan, { toast });
 
   store.adopt(scanId);
 
@@ -35,7 +38,7 @@ async function setup(wrap: (api: Api) => Api = (api) => api, load = true): Promi
     await store.ensureSuggestions(scanId);
   }
 
-  return { api, scan, store, scanId };
+  return { api, scan, store, scanId, toast };
 }
 
 /** The node at a path of the mock disk, found by name from the scan root. */
@@ -404,8 +407,8 @@ describe('cleaning what is marked', () => {
     expect(startCleanup).not.toHaveBeenCalled();
   });
 
-  it('shows what the backend refused, and plans nothing when nothing is left', async () => {
-    const { api, store, scanId } = await setup();
+  it('says in a toast what the backend refused, and plans nothing when nothing is left', async () => {
+    const { api, store, scanId, toast } = await setup();
     // `.local` holds the Steam library, which a keep rule protects: the backend refuses it, the checkbox was there.
     const local = await markFor(api, scanId, await nodeAt(api, scanId, '/home/demo/.local'));
 
@@ -415,15 +418,19 @@ describe('cleaning what is marked', () => {
     await store.cleanMarked();
 
     expect(store.phase.kind).toBe('idle');
-    expect(store.notice).toBe('Nothing from this selection can be cleaned.');
+    expect(toast).toHaveBeenCalledExactlyOnceWith(
+      'Nothing could be cleaned',
+      '1 item was left out. Why: kept on purpose.',
+      'error',
+    );
     expect(store.plan?.refused).toEqual([
       { ruleId: 'marked', path: '/home/demo/.local', reason: 'kept on purpose' },
     ]);
     expect(store.isMarked(local.id)).toBe(true);
   });
 
-  it('says why a plan could not be made, and does not try again by itself', async () => {
-    const { api, store, scanId } = await setup((api) => ({
+  it('says in a toast why a plan could not be made, and does not try again by itself', async () => {
+    const { api, store, scanId, toast } = await setup((api) => ({
       ...api,
       planMarkedCleanup: vi.fn().mockRejectedValue(new ApiRequestError('notFound', 'node 5 does not exist')),
     }));
@@ -432,7 +439,11 @@ describe('cleaning what is marked', () => {
     await store.cleanMarked();
 
     expect(store.phase.kind).toBe('idle');
-    expect(store.notice).toBe('Could not plan the cleanup: node 5 does not exist');
+    expect(toast).toHaveBeenCalledExactlyOnceWith(
+      'Could not plan the cleanup',
+      'node 5 does not exist',
+      'error',
+    );
     expect(api.planMarkedCleanup).toHaveBeenCalledOnce();
     expect(api.planMarkedCleanup).toHaveBeenCalledWith(scanId, [5], {
       keepPackageVersions: 2,

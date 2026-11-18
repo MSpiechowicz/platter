@@ -57,7 +57,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use platter_core::{
-    DirListing, DirSource, EntryKind, Lease, RawEntry, RootInfo, ScanWarning, SkipReason, SourceOptions,
+    DirListing, DirSource, EntryKind, Lease, MountFacts, RawEntry, RootInfo, ScanWarning, SkipReason,
+    SourceOptions,
 };
 use rustix::fs::{CWD, Mode, OFlags, RawDir, openat};
 use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
@@ -187,6 +188,9 @@ struct Shared {
     /// Where the scan root is, as the process sees it. A mount root met by the walk is compared with the
     /// table at this path. `None` when it cannot be told: no mount is entered then.
     root_path: Option<PathBuf>,
+    /// The file the mount table is read from, to read it again when an own mount is met (see
+    /// [`confirm_own`]).
+    mountinfo: PathBuf,
     /// The cap on directory descriptors kept open as parents (the count is process-wide, see `budget`).
     budget: usize,
 }
@@ -265,12 +269,14 @@ impl DirSource for LinuxDirSource {
                 root: fd,
                 root_dev: meta.dev,
                 root_path,
+                mountinfo: self.mountinfo.clone(),
                 budget: self.descriptor_budget.unwrap_or_else(budget::default_limit),
             }),
         };
         Ok(RootInfo {
             handle,
             meta,
+            mount_id,
             warnings,
         })
     }
@@ -371,12 +377,35 @@ fn make_entry(
         shared: dir.shared.clone(),
     });
 
+    // What the walk records of a mount it enters: cleanup acts inside it only if it is the scan root's
+    // own filesystem. A kernel without mount ids cannot say, which fails closed.
+    let mount = match stat.mount_id {
+        Some(mount_id) if child.is_some() && meta.is_mount_root => MountFacts {
+            mount_id: Some(mount_id),
+            own_filesystem: dir.shared.mounts.is_own_filesystem(mount_id, meta.ino)
+                && confirm_own(&dir.shared, mount_id, meta.dev),
+        },
+        _ => MountFacts::default(),
+    };
+
     RawEntry {
         name: name.to_bytes().to_vec(),
         meta,
         child,
         skipped: verdict.err(),
+        mount,
     }
+}
+
+/// Whether the mount the walk met, which the table of the scan start calls own, is still that mount: the
+/// table is read again and must describe the mount id the same way (see
+/// [`MountSnapshot::still_the_same_mount`]). A table that cannot be read confirms nothing.
+fn confirm_own(shared: &Shared, mount_id: u64, dev: u64) -> bool {
+    let live = std::fs::read(&shared.mountinfo).unwrap_or_default();
+
+    shared
+        .mounts
+        .still_the_same_mount(mount_id, dev, &mountinfo::parse(&live))
 }
 
 /// Whether the mount root `name` (found in the directory `chain`) may be entered, and if not, why.

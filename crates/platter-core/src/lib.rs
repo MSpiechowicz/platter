@@ -36,13 +36,13 @@ pub use error::{QueryError, ScanError, ScanLimit};
 pub use model::{
     Category, EntryKind, Environment, MAX_RULE_PATH_BYTES, MAX_RULES_FILE_BYTES, MAX_USER_RULES, ModelLabel,
     ModelVerdict, NodeId, NodeKind, Os, Progress, RULES_FILE_VERSION, RulesFileError, ScanWarning,
-    SkipReason, Totals, Tree, UserDir, UserRule, UserRulesFile, UserVerdict, Volume, check_folder,
-    parse_user_rules, render_user_rules,
+    ScannedMount, ScannedRoot, SkipReason, Totals, Tree, UserDir, UserRule, UserRulesFile, UserVerdict,
+    Volume, check_folder, parse_user_rules, render_user_rules,
 };
 pub use ports::{
-    BirthTime, DirListing, DirSource, EntryMeta, EntryProbe, EntryRemover, ExpectedEntry, ProbedEntry,
-    RawEntry, RemoveMode, Removed, RootInfo, SourceOptions, ToolCommand, ToolFailure, ToolRunner,
-    VolumeProvider,
+    BirthTime, DirListing, DirSource, EnteredMount, EntryMeta, EntryProbe, EntryRemover, ExpectedEntry,
+    MountFacts, ProbedEntry, RawEntry, RemoveMode, Removed, RootInfo, SourceOptions, ToolCommand,
+    ToolFailure, ToolRunner, VolumeProvider,
 };
 pub use query::{
     EntryMatch, FolderMatch, entry_at, find_entries, find_entries_until, find_files_named, find_folders,

@@ -63,6 +63,7 @@ impl Sandbox {
             birth: last.birth,
             is_dir: last.meta.kind == EntryKind::Dir,
             root_depth: self.root.components().count() - 1,
+            entered_mounts: Vec::new(),
         }
     }
 
@@ -451,6 +452,7 @@ fn the_children_of_a_folder_go_to_the_trash_and_the_folder_stays() {
         birth: None,
         is_dir: a.is_dir,
         root_depth: sandbox.root.components().count() - 1,
+        entered_mounts: Vec::new(),
     };
     MacEntryRemover
         .restore_from(to, &planned, &bytes(&folder.join("a")), &sandbox.trash)
@@ -522,6 +524,7 @@ fn the_filesystem_root_is_never_moved() {
         birth: None,
         is_dir: true,
         root_depth: 0,
+        entered_mounts: Vec::new(),
     };
 
     let error = MacEntryRemover

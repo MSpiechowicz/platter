@@ -32,7 +32,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use platter_core::{DirListing, DirSource, EntryKind, Lease, RawEntry, RootInfo, SkipReason, SourceOptions};
+use platter_core::{
+    DirListing, DirSource, EntryKind, Lease, MountFacts, RawEntry, RootInfo, SkipReason, SourceOptions,
+};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GenericDirSource;
@@ -61,6 +63,7 @@ impl DirSource for GenericDirSource {
                 one_file_system: options.one_file_system,
             },
             meta,
+            mount_id: None,
             warnings: Vec::new(),
         })
     }
@@ -121,6 +124,7 @@ impl DirSource for GenericDirSource {
                 meta,
                 child,
                 skipped,
+                mount: MountFacts::default(),
             });
         }
 

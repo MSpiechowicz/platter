@@ -472,6 +472,7 @@ fn trash_files(state: &AppState, names: &[&str]) -> Trashed {
                 .components()
                 .filter(|part| matches!(part, std::path::Component::Normal(_)))
                 .count(),
+            entered_mounts: Vec::new(),
         };
         let to = state
             .platform
@@ -599,6 +600,7 @@ fn an_item_is_restored_once_and_what_came_back_is_not_offered_again() {
                 birth: None,
                 is_dir: false,
                 root_depth: 0,
+                entered_mounts: Vec::new(),
             },
             &first.exact,
         )

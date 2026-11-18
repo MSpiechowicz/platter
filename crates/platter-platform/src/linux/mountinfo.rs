@@ -24,6 +24,8 @@ pub struct MountEntry {
     pub root: PathBuf,
     pub mount_point: PathBuf,
     pub fs_type: String,
+    /// The mount is read-only (`ro` among its mount options, not the filesystem's).
+    pub read_only: bool,
     /// The mount source as the kernel reports it (a device path, `tmpfs`, `host:/export`, ...).
     pub source: OsString,
 }
@@ -48,6 +50,9 @@ fn parse_line(line: &[u8]) -> Option<MountEntry> {
     let device = text(left.next()?);
     let root = left.next()?;
     let mount_point = left.next()?;
+    let read_only = left
+        .next()
+        .is_some_and(|options| options.split(|&byte| byte == b',').any(|option| option == b"ro"));
 
     let mut right = right.split(|&byte| byte == b' ');
     let fs_type = text(right.next()?);
@@ -60,6 +65,7 @@ fn parse_line(line: &[u8]) -> Option<MountEntry> {
         root: PathBuf::from(OsString::from_vec(unescape(root))),
         mount_point: PathBuf::from(OsString::from_vec(unescape(mount_point))),
         fs_type,
+        read_only,
         source: OsString::from_vec(unescape(source)),
     })
 }
@@ -136,6 +142,7 @@ garbage line
                 root: "/".into(),
                 mount_point: "/proc".into(),
                 fs_type: "proc".into(),
+                read_only: false,
                 source: "proc".into()
             }
         );
@@ -144,6 +151,20 @@ garbage line
         assert_eq!(mounts[1].device, "259:2");
         assert_eq!(mounts[1].root, Path::new("/@home"));
         assert_eq!(mounts[1].parent_id, 1);
+    }
+
+    #[test]
+    fn a_read_only_mount_is_told_from_a_read_only_filesystem() {
+        let table = "\
+1 0 0:32 / / ro,noatime - btrfs /dev/sda2 rw
+2 1 0:32 /@a /a rw,noatime - btrfs /dev/sda2 ro
+3 1 0:32 /@b /b rw,relatime,errors=remount-ro - ext4 /dev/sda3 rw
+";
+        let mounts = parse(table.as_bytes());
+
+        assert!(mounts[0].read_only);
+        assert!(!mounts[1].read_only, "only the mount's own options count");
+        assert!(!mounts[2].read_only, "`remount-ro` is not `ro`");
     }
 
     #[test]

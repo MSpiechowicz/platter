@@ -38,11 +38,31 @@ const SYSTEM_FOLDERS: &[&str] = &[
     "/var/log",
 ];
 
-/// System folders nothing inside of may be a target.
+/// System folders nothing inside of may be a target. `/.snapshots` (snapper) and `/timeshift-btrfs` hold
+/// backups: the scan enters them as part of the disk, and a name rule must not clean inside a backup.
 const SYSTEM_INSIDE: &[&str] = &[
-    "/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/opt", "/proc", "/root", "/run", "/sbin",
-    "/srv", "/sys", "/usr",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/opt",
+    "/proc",
+    "/root",
+    "/run",
+    "/sbin",
+    "/srv",
+    "/sys",
+    "/usr",
+    "/.snapshots",
+    "/timeshift-btrfs",
 ];
+
+/// Folders that hold filesystem snapshots wherever they are (snapper keeps `.snapshots` at the root of
+/// every subvolume it covers, `/home/.snapshots` among them): nothing inside of them may be a target.
+const SNAPSHOT_FOLDERS: &[&str] = &[".snapshots", "@snapshots", "timeshift-btrfs"];
 
 /// Folders of the home directory nothing inside of may be a target: keys, passwords, settings and
 /// browser and mail profiles.
@@ -502,6 +522,22 @@ impl Protected {
                 .any(|special| self.style.same_name(name.as_ref(), special.as_bytes()))
         {
             let parts: Vec<Vec<u8>> = target[..2].iter().map(|part| part.as_ref().to_vec()).collect();
+
+            return Some(self.style.show(&parts));
+        }
+
+        // A folder of snapshots, wherever it is.
+        if self.style != PathStyle::Windows
+            && let Some(index) = target.iter().position(|part| {
+                SNAPSHOT_FOLDERS
+                    .iter()
+                    .any(|name| self.style.same_name(part.as_ref(), name.as_bytes()))
+            })
+        {
+            let parts: Vec<Vec<u8>> = target[..=index]
+                .iter()
+                .map(|part| part.as_ref().to_vec())
+                .collect();
 
             return Some(self.style.show(&parts));
         }

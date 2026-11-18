@@ -17,6 +17,8 @@ import type {
 } from '../api/types';
 import { scan as defaultScan, type ScanStore } from './scan.svelte';
 import { settings } from './settings.svelte';
+import { visibleText } from '../features/overview/display';
+import { ui as defaultUi, type UiStore } from './ui.svelte';
 
 /*
  * The cleanup flow, with no knowledge of the interface: which suggestions are selected (Overview, Cleanup view) or
@@ -148,6 +150,7 @@ export class CleanupStore {
 
   readonly #api: Api;
   readonly #scan: ScanHost;
+  readonly #ui: Pick<UiStore, 'toast'>;
   #data: SuggestionsDto | undefined;
   #run: Run | undefined;
   #stamp = 0;
@@ -194,9 +197,17 @@ export class CleanupStore {
     return this.selectedItems.length === this.cleanable.length ? 'all' : 'custom';
   });
 
-  constructor(api: Api = defaultApi, scan: ScanHost = defaultScan) {
+  constructor(api: Api = defaultApi, scan: ScanHost = defaultScan, ui: Pick<UiStore, 'toast'> = defaultUi) {
     this.#api = api;
     this.#scan = scan;
+    this.#ui = ui;
+  }
+
+  /** A cleanup that could not be planned or started says so in a toast: the view keeps showing the selection. */
+  #fail(title: string, description: string): void {
+    this.notice = undefined;
+    // What the backend said may hold paths: hidden characters are shown, not acted on.
+    this.#ui.toast(title, visibleText(description), 'error');
   }
 
   /** A cleanup ran on this scan: it no longer describes the disk. */
@@ -615,7 +626,7 @@ export class CleanupStore {
     } catch (error) {
       if (epoch === this.#epoch) {
         this.phase = { kind: 'idle' };
-        this.notice = `Could not plan the cleanup: ${describeError(error)}`;
+        this.#fail('Could not plan the cleanup', describeError(error));
       }
 
       return;
@@ -629,7 +640,7 @@ export class CleanupStore {
 
     if (plan.groups.length === 0) {
       this.phase = { kind: 'idle' };
-      this.notice = 'Nothing from this selection can be cleaned.';
+      this.#fail('Nothing could be cleaned', refusedSummary(plan));
       return;
     }
 
@@ -694,7 +705,13 @@ export class CleanupStore {
       if (this.#run === run) {
         this.#run = undefined;
         this.phase = { kind: 'idle' };
-        this.notice = notStarted(error);
+        const why = notStarted(error);
+
+        if (why === NOT_CLEANED) {
+          this.notice = why;
+        } else {
+          this.#fail('The cleanup did not start', why);
+        }
       }
     }
   }
@@ -845,20 +862,51 @@ export function progressTitle(groups: PlanGroupDto[], ruleId: string): string {
   return titleOf(groups, ruleId);
 }
 
-/** Why `startCleanup` said no. Nothing is retried: the next attempt is the user's next click. */
+/** Why a plan holds nothing to clean, in a sentence or two: how many items were refused and the most common reason. */
+export function refusedSummary(plan: CleanupPlanDto): string {
+  const refused = plan.refused.length + plan.refusedMore;
+
+  if (refused === 0) {
+    return 'The selected rules found nothing on the disk.';
+  }
+
+  // A local tally, never rendered.
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity
+  const counts = new Map<string, number>();
+
+  for (const item of plan.refused) {
+    counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+  }
+
+  const [reason] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+  const items = refused === 1 ? '1 item was' : `${refused.toLocaleString('en-US')} items were`;
+  const most = counts.size === 1 ? 'Why' : 'Most often';
+
+  // A reason may be a sentence of its own already ("… turned off in Settings.").
+  return `${items} left out. ${most}: ${reason.replace(/\.$/, '')}.`;
+}
+
+/**
+ * Why `startCleanup` said no, under the toast title "The cleanup did not start" (or `NOT_CLEANED` when the
+ * user declined). Nothing is retried: the next attempt is the user's next click.
+ */
 function notStarted(error: unknown): string {
   if (isApiError(error)) {
     switch (error.code) {
       case 'cancelled':
         return NOT_CLEANED;
       case 'notFound':
-        return 'This plan is gone: it was used or it expired. Click again to make a new one.';
+        return 'The plan was used or it expired. Click again to make a new one.';
       case 'invalid':
-        return `Not started: ${error.message}`;
+        return capitalized(error.message);
     }
   }
 
-  return `Could not start the cleanup: ${describeError(error)}`;
+  return capitalized(describeError(error));
+}
+
+function capitalized(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 export const cleanup = new CleanupStore();

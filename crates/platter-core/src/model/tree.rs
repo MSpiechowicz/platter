@@ -32,6 +32,41 @@ pub(crate) struct DirInfo {
     pub files: u32,
 }
 
+/// The scan root as the scan saw it. Cleanup acts below the root only while the folder at its path is
+/// still this one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScannedRoot {
+    pub dev: u64,
+    pub ino: u64,
+    pub mount_id: Option<u64>,
+}
+
+impl ScannedRoot {
+    /// Whether the folder now with this device, inode and mount id is the scan root: the mount id must
+    /// match when the scan saw one.
+    pub fn is(&self, dev: u64, ino: u64, mount_id: Option<u64>) -> bool {
+        let same_mount = match self.mount_id {
+            Some(seen) => mount_id == Some(seen),
+            None => true,
+        };
+
+        self.dev == dev && self.ino == ino && same_mount
+    }
+}
+
+/// A mount root the scan went into, as the scan saw it. Cleanup acts below such a mount only while it is
+/// still this very mount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScannedMount {
+    pub dev: u64,
+    pub ino: u64,
+    /// Compared with a mount id seen later when both are known.
+    pub mount_id: Option<u64>,
+    /// The source said the mount belongs to the scan root's own filesystem (see
+    /// [`MountFacts::own_filesystem`](crate::ports::MountFacts::own_filesystem)).
+    pub own_filesystem: bool,
+}
+
 /// The finished result of a scan: an immutable arena of nodes.
 ///
 /// Node ids are assigned breadth-first, so a parent always precedes its children and the children of
@@ -54,6 +89,11 @@ pub struct Tree {
     /// [`SkipReason::Unknown`] are listed; a mount node without an entry is unknown. Kept apart from the
     /// nodes like `unreadable`: a scan has few mounts.
     pub(crate) skipped: Vec<(u32, SkipReason)>,
+    /// The mount roots the scan went into, as `(id, what the scan saw)` ascending by id. Only mounts are
+    /// listed (a scan has few), so nothing is paid per entry.
+    pub(crate) entered_mounts: Vec<(u32, ScannedMount)>,
+    /// The scan root's identity when it was opened.
+    pub(crate) root_identity: ScannedRoot,
     /// Ids of the file-like nodes with more than one hard link, ascending. The tree charges the bytes of
     /// such a file to the first link met, so this is what tells how far a total can be trusted for "what
     /// would be freed". Costs 4 bytes per hardlinked file and nothing for the other entries.
@@ -109,6 +149,7 @@ impl Tree {
             + self.dirs.capacity() * size_of::<DirInfo>()
             + self.unreadable.capacity() * size_of::<u32>()
             + self.skipped.capacity() * size_of::<(u32, SkipReason)>()
+            + self.entered_mounts.capacity() * size_of::<(u32, ScannedMount)>()
             + self.shared.capacity() * size_of::<u32>()
     }
 
@@ -154,6 +195,20 @@ impl Tree {
             Err(_) => SkipReason::Unknown,
         };
         Some(reason)
+    }
+
+    /// Device, inode and mount id of the scan root when the scan opened it.
+    pub fn root_identity(&self) -> ScannedRoot {
+        self.root_identity
+    }
+
+    /// What the scan saw of the mount root it went into at `id`: `None` for every other node, including a
+    /// mount that was not entered (that one is a `mount` node, see [`Tree::skip_reason`]).
+    pub fn entered_mount(&self, id: NodeId) -> Option<ScannedMount> {
+        self.entered_mounts
+            .binary_search_by_key(&id.0, |&(node, _)| node)
+            .ok()
+            .map(|index| self.entered_mounts[index].1)
     }
 
     /// How many files in the subtree (the file itself for a file-like node) have more than one hard link.

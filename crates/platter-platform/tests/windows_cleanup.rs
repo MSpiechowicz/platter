@@ -46,6 +46,7 @@ fn expected(path: &Path, root: &Path) -> ExpectedEntry {
         birth: last.birth,
         is_dir: last.meta.kind == EntryKind::Dir,
         root_depth: WindowsEntryProbe.probe(&bytes(root)).unwrap().len(),
+        entered_mounts: Vec::new(),
     }
 }
 
@@ -429,7 +430,7 @@ fn the_emptied_folder_stays_and_what_is_inside_can_each_be_put_back() {
                         dev: child.dev,
                         ino: child.ino,
                         is_dir: child.is_dir,
-                        ..seen
+                        ..seen.clone()
                     };
                     WindowsEntryRemover
                         .restore(to, &wanted, &bytes(&original))

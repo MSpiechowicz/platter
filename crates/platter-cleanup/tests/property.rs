@@ -63,9 +63,11 @@ impl Rng {
     }
 }
 
-fn random_tree(rng: &mut Rng) -> (FakeFs, Vec<String>) {
+/// The tree, its folders, and the paths of the mounts that are the scan root's own filesystem.
+fn random_tree(rng: &mut Rng) -> (FakeFs, Vec<String>, Vec<String>) {
     let mut fs = FakeFs::new();
     let mut dirs = vec![String::from("/home/u"), String::from("/var/cache/pacman")];
+    let mut own_mounts = Vec::new();
     fs.dir("/home/u").dir("/var/cache/pacman");
 
     for _ in 0..rng.below(MAX_ENTRIES) {
@@ -99,7 +101,19 @@ fn random_tree(rng: &mut Rng) -> (FakeFs, Vec<String>) {
                 fs.symlink(&path, 1);
             }
             1 => {
-                fs.same_filesystem_mount(&path);
+                // Of the three kinds of mount the scan enters, only the first is acted inside.
+                match rng.below(3) {
+                    0 => {
+                        fs.same_filesystem_mount(&path);
+                        own_mounts.push(path.clone());
+                    }
+                    1 => {
+                        fs.same_filesystem_bind_mount(&path);
+                    }
+                    _ => {
+                        fs.mount(&path);
+                    }
+                }
                 dirs.push(path);
             }
             2 => {
@@ -116,7 +130,7 @@ fn random_tree(rng: &mut Rng) -> (FakeFs, Vec<String>) {
         }
     }
 
-    (fs, dirs)
+    (fs, dirs, own_mounts)
 }
 
 fn parts(path: &str) -> Vec<&str> {
@@ -160,7 +174,7 @@ fn no_plan_holds_anything_outside_the_scan_root_or_in_a_protected_place() {
 
     for seed in 1..=ROUNDS {
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-        let (fs, dirs) = random_tree(&mut rng);
+        let (mut fs, dirs, own_mounts) = random_tree(&mut rng);
         let root = dirs[rng.below(dirs.len())].clone();
         let config = ScanConfig {
             now: Some(NOW),
@@ -170,12 +184,22 @@ fn no_plan_holds_anything_outside_the_scan_root_or_in_a_protected_place() {
             continue;
         };
 
+        // Some folders become a mount after the scan (a disk mounted over them): never acted inside.
+        let mut late_mounts = Vec::new();
+        for _ in 0..rng.below(3) {
+            let folder = dirs[rng.below(dirs.len())].clone();
+            if !own_mounts.contains(&folder) {
+                fs.mount(&folder);
+                late_mounts.push(folder);
+            }
+        }
+
         let plan = plan_cleanup(&tree, &env, &rules, &ids, &fs, &CleanupOptions::default());
         let root_parts = parts(&root);
         let targets: Vec<String> = plan.targets().map(|t| t.display_path()).collect();
         planned += targets.len();
 
-        for target in &targets {
+        for (target, planned_target) in targets.iter().zip(plan.targets()) {
             let target_parts = parts(target);
             let context = format!("seed {seed}, root {root}, target {target}");
 
@@ -203,11 +227,33 @@ fn no_plan_holds_anything_outside_the_scan_root_or_in_a_protected_place() {
                 EntryKind::Symlink,
                 "a link: {context}"
             );
-            assert!(
-                now[root_parts.len()..]
-                    .iter()
-                    .all(|entry| !entry.meta.is_mount_root),
-                "a mount: {context}"
+            // Below the scan root a mount may only be one on the way that the plan recorded as it is, and
+            // never the target itself.
+            assert!(!now.last().unwrap().meta.is_mount_root, "a mount: {context}");
+            let mut mounts = 0;
+            for (depth, entry) in now.iter().enumerate().skip(root_parts.len()) {
+                if entry.meta.is_mount_root {
+                    mounts += 1;
+                    let place = format!("/{}", target_parts[..=depth].join("/"));
+                    assert!(
+                        own_mounts.contains(&place) && !late_mounts.contains(&place),
+                        "a mount that is not the scan root's own, or is new: {place}, {context}"
+                    );
+                    assert!(
+                        planned_target.entered_mounts().iter().any(|mount| mount.is(
+                            depth,
+                            entry.meta.dev,
+                            entry.meta.ino,
+                            entry.mount_id
+                        )),
+                        "a mount the plan did not record: {context}"
+                    );
+                }
+            }
+            assert_eq!(
+                mounts,
+                planned_target.entered_mounts().len(),
+                "a recorded mount that is not on the way: {context}"
             );
         }
 

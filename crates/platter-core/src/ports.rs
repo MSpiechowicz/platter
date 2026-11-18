@@ -44,6 +44,22 @@ pub struct RawEntry<H> {
     /// the reader knows, the walker only passes it on to the node. `None` when it cannot tell, which the
     /// tree records as [`SkipReason::Unknown`]. Ignored for every other entry.
     pub skipped: Option<SkipReason>,
+    /// What the source knows about a mount root it gave a child handle for (see [`MountFacts`]). The
+    /// default, for every other entry and for a source that cannot tell, says nothing is known.
+    pub mount: MountFacts,
+}
+
+/// What a source says about a mount root that the scan enters, kept on the tree so that cleanup can tell
+/// later which mounts the scan went into and whether it may act inside them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MountFacts {
+    /// The kernel's id of the mount, when the system reports one.
+    pub mount_id: Option<u64>,
+    /// The mount is part of the scan root's own filesystem, and not a view of a folder from elsewhere: on
+    /// Linux a subvolume of the same btrfs filesystem at its own place (`/home`), as against a bind
+    /// mount of some folder, or another disk entered because the scan may leave the root's disk. Only a
+    /// source that can tell says `true`; the default fails closed.
+    pub own_filesystem: bool,
 }
 
 /// Result of reading one directory.
@@ -69,6 +85,9 @@ impl<H> Default for DirListing<H> {
 pub struct RootInfo<H> {
     pub handle: H,
     pub meta: EntryMeta,
+    /// The kernel's id of the mount the root lives on, when the system reports one. Kept on the tree with
+    /// the root's device and inode, so cleanup can tell that the scan root was replaced since the scan.
+    pub mount_id: Option<u64>,
     /// Things the source could not do that make the scan less complete (see [`ScanWarning`]). The scan
     /// counts each as one error and keeps them on the tree. Empty for a source with nothing to report.
     pub warnings: Vec<ScanWarning>,
@@ -165,8 +184,36 @@ pub trait EntryProbe: Send + Sync {
     }
 }
 
-/// What a target has to be when it is acted on: what the plan saw.
+/// A mount root on the way to a target that the scan went into, so cleanup may pass through it. On Linux
+/// a separate `/home` (a btrfs subvolume of the same disk) is one: the scan reads it as a plain folder.
+/// It is recorded with the identity the plan saw, so only that mount at that place is allowed: a mount
+/// the scan did not go into, one that appeared later, and a different one now at the same place are not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnteredMount {
+    /// Index of the mount's component in the target's path, counted from the first component below `/`
+    /// (so the same index as in [`EntryProbe::probe`]'s answer).
+    pub depth: usize,
+    pub dev: u64,
+    pub ino: u64,
+    /// The mount id the scan saw. When there is one, the mount found later must report the very same id: a
+    /// system that stops reporting ids is not the same mount.
+    pub mount_id: Option<u64>,
+}
+
+impl EnteredMount {
+    /// Whether a mount root found now at `depth` with this identity is this mount.
+    pub fn is(&self, depth: usize, dev: u64, ino: u64, mount_id: Option<u64>) -> bool {
+        let same_mount = match self.mount_id {
+            Some(planned) => mount_id == Some(planned),
+            None => true,
+        };
+
+        self.depth == depth && self.dev == dev && self.ino == ino && same_mount
+    }
+}
+
+/// What a target has to be when it is acted on: what the plan saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpectedEntry {
     pub dev: u64,
     pub ino: u64,
@@ -177,6 +224,18 @@ pub struct ExpectedEntry {
     pub is_dir: bool,
     /// How many components the scan root has: no component below it may start a mount.
     pub root_depth: usize,
+    /// The mounts the scan went into that lie between the scan root and the target. Any other mount below
+    /// the scan root is a refusal. Empty means none is allowed.
+    pub entered_mounts: Vec<EnteredMount>,
+}
+
+impl ExpectedEntry {
+    /// Whether a mount root found now on the way, at `depth`, is one the plan allowed.
+    pub fn allows_mount(&self, depth: usize, dev: u64, ino: u64, mount_id: Option<u64>) -> bool {
+        self.entered_mounts
+            .iter()
+            .any(|mount| mount.is(depth, dev, ino, mount_id))
+    }
 }
 
 /// How much of a folder [`EntryRemover::remove`] removes.
@@ -527,5 +586,56 @@ mod tests {
         };
 
         assert!(runner.run_batch(&[]).is_empty());
+    }
+
+    fn expecting(mounts: Vec<EnteredMount>) -> ExpectedEntry {
+        ExpectedEntry {
+            dev: 1,
+            ino: 2,
+            mount_id: None,
+            birth: None,
+            is_dir: true,
+            root_depth: 1,
+            entered_mounts: mounts,
+        }
+    }
+
+    #[test]
+    fn only_the_recorded_mount_at_its_place_is_allowed() {
+        let mount = EnteredMount {
+            depth: 2,
+            dev: 7,
+            ino: 8,
+            mount_id: Some(30),
+        };
+        let expected = expecting(vec![mount]);
+
+        assert!(expected.allows_mount(2, 7, 8, Some(30)));
+        assert!(
+            !expected.allows_mount(2, 7, 8, None),
+            "a mount that reports no id now is not the mount that had one"
+        );
+        assert!(
+            expecting(vec![EnteredMount {
+                mount_id: None,
+                ..mount
+            }])
+            .allows_mount(2, 7, 8, Some(30)),
+            "a scan that saw no id compares device and inode only"
+        );
+        assert!(
+            !expected.allows_mount(2, 7, 8, Some(31)),
+            "another mount of the same filesystem"
+        );
+        assert!(!expected.allows_mount(2, 7, 9, Some(30)), "another root");
+        assert!(!expected.allows_mount(2, 6, 8, Some(30)), "another device");
+        assert!(
+            !expected.allows_mount(3, 7, 8, Some(30)),
+            "another place on the path"
+        );
+        assert!(
+            !expecting(Vec::new()).allows_mount(2, 7, 8, Some(30)),
+            "nothing is allowed by default"
+        );
     }
 }

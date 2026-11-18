@@ -1,7 +1,7 @@
 //! A cleanup plan: what would be cleaned, how, and what was refused.
 
 use platter_core::dto::Verdict;
-use platter_core::{EntryProbe, Environment, ModelLabel, ModelVerdict, NodeId, Os, Tree};
+use platter_core::{EntryProbe, Environment, ModelLabel, ModelVerdict, NodeId, Os, ScannedRoot, Tree};
 use platter_rules::{Named, RuleSet, matches, scan_is_kept, workspace_root};
 
 use crate::action::{CleanupAction, CleanupOptions, action_for};
@@ -77,6 +77,8 @@ pub struct CleanupPlan {
     /// cross a mount.
     pub(crate) scan_root: std::path::PathBuf,
     pub(crate) root_depth: usize,
+    /// The scan root as the scan opened it. Acting below the root needs it to be the same folder still.
+    pub(crate) root_identity: Option<ScannedRoot>,
     /// The OS the plan was made for: it decides the syntax of the paths in it, and what carrying it out
     /// may ask of the disk (nothing is deleted for good on Windows).
     pub(crate) os: Os,
@@ -94,6 +96,7 @@ impl Default for CleanupPlan {
             allocated: 0,
             scan_root: std::path::PathBuf::new(),
             root_depth: 0,
+            root_identity: None,
             os: Os::Other,
             options: CleanupOptions::default(),
         }
@@ -133,6 +136,7 @@ impl CleanupPlan {
         if self.scan_root.as_os_str().is_empty() {
             self.scan_root = other.scan_root;
             self.root_depth = other.root_depth;
+            self.root_identity = other.root_identity;
             self.os = other.os;
             self.options = other.options;
         }
@@ -198,6 +202,7 @@ pub fn plan_cleanup_with(
         root_depth: style
             .components(tree.root_path().as_os_str().as_encoded_bytes())
             .map_or(0, |parts| parts.len()),
+        root_identity: Some(tree.root_identity()),
         os: env.os,
         options: *options,
         ..CleanupPlan::default()
@@ -466,6 +471,7 @@ fn plan_by_hand(
         root_depth: style
             .components(tree.root_path().as_os_str().as_encoded_bytes())
             .map_or(0, |parts| parts.len()),
+        root_identity: Some(tree.root_identity()),
         os: env.os,
         ..CleanupPlan::default()
     };

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crate::budget::Lease;
 use crate::model::{EntryKind, ScanWarning, SkipReason};
 use crate::ports::{
-    DirListing, DirSource, EntryMeta, EntryProbe, ProbedEntry, RawEntry, RootInfo, SourceOptions,
+    DirListing, DirSource, EntryMeta, EntryProbe, MountFacts, ProbedEntry, RawEntry, RootInfo, SourceOptions,
 };
 
 #[derive(Debug, Clone)]
@@ -19,6 +19,9 @@ struct FakeNode {
     withhold_child: bool,
     /// A mount root the source counts as the same filesystem as the scan root.
     same_filesystem: bool,
+    /// A mount root the source counts as part of the scan root's own filesystem, not a view of a folder
+    /// from elsewhere (see [`MountFacts::own_filesystem`]).
+    own_filesystem: bool,
     /// A mount root that is never entered, with the reason the source gives.
     skipped_as: Option<SkipReason>,
     /// The directory lists this many generated files (see [`FakeFs::generated_dir`]) besides its children.
@@ -70,6 +73,7 @@ impl FakeFs {
             unreadable: false,
             withhold_child: false,
             same_filesystem: false,
+            own_filesystem: false,
             skipped_as: None,
             generated: None,
             fail_after: None,
@@ -166,6 +170,18 @@ impl FakeFs {
 
         let index = self.resolve(path).expect("path exists");
         self.nodes[index].same_filesystem = true;
+        self.nodes[index].own_filesystem = true;
+        self
+    }
+
+    /// Adds a mount root on the scan root's filesystem that shows a folder from elsewhere on it (a bind
+    /// mount): it is entered with `one_file_system`, like the Linux reader does, but it is not the scan
+    /// root's own filesystem, so cleanup does not act inside it.
+    pub fn same_filesystem_bind_mount(&mut self, path: &str) -> &mut Self {
+        self.same_filesystem_mount(path);
+
+        let index = self.resolve(path).expect("path exists");
+        self.nodes[index].own_filesystem = false;
         self
     }
 
@@ -291,6 +307,7 @@ impl FakeFs {
                         unreadable: false,
                         withhold_child: false,
                         same_filesystem: false,
+                        own_filesystem: false,
                         skipped_as: None,
                         generated: None,
                         fail_after: None,
@@ -406,6 +423,7 @@ impl DirSource for FakeFs {
         Ok(RootInfo {
             handle: index,
             meta: self.nodes[index].meta,
+            mount_id: None,
             warnings: self.warnings.clone(),
         })
     }
@@ -450,6 +468,10 @@ impl DirSource for FakeFs {
                 meta: entry.meta,
                 child: enter.then_some(child),
                 skipped: skipped.filter(|_| !enter),
+                mount: MountFacts {
+                    mount_id: None,
+                    own_filesystem: enter && entry.meta.is_mount_root && entry.own_filesystem,
+                },
             });
         }
 
@@ -464,6 +486,7 @@ impl DirSource for FakeFs {
                     meta: Self::meta(EntryKind::File, 1, 1, number as u64 + 1),
                     child: None,
                     skipped: None,
+                    mount: MountFacts::default(),
                 });
             }
         }

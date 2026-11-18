@@ -207,6 +207,7 @@ pub fn scan<S: DirSource>(
         Assembly {
             root_path: root,
             root_meta: root_info.meta,
+            root_mount_id: root_info.mount_id,
             errors: reporter.errors(),
             scanned_at,
             elapsed: started.elapsed(),

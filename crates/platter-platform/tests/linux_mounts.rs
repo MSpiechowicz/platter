@@ -208,6 +208,55 @@ fn another_disk_left_out_by_one_file_system_says_so_and_is_entered_without_it() 
         "/{name} is another disk, which is entered by default"
     );
     assert_eq!(entered.skipped, None, "an entered mount has no reason");
+    assert!(
+        !entered.mount.own_filesystem,
+        "/{name} is another disk: entered, but not the scan root's own filesystem"
+    );
+}
+
+#[test]
+fn a_subvolume_of_the_scan_roots_btrfs_is_entered_as_its_own_filesystem() {
+    let table = std::fs::read("/proc/self/mountinfo").unwrap_or_default();
+    let mounts = platter_platform::linux::mountinfo::parse(&table);
+    let Some(root) = mounts
+        .iter()
+        .rev()
+        .find(|mount| mount.mount_point == Path::new("/"))
+    else {
+        return;
+    };
+    if root.fs_type != "btrfs" {
+        return;
+    }
+
+    // A top-level mount of the same btrfs filesystem, such as `/home` on a machine with `@home`.
+    let subvolumes: Vec<String> = mounts
+        .iter()
+        .filter(|mount| mount.device == root.device && mount.fs_type == "btrfs")
+        .filter(|mount| {
+            mount.mount_point.parent() == Some(Path::new("/")) && mount.mount_point != Path::new("/")
+        })
+        .filter_map(|mount| mount.mount_point.to_str()?.strip_prefix('/').map(str::to_owned))
+        .collect();
+
+    let source = LinuxDirSource::new();
+    for name in subvolumes {
+        for one_file_system in [true, false] {
+            let options = SourceOptions { one_file_system };
+            let Some(entry) = entry_of_with(&source, &name, options) else {
+                continue;
+            };
+            if entry.child.is_none() {
+                continue;
+            }
+
+            assert!(
+                entry.mount.own_filesystem,
+                "/{name}, one_file_system: {one_file_system}"
+            );
+            assert!(entry.mount.mount_id.is_some(), "/{name}");
+        }
+    }
 }
 
 #[test]

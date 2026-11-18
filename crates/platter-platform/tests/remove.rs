@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use platter_core::{BirthTime, EntryKind, EntryProbe, EntryRemover, ExpectedEntry, RemoveMode};
+use platter_core::{BirthTime, EnteredMount, EntryKind, EntryProbe, EntryRemover, ExpectedEntry, RemoveMode};
 use platter_platform::linux::probe::LinuxEntryProbe;
 use platter_platform::linux::remove::LinuxEntryRemover;
 
@@ -26,7 +26,26 @@ fn expected(path: &Path, root: &Path) -> ExpectedEntry {
         birth: last.birth,
         is_dir: last.meta.kind == EntryKind::Dir,
         root_depth: root.components().count() - 1,
+        entered_mounts: Vec::new(),
     }
+}
+
+/// [`expected`], with every mount between `root` and `path` recorded as one the scan went into.
+fn expected_through_mounts(path: &Path, root: &Path) -> ExpectedEntry {
+    let mut plan = expected(path, root);
+    let found = LinuxEntryProbe.probe(&bytes(path)).unwrap();
+
+    for (depth, entry) in found.iter().enumerate().skip(plan.root_depth) {
+        if entry.meta.is_mount_root && depth + 1 < found.len() {
+            plan.entered_mounts.push(EnteredMount {
+                depth,
+                dev: entry.meta.dev,
+                ino: entry.meta.ino,
+                mount_id: entry.mount_id,
+            });
+        }
+    }
+    plan
 }
 
 fn temp() -> (tempfile::TempDir, PathBuf) {
@@ -249,6 +268,7 @@ fn a_mount_on_the_way_below_the_scan_root_is_refused() {
         birth: None,
         is_dir: false,
         root_depth: 0,
+        entered_mounts: Vec::new(),
     };
 
     let error = LinuxEntryRemover
@@ -398,6 +418,162 @@ fn mount_tmpfs(at: &Path) {
         .status()
         .unwrap();
     assert!(mounted.success());
+}
+
+#[test]
+fn a_mount_the_scan_went_into_is_passed_and_another_one_is_not() {
+    let Some(dir) = std::env::var_os(MOUNT_CHILD) else {
+        in_namespace("a_mount_the_scan_went_into_is_passed_and_another_one_is_not");
+        return;
+    };
+    let root = PathBuf::from(dir);
+    mount_tmpfs(&root.join("home"));
+    write(&root.join("home/user/cache/a"));
+    write(&root.join("home/user/cache/b"));
+    write(&root.join("home/user/cache/c"));
+    write(&root.join("home/user/cache/d"));
+    let target = root.join("home/user/cache");
+    let plan = expected_through_mounts(&target, &root);
+    assert_eq!(plan.entered_mounts.len(), 1, "{plan:?}");
+
+    // Not recorded: the mount stays refused.
+    let mut unrecorded = plan.clone();
+    unrecorded.entered_mounts.clear();
+    let error = LinuxEntryRemover
+        .remove(&bytes(&target), &unrecorded, RemoveMode::Contents)
+        .unwrap_err();
+    assert!(error.to_string().contains("a mount lies on the way"), "{error}");
+
+    // Recorded for another place on the path, or as another mount, or another folder: refused.
+    for change in [
+        |mount: &mut EnteredMount| mount.depth += 1,
+        |mount: &mut EnteredMount| mount.ino += 1,
+        |mount: &mut EnteredMount| mount.dev += 1,
+        |mount: &mut EnteredMount| mount.mount_id = mount.mount_id.map(|id| id + 1),
+    ] {
+        let mut other = plan.clone();
+        change(&mut other.entered_mounts[0]);
+        if other == plan {
+            continue;
+        }
+
+        let error = LinuxEntryRemover
+            .remove(&bytes(&target), &other, RemoveMode::Contents)
+            .unwrap_err();
+        assert!(error.to_string().contains("a mount lies on the way"), "{error}");
+    }
+    assert!(root.join("home/user/cache/a").exists());
+
+    // Recorded as the plan saw it: the contents go, and so does the whole folder.
+    LinuxEntryRemover
+        .remove(&bytes(&target), &plan, RemoveMode::Contents)
+        .unwrap();
+    assert!(target.exists() && !root.join("home/user/cache/a").exists());
+    write(&root.join("home/user/cache/e"));
+    LinuxEntryRemover
+        .remove(&bytes(&target), &plan, RemoveMode::Whole)
+        .unwrap();
+    assert!(!target.exists());
+
+    // The mount itself is never the target.
+    let mount = root.join("home");
+    let mut itself = expected(&mount, &root);
+    itself.entered_mounts = plan.entered_mounts.clone();
+    let error = LinuxEntryRemover
+        .remove(&bytes(&mount), &itself, RemoveMode::Whole)
+        .unwrap_err();
+    assert!(error.to_string().contains("mount"), "{error}");
+}
+
+#[test]
+fn trashing_below_a_mount_the_scan_went_into_stays_on_that_mount() {
+    let Some(dir) = std::env::var_os(MOUNT_CHILD) else {
+        in_namespace("trashing_below_a_mount_the_scan_went_into_stays_on_that_mount");
+        return;
+    };
+    let root = PathBuf::from(dir);
+    mount_tmpfs(&root.join("home"));
+    write(&root.join("home/user/Downloads/old.iso"));
+    let target = root.join("home/user/Downloads/old.iso");
+    let trash = root.join("home/user/.local/share/Trash");
+
+    let plan = expected(&target, &root);
+    let error = LinuxEntryRemover
+        .trash(&bytes(&target), &plan, &trash)
+        .unwrap_err();
+    assert!(error.to_string().contains("a mount lies on the way"), "{error}");
+    assert!(target.exists());
+
+    let to = LinuxEntryRemover
+        .trash(&bytes(&target), &expected_through_mounts(&target, &root), &trash)
+        .unwrap();
+
+    assert_eq!(to, bytes(&trash.join("files/old.iso")));
+    assert!(!target.exists());
+    assert!(trash.join("files/old.iso").exists());
+}
+
+/// What the reader says of `name` below `root` when its mount table (the file `table`) is what it is.
+fn mount_facts_of(root: &Path, table: &Path, name: &str) -> (bool, bool) {
+    use platter_core::{DirSource, EntryBudget, SourceOptions};
+    use platter_platform::linux::{ExclusionRules, LinuxDirSource};
+
+    let source = LinuxDirSource::with_rules(ExclusionRules::NONE).with_mountinfo_path(table);
+    let root = source
+        .open_root(
+            root,
+            SourceOptions {
+                one_file_system: true,
+            },
+        )
+        .unwrap();
+    let listing = source
+        .read_dir(&root.handle, &mut EntryBudget::unlimited().lease())
+        .unwrap();
+    let entry = listing
+        .entries
+        .into_iter()
+        .find(|entry| entry.name == name.as_bytes())
+        .unwrap();
+
+    (entry.child.is_some(), entry.mount.own_filesystem)
+}
+
+#[test]
+fn a_mount_the_table_calls_own_but_that_is_another_filesystem_is_not_own() {
+    let Some(dir) = std::env::var_os(MOUNT_CHILD) else {
+        in_namespace("a_mount_the_table_calls_own_but_that_is_another_filesystem_is_not_own");
+        return;
+    };
+    let root = PathBuf::from(dir);
+    mount_tmpfs(&root.join("home"));
+    let found = LinuxEntryProbe.probe(&bytes(&root.join("home"))).unwrap();
+    let home = found.last().unwrap();
+    let above = LinuxEntryProbe.probe(&bytes(&root)).unwrap();
+    let base = above.last().unwrap();
+    let (base_id, home_id) = (base.mount_id.unwrap(), home.mount_id.unwrap());
+    let real_device = format!(
+        "{}:{}",
+        rustix::fs::major(home.meta.dev),
+        rustix::fs::minor(home.meta.dev)
+    );
+    let table_file = root.join("mountinfo");
+
+    // A table written for the very mounts that are there: the mount root is entered and is own.
+    let write = |device: &str| {
+        let table = format!(
+            "{base_id} 1 {device} / {root} rw - ext4 /dev/sda1 rw\n{home_id} {base_id} {device} /home {root}/home rw - ext4 /dev/sda1 rw\n",
+            root = root.display()
+        );
+        fs::write(&table_file, table).unwrap();
+    };
+    write(&real_device);
+    assert_eq!(mount_facts_of(&root, &table_file, "home"), (true, true));
+
+    // The table says the same disk as the scan root (8:1) for this mount id, but what is at the place is a
+    // tmpfs of another device: entered as the table allows, and not own.
+    write("8:1");
+    assert_eq!(mount_facts_of(&root, &table_file, "home"), (true, false));
 }
 
 #[test]

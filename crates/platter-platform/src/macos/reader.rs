@@ -35,7 +35,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use platter_core::{
-    DirListing, DirSource, EntryKind, EntryMeta, Lease, RawEntry, RootInfo, SkipReason, SourceOptions,
+    DirListing, DirSource, EntryKind, EntryMeta, Lease, MountFacts, RawEntry, RootInfo, SkipReason,
+    SourceOptions,
 };
 use rustix::fs::{AtFlags, CWD, Dir, FileType, Mode, OFlags, Stat, fstat, getpath, openat, statat};
 use rustix::io::Errno;
@@ -184,6 +185,7 @@ impl DirSource for MacDirSource {
         Ok(RootInfo {
             handle,
             meta,
+            mount_id: None,
             warnings: Vec::new(),
         })
     }
@@ -261,6 +263,7 @@ fn make_entry(
         meta,
         child: None,
         skipped: None,
+        mount: MountFacts::default(),
     };
     if meta.kind != EntryKind::Dir {
         return entry;

@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ApiRequestError, type Api } from '../api/client';
 import { createMockApi } from '../api/mock';
-import type { CleanupEvent, PlanGroupDto, SuggestionsDto } from '../api/types';
-import { CleanupStore, NOT_CLEANED, progressTitle } from './cleanup.svelte';
+import type { CleanupEvent, CleanupPlanDto, PlanGroupDto, SuggestionsDto } from '../api/types';
+import { CleanupStore, NOT_CLEANED, progressTitle, refusedSummary } from './cleanup.svelte';
 import { ScanStore } from './scan.svelte';
 import { settings } from './settings.svelte';
 
@@ -12,6 +12,8 @@ interface Setup {
   api: Api;
   scan: ScanStore;
   store: CleanupStore;
+  /** The toasts the store showed, as `[title, description, kind]`. */
+  toast: ReturnType<typeof vi.fn>;
   data: SuggestionsDto;
   scanId: number;
 }
@@ -31,11 +33,12 @@ async function setup(wrap: (api: Api) => Api = (api) => api): Promise<Setup> {
 
   const scanId = scan.state.scanId;
   const data = await api.getSuggestions(scanId);
-  const store = new CleanupStore(api, scan);
+  const toast = vi.fn();
+  const store = new CleanupStore(api, scan, { toast });
 
   store.load(scanId, data);
 
-  return { api, scan, store, data, scanId };
+  return { api, scan, store, data, scanId, toast };
 }
 
 const ids = (data: SuggestionsDto, verdict: string): string[] =>
@@ -301,8 +304,8 @@ describe('planning', () => {
     expect(store.reviewing).toEqual(store.plan);
   });
 
-  it('says why a plan could not be made and does not try again', async () => {
-    const { api, store } = await setup((api) => ({
+  it('says in a toast why a plan could not be made and does not try again', async () => {
+    const { api, store, toast } = await setup((api) => ({
       ...api,
       planCleanup: vi.fn().mockRejectedValue(new ApiRequestError('invalid', 'the disk changed')),
     }));
@@ -310,20 +313,30 @@ describe('planning', () => {
     await store.cleanSelected();
 
     expect(store.phase.kind).toBe('idle');
-    expect(store.notice).toBe('Could not plan the cleanup: the disk changed');
+    expect(store.notice).toBeUndefined();
+    expect(toast).toHaveBeenCalledExactlyOnceWith('Could not plan the cleanup', 'the disk changed', 'error');
     expect(api.planCleanup).toHaveBeenCalledOnce();
   });
 
-  it('says so when nothing of the selection can be cleaned', async () => {
-    const { store } = await setup((api) => ({
+  it('says in a toast when nothing of the selection can be cleaned, with the most common reason', async () => {
+    const { store, toast } = await setup((api) => ({
       ...api,
       planCleanup: async (scanId) => ({
         planId: 1,
         scanId,
         options: { keepPackageVersions: 2, askForAdmin: true },
         groups: [],
-        refused: [{ ruleId: 'x', path: '/x', reason: 'kept on purpose' }],
-        refusedMore: 0,
+        refused: [
+          { ruleId: 'x', path: '/x', reason: 'it is, or lies below, another mounted filesystem' },
+          { ruleId: 'x', path: '/y', reason: 'it is, or lies below, another mounted filesystem' },
+          { ruleId: 'x', path: '/z', reason: 'kept on purpose' },
+          {
+            ruleId: 'x',
+            path: '/w',
+            reason: 'Needs administrator rights, which are turned off in Settings.',
+          },
+        ],
+        refusedMore: 6555,
         notFound: [],
         allocated: 0,
         needsConfirmation: false,
@@ -333,8 +346,30 @@ describe('planning', () => {
     await store.cleanSelected();
 
     expect(store.phase.kind).toBe('idle');
-    expect(store.notice).toBe('Nothing from this selection can be cleaned.');
-    expect(store.plan?.refused).toHaveLength(1);
+    expect(store.notice).toBeUndefined();
+    expect(toast).toHaveBeenCalledExactlyOnceWith(
+      'Nothing could be cleaned',
+      '6,559 items were left out. Most often: it is, or lies below, another mounted filesystem.',
+      'error',
+    );
+    expect(store.plan?.refused).toHaveLength(4);
+  });
+
+  it('does not double the full stop of a reason that is a sentence already', () => {
+    const reason = 'Needs administrator rights, which are turned off in Settings.';
+    const plan: CleanupPlanDto = {
+      planId: 1,
+      scanId: 1,
+      options: { keepPackageVersions: 2, askForAdmin: false },
+      groups: [],
+      refused: [{ ruleId: 'x', path: '/x', reason }],
+      refusedMore: 0,
+      notFound: [],
+      allocated: 0,
+      needsConfirmation: false,
+    };
+
+    expect(refusedSummary(plan)).toBe(`1 item was left out. Why: ${reason}`);
   });
 
   it('drops a plan that arrives after the scan was replaced', async () => {
@@ -632,14 +667,18 @@ describe('when the backend says no', () => {
     expect(store.canCleanSelected).toBe(true);
   });
 
-  it('"invalid" says why, and a new plan is made only on the next click', async () => {
-    const { api, store } = await setup(rejecting('invalid', 'a cleanup is already running'));
+  it('"invalid" says why in a toast, and a new plan is made only on the next click', async () => {
+    const { api, store, toast } = await setup(rejecting('invalid', 'a cleanup is already running'));
     const planCleanup = vi.spyOn(api, 'planCleanup');
 
     await store.cleanSelected();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(store.notice).toBe('Not started: a cleanup is already running');
+    expect(toast).toHaveBeenCalledExactlyOnceWith(
+      'The cleanup did not start',
+      'A cleanup is already running',
+      'error',
+    );
     expect(store.phase.kind).toBe('idle');
     expect(api.startCleanup).toHaveBeenCalledOnce();
     expect(planCleanup).toHaveBeenCalledOnce();
@@ -649,22 +688,27 @@ describe('when the backend says no', () => {
     expect(planCleanup).toHaveBeenCalledTimes(2);
   });
 
-  it('"notFound" says the plan is gone and waits for a click for a new one', async () => {
-    const { store } = await setup(rejecting('notFound', 'plan 1 does not exist'));
+  it('"notFound" says in a toast the plan is gone and waits for a click for a new one', async () => {
+    const { store, toast } = await setup(rejecting('notFound', 'plan 1 does not exist'));
 
     await store.cleanSelected();
 
-    expect(store.notice).toBe('This plan is gone: it was used or it expired. Click again to make a new one.');
+    expect(toast).toHaveBeenCalledExactlyOnceWith(
+      'The cleanup did not start',
+      'The plan was used or it expired. Click again to make a new one.',
+      'error',
+    );
     expect(store.phase.kind).toBe('idle');
     expect(store.canCleanSelected).toBe(true);
   });
 
-  it('any other error is shown as text', async () => {
-    const { store } = await setup(rejecting('io', 'the disk went away'));
+  it('any other error is shown in a toast, not in the view', async () => {
+    const { store, toast } = await setup(rejecting('io', 'the disk went away'));
 
     await store.cleanSelected();
 
-    expect(store.notice).toBe('Could not start the cleanup: the disk went away');
+    expect(store.notice).toBeUndefined();
+    expect(toast).toHaveBeenCalledExactlyOnceWith('The cleanup did not start', 'The disk went away', 'error');
   });
 });
 

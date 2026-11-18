@@ -7,7 +7,8 @@ use std::time::Duration;
 use super::chunk::Chunk;
 use crate::error::{ScanError, ScanLimit};
 use crate::model::{
-    Category, DirInfo, NO_DIR, NO_PARENT, Node, NodeKind, ScanWarning, SkipReason, Totals, Tree,
+    Category, DirInfo, NO_DIR, NO_PARENT, Node, NodeKind, ScanWarning, ScannedMount, ScannedRoot, SkipReason,
+    Totals, Tree,
 };
 use crate::ports::EntryMeta;
 
@@ -15,6 +16,7 @@ use crate::ports::EntryMeta;
 pub(crate) struct Assembly<'a> {
     pub root_path: &'a Path,
     pub root_meta: EntryMeta,
+    pub root_mount_id: Option<u64>,
     pub errors: u64,
     pub scanned_at: i64,
     pub elapsed: Duration,
@@ -60,6 +62,7 @@ fn flatten(root: Chunk, input: &Assembly<'_>) -> Result<Tree, ScanError> {
     let mut seen_links: HashSet<(u64, u64)> = HashSet::new();
     let mut unreadable: Vec<u32> = Vec::new();
     let mut skipped: Vec<(u32, SkipReason)> = Vec::new();
+    let mut entered_mounts: Vec<(u32, ScannedMount)> = Vec::new();
     let mut shared: Vec<u32> = Vec::new();
 
     names.extend_from_slice(root_name.as_bytes());
@@ -114,6 +117,7 @@ fn flatten(root: Chunk, input: &Assembly<'_>) -> Result<Tree, ScanError> {
         let mut subdirs = std::mem::take(&mut chunk.subdirs).into_iter();
         let mut links = chunk.links.iter().peekable();
         let mut skips = chunk.skips.iter().flat_map(|skips| skips.iter()).peekable();
+        let mut mounts = chunk.mounts.iter().flat_map(|mounts| mounts.iter()).peekable();
 
         for (index, entry) in chunk.entries.iter().enumerate() {
             let name = &chunk.names[entry.name_range()];
@@ -142,6 +146,10 @@ fn flatten(root: Chunk, input: &Assembly<'_>) -> Result<Tree, ScanError> {
                     });
                     dirs.push(DirInfo::default());
 
+                    if let Some(&&(_, mount)) = mounts.peek().filter(|(entry, _)| *entry as usize == index) {
+                        entered_mounts.push((node_id, mount));
+                        mounts.next();
+                    }
                     if entry.descended {
                         let sub = subdirs.next().unwrap_or_default();
                         queue.push_back(Pending {
@@ -184,6 +192,7 @@ fn flatten(root: Chunk, input: &Assembly<'_>) -> Result<Tree, ScanError> {
     }
 
     skipped.shrink_to_fit();
+    entered_mounts.shrink_to_fit();
     shared.shrink_to_fit();
 
     Ok(Tree {
@@ -197,6 +206,12 @@ fn flatten(root: Chunk, input: &Assembly<'_>) -> Result<Tree, ScanError> {
         warnings: Vec::new(),
         unreadable,
         skipped,
+        entered_mounts,
+        root_identity: ScannedRoot {
+            dev: input.root_meta.dev,
+            ino: input.root_meta.ino,
+            mount_id: input.root_mount_id,
+        },
         shared,
     })
 }

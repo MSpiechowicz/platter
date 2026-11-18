@@ -109,6 +109,7 @@ pub fn restore_one<R: EntryRemover>(
         birth: None,
         is_dir,
         root_depth: 0,
+        entered_mounts: Vec::new(),
     };
 
     remover
@@ -360,6 +361,7 @@ fn act<P: EntryProbe, R: EntryRemover>(
         birth: target.birth(),
         is_dir: target.is_dir(),
         root_depth: plan.root_depth,
+        entered_mounts: target.entered_mounts().to_vec(),
     };
 
     let result = match group.action {
@@ -514,6 +516,8 @@ fn empty_trash<P: EntryProbe, R: EntryRemover>(
         match part_of(disk.probe, target, &path, dir) {
             Ok(Some(mut expected)) => {
                 expected.root_depth = plan.root_depth;
+                // The parts lie below the trash folder, so the folder's index in a path is the same.
+                expected.entered_mounts = target.entered_mounts().to_vec();
                 match disk.remover.remove(&path, &expected, mode) {
                     Ok(removed) => total.absorb(removed),
                     Err(error) => total.note(path, error.to_string()),
@@ -564,6 +568,7 @@ fn part_of(
         birth: now.birth,
         is_dir: dir,
         root_depth: 0,
+        entered_mounts: Vec::new(),
     }))
 }
 
@@ -581,11 +586,31 @@ fn still_the_same(
         return Err("changed since the plan: the path is empty".to_owned());
     };
 
-    if found
-        .get(plan.root_depth..)
-        .is_none_or(|below| below.iter().any(|entry| entry.meta.is_mount_root))
+    // The scan root must be the folder the scan opened (the top, `/`, has no component to look at).
+    if let (Some(root), Some(seen)) = (found.get(plan.root_depth.wrapping_sub(1)), plan.root_identity)
+        && !seen.is(root.meta.dev, root.meta.ino, root.mount_id)
     {
+        return Err(
+            "changed since the plan: the scanned folder is not the one that was scanned. Scan again."
+                .to_owned(),
+        );
+    }
+
+    // Below the scan root only the mounts the plan went through may start a mount, each as it was.
+    if plan.root_depth > found.len() {
         return Err("changed since the plan: a mount lies on the way".to_owned());
+    }
+    let last = found.len() - 1;
+    for (depth, entry) in found.iter().enumerate().skip(plan.root_depth) {
+        let allowed = depth != last
+            && target
+                .entered_mounts()
+                .iter()
+                .any(|mount| mount.is(depth, entry.meta.dev, entry.meta.ino, entry.mount_id));
+
+        if entry.meta.is_mount_root && !allowed {
+            return Err("changed since the plan: a mount lies on the way".to_owned());
+        }
     }
     let kind_ok = match now.meta.kind {
         EntryKind::Dir => target.is_dir(),

@@ -4,7 +4,7 @@
 //! chunk tree into the arena in a fixed (breadth-first, name-sorted) order, which is what makes the
 //! result independent of thread scheduling.
 
-use crate::model::{NodeKind, SkipReason};
+use crate::model::{NodeKind, ScannedMount, SkipReason};
 
 #[derive(Debug, Default)]
 pub(crate) struct Chunk {
@@ -17,6 +17,8 @@ pub(crate) struct Chunk {
     /// Why mount entries were left out, as `(entry index, reason)` ascending. Only reasons other than
     /// `Unknown` are kept; a mount entry that is not listed is unknown.
     pub skips: Option<Box<[(u32, SkipReason)]>>,
+    /// The mount roots that were entered, as `(entry index, what was seen)` ascending.
+    pub mounts: Option<Box<[(u32, ScannedMount)]>>,
     /// One chunk per entry with `descended`, in entry order.
     pub subdirs: Vec<Chunk>,
     /// The directory was entered but could not be read (listing failed, loop, too deep): the chunk is

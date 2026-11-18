@@ -67,6 +67,20 @@
 //! data. A bind mount of a directory that is *outside* the scan root, say `/@home/me/docs` bound into
 //! `/@srv` while scanning `/srv`, is not covered by anything and is counted, once.
 //!
+//! # Own filesystem
+//!
+//! Entering a mount is not the same as being allowed to delete inside it. Cleanup acts below an entered
+//! mount only when it is part of the scan root's *own* filesystem: the same superblock device and type,
+//! and showing a whole filesystem or subvolume (or the directory it replaces) rather than a folder from
+//! elsewhere. A bind mount of `/@home/me/docs` at `/srv/docs` is entered with `one_file_system` (it is on
+//! the same disk, and counted once), but acting there would delete data that lives outside the scan root.
+//! A mount of another disk, entered because the scan may leave the root's disk, is not own either.
+//! Mount root `root == /` or `root` equal to the place the mount replaces is own at once. On btrfs a mount
+//! of another path (`/@home`) is own when its root directory is a subvolume root, which the mount table
+//! cannot tell and the reader checks with the inode of the mount root. A mount of a snapshot (mounted
+//! read-only, or with a `root` inside `.snapshots`, `@snapshots`, `timeshift-btrfs` or `timeshift`) is
+//! never own, writable or not.
+//!
 //! # Order
 //!
 //! The choice does not depend on the order of the mount table or on which mounts happen to become
@@ -103,7 +117,33 @@ pub struct Decision {
     pub duplicate: HashSet<u64>,
     /// With `one_file_system`: mounts of another filesystem.
     pub other_disk: HashSet<u64>,
+    /// Entered mounts that are part of the scan root's own filesystem and show a whole filesystem (or the
+    /// directory they replace), not a folder from elsewhere: see "Own filesystem" below.
+    pub own: HashSet<u64>,
+    /// Entered mounts of the scan root's btrfs filesystem that show some directory of it by a path
+    /// (`/@home`). They are own when that directory is a subvolume, which only the mount root's inode
+    /// tells (see [`BTRFS_SUBVOLUME_ROOT_INO`]).
+    pub subvolumes: HashSet<u64>,
 }
+
+/// Folder names under which snapshot tools keep their snapshots. A mount whose `root` passes through one
+/// shows a snapshot, which can be writable (timeshift's are), so it is never the scan root's own data.
+const SNAPSHOT_CONTAINERS: &[&str] = &[".snapshots", "@snapshots", "timeshift-btrfs", "timeshift"];
+
+/// Whether `mount` shows a snapshot: it is mounted read-only, or its root lies inside a snapshot folder.
+fn is_snapshot_mount(mount: &MountEntry) -> bool {
+    mount.read_only
+        || mount.root.components().any(|part| {
+            SNAPSHOT_CONTAINERS
+                .iter()
+                .any(|name| part.as_os_str().as_encoded_bytes() == name.as_bytes())
+        })
+}
+
+/// The inode number of the root directory of every btrfs subvolume (`BTRFS_FIRST_FREE_OBJECTID`). No other
+/// directory of a btrfs filesystem has it, so a mount root with this inode shows a whole subvolume and not
+/// a bind mount of a folder inside one.
+pub const BTRFS_SUBVOLUME_ROOT_INO: u64 = 256;
 
 /// Which mounts below `scan_root` the walk may enter, given the scan root's own mount (`scan_mount_id`,
 /// its `stx_mnt_id`), and why it refuses the others. `scan_root` must be the canonical path as the
@@ -206,10 +246,41 @@ fn decide(
     }
 
     covered.remove(&base.mount_id);
+
+    let mut own = HashSet::new();
+    let mut subvolumes = HashSet::new();
+    for area in covered.values() {
+        let mount = area.mount;
+        if !is_same_filesystem(mount, base) {
+            continue;
+        }
+
+        // A mount of a snapshot (a read-only one, or a path inside a snapshot folder such as timeshift's)
+        // is entered like any other, but it is a backup and not the scan root's own data.
+        if is_snapshot_mount(mount) {
+            continue;
+        }
+
+        let parent = if mount.parent_id == base.mount_id {
+            Some(base)
+        } else {
+            by_id.get(&mount.parent_id).copied()
+        };
+        let whole = mount.root == Path::new("/")
+            || parent.is_some_and(|parent| replaces_its_own_location(mount, parent));
+        if whole {
+            own.insert(mount.mount_id);
+        } else if mount.fs_type == "btrfs" {
+            subvolumes.insert(mount.mount_id);
+        }
+    }
+
     Decision {
         enter: covered.into_keys().collect(),
         duplicate: refused,
         other_disk,
+        own,
+        subvolumes,
     }
 }
 
@@ -385,6 +456,98 @@ mod tests {
     fn scanning_the_root_of_a_btrfs_machine_enters_every_subvolume_and_nothing_else() {
         // /srv /root /home /var/cache /var/log /var/tmp; not /boot (vfat), /tmp, /run (tmpfs), /dev, /proc.
         assert_eq!(decide(BTRFS_MACHINE, 67, "/"), [53, 54, 55, 162, 209, 214]);
+    }
+
+    fn decision(text: &str, scan_mount_id: u64, scan_root: &str, one_file_system: bool) -> Decision {
+        enterable_mounts(
+            &parse(text.as_bytes()),
+            &ExclusionRules::DEFAULT,
+            scan_mount_id,
+            Path::new(scan_root),
+            one_file_system,
+        )
+        .expect("the scan root is placed")
+    }
+
+    #[test]
+    fn the_subvolumes_of_the_scan_roots_own_btrfs_are_candidates_for_own_and_nothing_else_is() {
+        for one_file_system in [true, false] {
+            let decision = decision(BTRFS_MACHINE, 67, "/", one_file_system);
+
+            // The inode of the mount root settles each of these (see `BTRFS_SUBVOLUME_ROOT_INO`).
+            assert_eq!(
+                sorted_ids(&decision.subvolumes),
+                [53, 54, 55, 162, 209, 214],
+                "one_file_system: {one_file_system}"
+            );
+            assert!(decision.own.is_empty());
+            // /boot (vfat), /tmp and /run (tmpfs) are never own, entered or not.
+            for other in [69, 219, 47] {
+                assert!(
+                    !decision.own.contains(&other) && !decision.subvolumes.contains(&other),
+                    "{other}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_mount_of_a_snapshot_is_never_own_even_when_it_is_writable_and_under_another_name() {
+        let text = "\
+1 0 0:32 /@ / rw,noatime - btrfs /dev/sda2 rw
+2 1 0:32 /timeshift-btrfs/snapshots/2026-11-01/@home /mnt/ts rw,noatime - btrfs /dev/sda2 rw
+3 1 0:32 /@home /home rw,noatime - btrfs /dev/sda2 rw
+4 1 0:32 /@snapshots /mnt/snaps rw,noatime - btrfs /dev/sda2 rw
+5 1 0:32 /.snapshots/7/snapshot /mnt/s7 rw,noatime - btrfs /dev/sda2 rw
+6 1 0:32 /@data /mnt/ro ro,noatime - btrfs /dev/sda2 rw
+";
+        for one_file_system in [true, false] {
+            let decision = decision(text, 1, "/", one_file_system);
+
+            assert_eq!(
+                sorted_ids(&decision.subvolumes),
+                [3],
+                "only /@home is a candidate: {decision:?}"
+            );
+            assert!(decision.own.is_empty(), "{decision:?}");
+            assert_eq!(
+                sorted_ids(&decision.enter),
+                [2, 3, 4, 5, 6],
+                "the snapshots are still entered and counted: {decision:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mount_at_its_own_location_is_own_and_a_bind_of_a_folder_waits_for_its_inode() {
+        // `/@/home` nested in the scan root's subvolume and mounted at `/home` replaces what is there. The
+        // bind of `/@data/docs` at `/srv/docs` is on the same disk but shows a folder from elsewhere: only
+        // the inode of its root can say whether that is a whole subvolume.
+        let text = "\
+1 0 0:32 /@ / rw - btrfs /dev/sda2 rw
+2 1 0:32 /@/home /home rw - btrfs /dev/sda2 rw
+3 1 0:32 /@data/docs /srv/docs rw - btrfs /dev/sda2 rw
+4 1 8:33 / /mnt/usb rw - ext4 /dev/sdb1 rw
+";
+        let decision = decision(text, 1, "/", false);
+
+        assert_eq!(sorted_ids(&decision.enter), [2, 3, 4], "{decision:?}");
+        assert_eq!(sorted_ids(&decision.own), [2]);
+        assert_eq!(sorted_ids(&decision.subvolumes), [3]);
+        assert!(
+            !decision.own.contains(&4) && !decision.subvolumes.contains(&4),
+            "another disk is entered without one_file_system, but never own"
+        );
+
+        let staying = self::decision(text, 1, "/", true);
+        assert_eq!(sorted_ids(&staying.enter), [2, 3]);
+        assert!(staying.other_disk.contains(&4));
+    }
+
+    fn sorted_ids(ids: &HashSet<u64>) -> Vec<u64> {
+        let mut ids: Vec<u64> = ids.iter().copied().collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// One partition (8:17) mounted twice, once under its device name and once under its UUID link: two

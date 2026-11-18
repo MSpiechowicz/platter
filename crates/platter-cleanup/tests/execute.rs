@@ -9,8 +9,8 @@ use platter_cleanup::{
 };
 use platter_core::testing::{FakeFs, NOW};
 use platter_core::{
-    CancelToken, EntryRemover, Environment, ExpectedEntry, Os, RemoveMode, Removed, ScanConfig, ToolCommand,
-    ToolFailure, ToolRunner, Tree, scan,
+    CancelToken, EnteredMount, EntryRemover, Environment, ExpectedEntry, Os, RemoveMode, Removed, ScanConfig,
+    ToolCommand, ToolFailure, ToolRunner, Tree, scan,
 };
 use platter_rules::RuleSet;
 
@@ -55,6 +55,8 @@ fn projects(count: usize) -> FakeFs {
 struct Recorder {
     calls: Mutex<Vec<(String, &'static str)>>,
     fail: Vec<String>,
+    /// The mounts the plan allowed, as the last call to `remove` was told.
+    entered: Mutex<Vec<EnteredMount>>,
 }
 
 impl Recorder {
@@ -75,6 +77,7 @@ impl Recorder {
 impl EntryRemover for Recorder {
     fn remove(&self, path: &[u8], expected: &ExpectedEntry, mode: RemoveMode) -> io::Result<Removed> {
         assert_eq!(expected.root_depth, 0, "the plan's scan root depth is passed on");
+        self.entered.lock().unwrap().clone_from(&expected.entered_mounts);
         self.record(
             path,
             if mode == RemoveMode::Whole {
@@ -186,6 +189,147 @@ fn a_target_changed_after_the_plan_is_left_alone_and_the_rest_goes_on() {
     assert!(
         matches!(&skipped.outcome, TargetOutcome::Skipped(why) if why.contains("changed since the plan"))
     );
+}
+
+/// A home folder on its own mount of the same disk, scanned from `/`.
+fn home_on_its_own_mount() -> FakeFs {
+    let mut fs = FakeFs::new();
+    fs.same_filesystem_mount("/home");
+    fs.file("/home/u/p0/Cargo.toml", 1);
+    aged(&mut fs, "/home/u/p0/target/x", 10, 90);
+    fs
+}
+
+/// Executes a plan of the `rust-target` rule made on `before` against what the disk is now (`fs`).
+fn run_rust_target(before: &FakeFs, fs: &FakeFs) -> (Recorder, platter_cleanup::CleanupReport) {
+    let plan = plan_cleanup(
+        &scan_root(before),
+        &env(),
+        &RuleSet::builtin(),
+        &["rust-target"],
+        before,
+        &CleanupOptions::default(),
+    );
+    assert_eq!(plan.targets().count(), 1, "{:?}", plan.refused);
+
+    let recorder = Recorder::default();
+    let disk = Disk {
+        probe: fs,
+        remover: &recorder,
+        trash_dir: None,
+        tools: None,
+    };
+    let report = execute(&plan, &disk, &CancelToken::new(), &mut |_| {});
+
+    (recorder, report)
+}
+
+fn skipped_for_a_mount(report: &platter_cleanup::CleanupReport) -> bool {
+    matches!(
+        &report.results[0].outcome,
+        TargetOutcome::Skipped(why) if why.contains("a mount lies on the way")
+    )
+}
+
+#[test]
+fn a_target_below_a_mount_the_scan_went_into_is_removed() {
+    let fs = home_on_its_own_mount();
+
+    let (recorder, report) = run_rust_target(&fs, &fs);
+
+    assert_eq!(recorder.calls(), [("/home/u/p0/target".to_owned(), "delete")]);
+    assert!(matches!(&report.results[0].outcome, TargetOutcome::Removed(_)));
+    let (dev, ino) = fs.identity("/home");
+    let entered = recorder.entered.lock().unwrap().clone();
+    assert_eq!(
+        entered,
+        [EnteredMount {
+            depth: 0,
+            dev,
+            ino,
+            mount_id: None
+        }],
+        "the remover is told which mount may be crossed"
+    );
+}
+
+#[test]
+fn a_different_mount_at_the_same_place_is_refused() {
+    let before = home_on_its_own_mount();
+    let mut now = home_on_its_own_mount();
+    now.set_identity("/home", 77, 5, 1);
+
+    let (recorder, report) = run_rust_target(&before, &now);
+
+    assert!(recorder.calls().is_empty());
+    assert!(skipped_for_a_mount(&report), "{report:?}");
+}
+
+#[test]
+fn a_mount_that_appeared_after_the_plan_is_refused() {
+    let before = home_on_its_own_mount();
+    let mut now = home_on_its_own_mount();
+    now.mount("/home/u/p0");
+
+    let (recorder, report) = run_rust_target(&before, &now);
+
+    assert!(recorder.calls().is_empty());
+    assert!(skipped_for_a_mount(&report), "{report:?}");
+}
+
+#[test]
+fn a_mount_on_the_way_that_the_plan_never_saw_is_refused() {
+    let mut before = FakeFs::new();
+    before.file("/home/u/p0/Cargo.toml", 1);
+    aged(&mut before, "/home/u/p0/target/x", 10, 90);
+    let mut now = FakeFs::new();
+    now.same_filesystem_mount("/home");
+    now.file("/home/u/p0/Cargo.toml", 1);
+    aged(&mut now, "/home/u/p0/target/x", 10, 90);
+
+    let (recorder, report) = run_rust_target(&before, &now);
+
+    assert!(recorder.calls().is_empty());
+    assert!(skipped_for_a_mount(&report), "{report:?}");
+}
+
+#[test]
+fn nothing_is_acted_on_when_the_scanned_folder_was_replaced_after_the_plan() {
+    let mut fs = projects(2);
+    let config = ScanConfig {
+        now: Some(NOW),
+        ..ScanConfig::default()
+    };
+    let tree = scan(&fs, Path::new("/home/u"), &config, &CancelToken::new(), &|_| {}).unwrap();
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &["rust-target"],
+        &fs,
+        &CleanupOptions::default(),
+    );
+    assert_eq!(plan.targets().count(), 2);
+
+    // Another folder (same names) is now at the scan root's place.
+    let (dev, ino) = fs.identity("/home/u");
+    fs.set_identity("/home/u", dev, ino + 500, 1);
+    let recorder = Recorder::default();
+    let disk = Disk {
+        probe: &fs,
+        remover: &recorder,
+        trash_dir: None,
+        tools: None,
+    };
+
+    let report = execute(&plan, &disk, &CancelToken::new(), &mut |_| {});
+
+    assert!(recorder.calls().is_empty());
+    assert_eq!(report.results.len(), 2);
+    assert!(report.results.iter().all(|result| matches!(
+        &result.outcome,
+        TargetOutcome::Skipped(why) if why.contains("not the one that was scanned. Scan again.")
+    )));
 }
 
 #[test]

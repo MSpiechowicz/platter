@@ -41,7 +41,8 @@ use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use platter_core::{
-    DirListing, DirSource, EntryKind, EntryMeta, Lease, RawEntry, RootInfo, SkipReason, SourceOptions,
+    DirListing, DirSource, EntryKind, EntryMeta, Lease, MountFacts, RawEntry, RootInfo, SkipReason,
+    SourceOptions,
 };
 
 use super::exclusions::ExclusionRules;
@@ -135,6 +136,7 @@ impl DirSource for WindowsDirSource {
                 rules: self.rules,
             },
             meta,
+            mount_id: None,
             warnings: Vec::new(),
         })
     }
@@ -203,6 +205,7 @@ fn skipped_folder(name: OsString, metadata: &Metadata) -> RawEntry<WindowsHandle
         meta,
         child: None,
         skipped: Some(SkipReason::System),
+        mount: MountFacts::default(),
     }
 }
 
@@ -249,6 +252,7 @@ fn read_entry(
         meta,
         child,
         skipped,
+        mount: MountFacts::default(),
     }
 }
 
