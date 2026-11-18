@@ -116,8 +116,9 @@
 <style>
   /*
    * The stack is the main visual of the page and sets the height of the top area: it is drawn at its natural size
-   * (1 viewBox unit = 1 px) and only scales down, proportionally, when the card is narrower than the drawing.
-   * When the column next to it is taller, the card grows and the drawing stays centred in it.
+   * (1 viewBox unit = 1 px) and only scales down, proportionally, when the card is narrower than the drawing, or a
+   * little (to 470 of its 500 units) so the day-by-day card under the grid fits a window of about 1280 px without a
+   * scroll. When the column next to it is taller, the card grows and the drawing stays centred in it.
    */
   .frame {
     flex: 1;
@@ -130,6 +131,7 @@
     display: block;
     width: 100%;
     height: auto;
+    max-height: 470px;
     /* A long name may reach a few units past the viewBox; the card's padding has room for it. */
     overflow: visible;
   }

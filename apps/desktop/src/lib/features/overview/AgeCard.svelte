@@ -97,7 +97,9 @@
     color: var(--muted);
   }
 
+  /* The space from a figure to the tallest bar matches the space from the labels to the line under the chart. */
   .col b {
+    margin-bottom: 9px;
     color: var(--text);
     font-size: 12.5px;
     white-space: nowrap;
@@ -127,7 +129,7 @@
     display: flex;
     align-items: center;
     gap: 16px;
-    margin-top: 18px;
+    margin-top: 14px;
     padding-top: 16px;
     border-top: 1px solid var(--line);
   }

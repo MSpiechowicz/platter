@@ -318,7 +318,8 @@
     max-width: calc(100% + 6px);
     min-width: 0;
     height: 18px;
-    margin-left: -6px;
+    /* The margin above and below keeps the hover highlight off the lines around it, as in the Overview's Advisor. */
+    margin: 3px 0 3px -6px;
     padding: 0 6px;
     border-radius: 4px;
     color: var(--dim);

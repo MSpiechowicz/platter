@@ -380,6 +380,7 @@
   /*
    * The path line opens the path in the Explorer. Glyph and text share one line box and are centred in it; the glyph
    * starts on the row's left edge (the padding is taken back by the margin), and the highlight reaches past both.
+   * The margin above and below keeps the highlight off the title and the reason.
    */
   .text > .pline {
     display: flex;
@@ -389,7 +390,7 @@
     max-width: calc(100% + 6px);
     min-width: 0;
     height: 18px;
-    margin: 0 0 1px -6px;
+    margin: 3px 0 4px -6px;
     padding: 0 6px;
     border-radius: 4px;
     color: var(--dim);

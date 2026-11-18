@@ -54,7 +54,7 @@
   .types {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 0;
   }
 
   .type {
@@ -62,7 +62,7 @@
     grid-template-columns: 104px minmax(0, 1fr) 56px;
     gap: 8px;
     align-items: center;
-    padding: 4px 0;
+    padding: 3px 0;
     font-size: 12.5px;
   }
 

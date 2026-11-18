@@ -60,7 +60,7 @@
 
   // The plot is drawn at the width it has: it follows the card.
   const FALLBACK_WIDTH = 640;
-  const HEIGHT = 200;
+  const HEIGHT = 150;
   const PAD = { left: 56, right: 8, top: 14, bottom: 38 };
   /** A label of a cleanup is skipped when it would touch the one before it. */
   const GLYPH = 6.2;
@@ -256,7 +256,7 @@
   );
 </script>
 
-<Card title="Used space · day by day">
+<Card title="Space day by day">
   {#snippet actions()}
     {#if model}
       <span class="legend">
@@ -471,7 +471,7 @@
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 12px;
+    gap: 8px;
     padding-left: 20px;
     border-left: 1px solid var(--line);
   }
@@ -484,8 +484,9 @@
 
   .stat b {
     display: block;
-    font-size: 22px;
+    font-size: 20px;
     font-weight: 600;
+    line-height: 1.2;
   }
 
   /* The Net figure is plain text unless it grew: green is for what was freed. */
@@ -519,7 +520,7 @@
 
   .wait {
     position: relative;
-    min-height: 200px;
+    min-height: 150px;
   }
 
   @media (max-width: 800px) {

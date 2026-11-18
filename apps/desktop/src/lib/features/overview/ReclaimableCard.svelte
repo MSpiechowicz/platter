@@ -121,7 +121,7 @@
     gap: 8px;
     align-items: center;
     font-size: 12.5px;
-    padding: 5px 0;
+    padding: 4px 0;
   }
 
   .recr i {
@@ -146,8 +146,8 @@
     text-transform: uppercase;
     color: var(--dim);
     font-weight: 600;
-    margin: 10px 0 4px;
-    padding-top: 12px;
+    margin: 8px 0 4px;
+    padding-top: 10px;
     border-top: 1px solid var(--line);
   }
 

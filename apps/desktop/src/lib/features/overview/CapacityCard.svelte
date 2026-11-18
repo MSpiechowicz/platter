@@ -46,7 +46,7 @@
   <div class="body">
     {#if volume}
       <div class="gauge">
-        <SegRing value={share} size={190} segments={56}>
+        <SegRing value={share} size={150} segments={56}>
           <b class="num">{percentText(animatedShare.value)}</b>
           <span class="label">USED</span>
         </SegRing>
