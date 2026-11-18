@@ -17,8 +17,8 @@ use platter_ai::testing::{FakeControl, FakeEngine, FakeFetch, FakeReply, Gate, c
 use platter_ai::testing::{Fault, Phase, SpawnerControl, ThreadSpawner};
 use platter_ai::{
     AdvisorHandle, AdvisorWorker, AiError, Budget, Device, Engine, Exit, FolderFacts, GPU_FALLBACK, GPU_LOST,
-    Generation, GpuIncident, Host, IdleTimes, IncidentKind, Intent, Kind, Labelling, LoadInfo, ModelLock,
-    ModelSpec, ModelState, Options, Placement, STOPPED, ScanQuestion, StageLimit, Status, Stopped,
+    Generation, GpuIncident, GpuPolicy, Host, IdleTimes, IncidentKind, Intent, Kind, Labelling, LoadInfo,
+    ModelLock, ModelSpec, ModelState, Options, Placement, STOPPED, ScanQuestion, StageLimit, Status, Stopped,
     UnloadAfter, VerifiedModel, WorkerConfig, WorkerError,
 };
 #[cfg(any(unix, windows))]
@@ -84,6 +84,9 @@ struct Start {
     helper: bool,
     /// The graphics card is blocked from the start (an incident was left unanswered).
     gpu_blocked: bool,
+    /// The graphics card policy of an Apple machine (unified memory) instead of the discrete-only one, which
+    /// is what these tests use whatever OS they run on.
+    unified_memory: bool,
 }
 
 /// What the model was asked with: the grammar and the most tokens it may write, per generation.
@@ -176,6 +179,11 @@ impl Rig {
         config.progress_every = Duration::ZERO;
         config.budget = setup.budget;
         config.gpu_blocked = setup.gpu_blocked;
+        config.gpu_policy = if setup.unified_memory {
+            GpuPolicy::UnifiedMemory
+        } else {
+            GpuPolicy::DiscreteOnly
+        };
         let events = Arc::new(Mutex::new(Vec::new()));
         let told = Arc::new(Mutex::new(Vec::new()));
         let (heard, before) = (Arc::clone(&told), Arc::clone(&events));
@@ -1724,6 +1732,32 @@ fn a_load_on_the_card_needs_less_free_memory_than_one_on_the_processor_but_not_n
     rig.available.store(rig.spec.gpu_min_free_bytes, Ordering::SeqCst);
     assert_eq!(rig.handle.load().unwrap().state, ModelState::Loaded);
     assert_eq!(rig.control.calls(), ["load 3 gpu 1"]);
+}
+
+#[test]
+fn on_unified_memory_the_integrated_part_runs_the_model_and_the_load_needs_the_processors_free_memory() {
+    let rig = Rig::new(Start {
+        unified_memory: true,
+        ..on_disk()
+    });
+    rig.control.set_gpus(vec![card(0, "Apple M2", 64_000, true)]);
+    rig.available.store(rig.spec.min_free_bytes - 1, Ordering::SeqCst);
+
+    let refused = rig.handle.load().unwrap();
+    assert_eq!(refused.state, ModelState::OnDisk);
+    assert!(refused.problem.unwrap().contains("not enough free memory"));
+    assert!(rig.control.calls().is_empty());
+
+    rig.available.store(rig.spec.min_free_bytes, Ordering::SeqCst);
+    let loaded = rig.handle.load().unwrap();
+    assert_eq!(loaded.state, ModelState::Loaded);
+    assert_eq!(
+        loaded.device,
+        Some(Device::Gpu {
+            name: "Apple M2".to_owned()
+        })
+    );
+    assert_eq!(rig.control.calls(), ["load 3 gpu 0"]);
 }
 
 #[test]

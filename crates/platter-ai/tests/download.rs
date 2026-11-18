@@ -662,7 +662,7 @@ fn the_right_file_is_verified_and_can_be_read_through_its_pinned_path() {
     fs::write(&path, vec![0u8; 300]).unwrap();
 
     assert_eq!(
-        fs::read(verified.path()).unwrap(),
+        fs::read(verified.path().unwrap()).unwrap(),
         setup.content,
         "what is loaded is what was checked, whatever the name points to now"
     );
@@ -683,11 +683,11 @@ fn the_right_file_is_verified_and_nobody_can_change_it_while_the_result_is_held(
 
     assert!(removed.is_err() && written.is_err() && renamed.is_err());
     assert_eq!(
-        fs::read(verified.path()).unwrap(),
+        fs::read(verified.path().unwrap()).unwrap(),
         setup.content,
         "what is loaded is what was checked"
     );
-    assert_eq!(verified.path(), path);
+    assert_eq!(verified.path().unwrap(), path);
 
     drop(verified);
     fs::write(&path, vec![0u8; 300]).expect("the file is free again");

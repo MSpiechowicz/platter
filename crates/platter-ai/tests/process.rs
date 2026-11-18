@@ -529,7 +529,7 @@ mod by_path {
     #[test]
     fn the_helper_loads_the_file_the_app_checked_by_its_path_and_nobody_can_change_it_meanwhile() {
         let mut rig = rig();
-        let path = rig.model.path();
+        let path = rig.model.path().unwrap();
 
         rig.load(Placement::Cpu);
 

@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use platter_core::{Environment, Os, UserDir};
 
 /// `user-dirs.dirs` is a few hundred bytes; anything much larger is not that file.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 const USER_DIRS_MAX_BYTES: u64 = 64 * 1024;
 
 /// The home directory, the user's personal folders, the current time and the operating system of this
@@ -97,12 +97,15 @@ fn identity(_path: &Path) -> Option<(u64, u64)> {
     None
 }
 
-/// The user's trash folder (freedesktop: `$XDG_DATA_HOME/Trash`, by default `~/.local/share/Trash`).
-/// `None` without a home directory, and always `None` on Windows (the Recycle Bin is the shell's; the
-/// remover ignores `trash_dir` there).
+/// The user's trash folder: `~/.Trash` on macOS, otherwise freedesktop (`$XDG_DATA_HOME/Trash`, by
+/// default `~/.local/share/Trash`). `None` without a home directory, and always `None` on Windows (the
+/// Recycle Bin is the shell's; the remover ignores `trash_dir` there).
 pub fn home_trash(home: Option<&Path>) -> Option<PathBuf> {
     if cfg!(windows) {
         return None;
+    }
+    if cfg!(target_os = "macos") {
+        return home.map(|home| home.join(".Trash"));
     }
 
     let data = std::env::var_os("XDG_DATA_HOME")
@@ -111,6 +114,12 @@ pub fn home_trash(home: Option<&Path>) -> Option<PathBuf> {
         .or_else(|| home.map(|home| home.join(".local/share")))?;
 
     Some(data.join("Trash"))
+}
+
+/// [`home_trash`] of the home directory this process runs for, the way [`current_environment`] finds it.
+#[cfg(target_os = "macos")]
+pub(crate) fn current_home_trash() -> Option<PathBuf> {
+    home_trash(home_directory().as_deref())
 }
 
 fn home_directory() -> Option<PathBuf> {
@@ -158,8 +167,24 @@ fn user_directories(home: &Path) -> Vec<(UserDir, PathBuf)> {
         .collect()
 }
 
+/// The personal folders on macOS: fixed names below the home folder, canonical when they exist. There
+/// is no `user-dirs.dirs` here, and a folder that is missing is left out (the default name is assumed).
+#[cfg(target_os = "macos")]
+fn user_directories(home: &Path) -> Vec<(UserDir, PathBuf)> {
+    UserDir::ALL
+        .iter()
+        .filter_map(|&dir| {
+            let path = home.join(dir.default_name(Os::MacOs));
+            let path = std::fs::canonicalize(&path).ok()?;
+
+            Some((dir, path))
+        })
+        .filter(|(_, path)| is_a_personal_folder(path, home))
+        .collect()
+}
+
 /// The personal folders the desktop configured in `user-dirs.dirs` (XDG), canonical when they exist.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn user_directories(home: &Path) -> Vec<(UserDir, PathBuf)> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -188,7 +213,7 @@ fn is_a_personal_folder(path: &Path, home: &Path) -> bool {
 
 /// Reads `XDG_<NAME>_DIR="$HOME/..."` lines. A value is double-quoted, and either absolute or below
 /// `$HOME`; everything else is ignored, as the XDG tools do.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn parse_user_dirs(text: &str, home: &Path) -> Vec<(UserDir, PathBuf)> {
     let mut found: Vec<(UserDir, PathBuf)> = Vec::new();
 
@@ -233,7 +258,7 @@ fn parse_user_dirs(text: &str, home: &Path) -> Vec<(UserDir, PathBuf)> {
 }
 
 /// Removes the backslash of a shell escape inside double quotes.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn unescape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars();
@@ -296,7 +321,7 @@ mod tests {
         assert_eq!(cfg!(target_os = "linux"), env.os == Os::Linux);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn localized_personal_folders_are_read_from_the_xdg_file() {
         let home = Path::new("/home/u");
@@ -318,7 +343,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn a_personal_folder_is_never_the_home_folder_or_something_above_it() {
         let home = Path::new("/home/u");
@@ -332,7 +357,7 @@ mod tests {
         assert_eq!(parse_user_dirs(text, home), []);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn a_later_line_replaces_an_earlier_one() {
         let home = Path::new("/home/u");
@@ -410,5 +435,26 @@ mod tests {
     #[test]
     fn there_is_no_windows_folder_elsewhere() {
         assert_eq!(current_environment().system_root, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_trash_of_a_mac_user_is_the_dot_trash_in_the_home() {
+        assert_eq!(
+            home_trash(Some(Path::new("/Users/u"))),
+            Some(PathBuf::from("/Users/u/.Trash"))
+        );
+        assert_eq!(home_trash(None), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_trash_of_a_linux_user_is_the_freedesktop_one() {
+        if std::env::var_os("XDG_DATA_HOME").is_none() {
+            assert_eq!(
+                home_trash(Some(Path::new("/home/u"))),
+                Some(PathBuf::from("/home/u/.local/share/Trash"))
+            );
+        }
     }
 }

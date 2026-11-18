@@ -33,7 +33,6 @@ pub mod same_fs;
 mod snapshot;
 mod stat;
 
-mod budget;
 mod open;
 pub mod pinned;
 pub mod probe;
@@ -44,7 +43,7 @@ mod tests;
 pub mod tools;
 mod trash;
 
-pub use budget::descriptors_held;
+pub use crate::fd_budget::descriptors_held;
 pub use exclusions::ExclusionRules;
 pub use snapshot::MountSnapshot;
 
@@ -62,7 +61,7 @@ use platter_core::{
 use rustix::fs::{CWD, Mode, OFlags, RawDir, openat};
 use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
 
-use budget::Slot;
+use crate::fd_budget::{self as budget, Slot};
 use open::{Chain, Identity, open_child};
 use snapshot::device_text;
 use stat::{Stat, is_boundary, stat_at, stat_fd};

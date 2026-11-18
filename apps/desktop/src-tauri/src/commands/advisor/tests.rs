@@ -181,7 +181,8 @@ fn the_status_is_sent_in_the_contracts_shape() {
         json["gpuSupported"],
         cfg!(any(
             feature = "gpu-vulkan",
-            all(feature = "advisor", target_os = "linux")
+            feature = "gpu-metal",
+            all(feature = "advisor", any(target_os = "linux", target_os = "macos"))
         ))
     );
     for gone in ["models", "recommended"] {
@@ -437,7 +438,7 @@ fn app_asking(
             clear_gpu_log,
             crate::commands::suggestions::get_suggestions,
         ])
-        .build(tauri::generate_context!())
+        .build(crate::context())
         .expect("the app builds");
     let window = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
@@ -1587,7 +1588,7 @@ fn app_over(state: AppState) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
             find_entries,
             crate::commands::suggestions::get_suggestions,
         ])
-        .build(tauri::generate_context!())
+        .build(crate::context())
         .expect("the app builds");
     let window = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()

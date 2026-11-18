@@ -35,7 +35,8 @@ describe('AboutCard', () => {
     updater.current = null;
     const { unmount } = render(AboutCard);
 
-    expect(screen.getByText('Version 0.1.0')).toBeTruthy();
+    // The fallback is the app's own version, which every release raises.
+    expect(screen.getByText(`Version ${__APP_VERSION__}`)).toBeTruthy();
     unmount();
 
     updater.current = '0.3.1';

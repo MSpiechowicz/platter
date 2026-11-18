@@ -808,7 +808,7 @@ fn app_for(state: AppState) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
     let app = mock_builder()
         .manage(state)
         .invoke_handler(tauri::generate_handler![ask_scan])
-        .build(tauri::generate_context!())
+        .build(crate::context())
         .expect("the app builds");
     let window = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()

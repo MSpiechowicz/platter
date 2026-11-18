@@ -1,8 +1,9 @@
 //! `platter-cli clean --dry-run` against a temp-dir home: it plans and never changes the disk.
 
-// What runs on both systems here is the planning and the refusals. Cleaning for real, the freedesktop trash,
-// symbolic links and bind mounts are Linux only (`cfg(unix)`); the Recycle Bin is tested in
-// `platter-platform`, on Windows.
+// What runs on every system here is the planning and the refusals. Cleaning for real, the freedesktop
+// trash and bind mounts are Linux only (`cfg(target_os = "linux")`); symbolic links run wherever there are
+// any (`cfg(unix)`). The Recycle Bin is tested in `platter-platform`, on Windows, and the macOS Trash there
+// on macOS.
 
 use std::fs::{self, File, FileTimes};
 #[cfg(unix)]
@@ -138,8 +139,12 @@ fn a_dry_run_lists_the_plan_and_changes_nothing() {
     );
     let out = text(&output);
     assert!(out.starts_with("Dry run: nothing was changed."), "{out}");
-    // Nothing is deleted for good on Windows: the build output goes to the Recycle Bin.
-    let action = if cfg!(windows) { "move to trash" } else { "delete" };
+    // Nothing is deleted for good on Windows and macOS: the build output goes to the Recycle Bin or Trash.
+    let action = if cfg!(any(windows, target_os = "macos")) {
+        "move to trash"
+    } else {
+        "delete"
+    };
     assert!(out.contains(&format!("rust-target  {action}")), "{out}");
     // Built from components: `join("code/p/target")` would mix `/` into a Windows path.
     let target: PathBuf = ["code", "p", "target"]
@@ -169,7 +174,7 @@ fn a_named_rule_that_found_nothing_is_reported() {
     assert!(out.contains("Found nothing for: python-cache"), "{out}");
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn with_yes_it_cleans_what_the_plan_lists_and_nothing_else() {
     let dir = fixture();
@@ -244,7 +249,7 @@ fn clean_yes(home: &Path, rules: &[&str]) -> Output {
     command.arg("--yes").output().unwrap()
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn emptying_the_trash_keeps_its_folders() {
     let dir = tempfile::tempdir().unwrap();
@@ -269,7 +274,7 @@ fn emptying_the_trash_keeps_its_folders() {
     assert!(!trash.join("directorysizes").exists());
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_trash_part_that_is_a_link_is_left_alone() {
     let dir = tempfile::tempdir().unwrap();
@@ -294,10 +299,10 @@ fn a_trash_part_that_is_a_link_is_left_alone() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 const NAMESPACE_CHILD: &str = "PLATTER_TEST_NAMESPACE_CHILD";
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_second_path_to_the_home_does_not_get_past_the_protected_places() {
     if let Some(dir) = std::env::var_os(NAMESPACE_CHILD) {

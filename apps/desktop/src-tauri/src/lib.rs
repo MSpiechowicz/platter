@@ -131,7 +131,7 @@ pub fn run() {
             commands::update::install_update,
             commands::update::restart_app,
         ])
-        .build(tauri::generate_context!())
+        .build(context())
         .expect("error while building Platter")
         .run(|app, event| {
             // Quitting while a cleanup runs, a download or a model: see `stop_for_exit`.
@@ -167,3 +167,10 @@ pub(crate) fn stop_for_update<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 #[cfg(test)]
 mod tests;
+
+/// The app's context (config, assets, icons). Expanded once for the whole crate: on macOS
+/// `generate_context!` also embeds `Info.plist` under a fixed symbol, which may exist only once, so the
+/// tests take theirs from here too.
+pub(crate) fn context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}

@@ -107,14 +107,49 @@ pub enum CleanupAction {
 /// something that needs a tool Platter does not drive yet, such as btrfs snapshots, or a rule that does
 /// not exist on that OS). The options choose among fixed commands, never build one.
 ///
-/// On Windows nothing is deleted for good: `Delete` becomes `Trash`, `EmptyFolder` becomes `TrashChildren`,
-/// and the rules and tools of Linux (`EmptyTrash`, `pacman`, `journalctl`...) do not exist. A lost race
-/// on a move to the Recycle Bin is a recycle the user can undo, where a lost race on a delete is not.
+/// On Windows and macOS nothing is deleted for good: `Delete` becomes `Trash`, `EmptyFolder` becomes
+/// `TrashChildren`, and the rules and tools of Linux (`EmptyTrash`, `pacman`, `journalctl`...) do not
+/// exist. A lost race on a move to the Recycle Bin or the Trash is a move the user can undo, where a lost
+/// race on a delete is not.
 pub fn action_for(rule_id: &str, options: &CleanupOptions, os: Os) -> Option<CleanupAction> {
     match os {
         Os::Windows => windows_action_for(rule_id),
-        Os::Linux | Os::MacOs | Os::Other => unix_action_for(rule_id, options),
+        Os::MacOs => macos_action_for(rule_id),
+        Os::Linux | Os::Other => unix_action_for(rule_id, options),
     }
+}
+
+/// The action for a rule on macOS: only moves to the Trash, and no tool at all (the ones that need the
+/// administrator are not driven, and Platter has no way to empty the Trash). `mac-trash` and
+/// `mac-docker-vm` are shown but not cleaned: the first is the Trash itself, the second lies in the
+/// protected `~/Library/Containers`.
+fn macos_action_for(rule_id: &str) -> Option<CleanupAction> {
+    use CleanupAction::{Trash, TrashChildren};
+
+    let action = match rule_id {
+        "rust-target" | "rust-target-recent" | "node-modules" | "node-modules-recent" | "python-cache" => {
+            Trash
+        }
+        "npm-cache"
+        | "bun-cache"
+        | "pnpm-store"
+        | "yarn-cache"
+        | "cargo-registry"
+        | "gradle-cache"
+        | "maven-repository"
+        | "nuget-packages"
+        | "go-modules"
+        | "mac-xcode-derived-data"
+        | "mac-simulator-caches"
+        | "mac-pnpm-store"
+        | "mac-app-caches"
+        | "mac-logs"
+        | "mac-device-support" => TrashChildren,
+        "old-downloads" | "disk-images" | "user-safe" => Trash,
+        _ => return None,
+    };
+
+    Some(action)
 }
 
 /// The action for a rule on Windows: only moves to the Recycle Bin, and the tools Windows has.

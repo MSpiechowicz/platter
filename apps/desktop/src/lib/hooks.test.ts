@@ -49,6 +49,7 @@ describe('parseHooks', () => {
     expect(parseHooks('?root=D:%5CData', false).root).toBe('D:\\Data');
     expect(parseHooks('?root=C:', false).os).toBeNull();
     expect(parseHooks('?os=beos', false).os).toBeNull();
+    expect(parseHooks('?os=macos', false).os).toBe('macos');
     expect(parseHooks('?os=windows', true)).toEqual(ALL_OFF);
   });
 

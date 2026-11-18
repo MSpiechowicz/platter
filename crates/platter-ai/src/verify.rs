@@ -2,8 +2,8 @@
 //! helper process that was handed a file the parent checked takes it over with [`VerifiedModel::inherited`]).
 //!
 //! The file is opened once, without following a link. Size and SHA-256 are checked through that
-//! descriptor, and the model is loaded from the same descriptor (`/proc/self/fd/N`), so the name cannot
-//! be pointed at another file between the check and the load. (Someone who can write to the file itself
+//! descriptor, and the model is loaded from the same descriptor (`/proc/self/fd/N` on Linux, `/dev/fd/N` on
+//! macOS), so the name cannot be pointed at another file between the check and the load. (Someone who can write to the file itself
 //! as this user can still change it in place; that is outside what this check can promise.)
 //!
 //! On Windows there is no name that follows a handle. The file is opened with a share mode that lets nobody
@@ -28,7 +28,7 @@ const READ_CHUNK: usize = 1 << 20;
 #[derive(Debug)]
 pub struct VerifiedModel {
     file: File,
-    /// What keeps the path naming `file` (nothing on Linux, the held folder on Windows).
+    /// What keeps the path naming `file` (nothing on Linux and macOS, the held folder on Windows).
     pin: Pin,
 }
 
@@ -42,9 +42,10 @@ pub struct Handover {
 }
 
 impl VerifiedModel {
-    /// A path that names exactly the file that was checked, as long as this value lives.
-    pub fn path(&self) -> PathBuf {
-        self.pin.path(&self.file).unwrap_or_default()
+    /// A path that names exactly the file that was checked, as long as this value lives. An error where no
+    /// such path exists: an empty path is never handed to a loader.
+    pub fn path(&self) -> Result<PathBuf, VerifyError> {
+        pinned_path_of(self.pin.path(&self.file))
     }
 
     /// What to give a helper process that loads the model: another handle on the checked file (the same open
@@ -60,7 +61,9 @@ impl VerifiedModel {
         }
         #[cfg(not(unix))]
         {
-            let path = self.path();
+            let path = self
+                .path()
+                .map_err(|error| io::Error::new(io::ErrorKind::Unsupported, error.to_string()))?;
             let text = path.to_str().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "the model's path is not Unicode text")
             })?;
@@ -108,9 +111,7 @@ impl VerifiedModel {
                 found: meta.len(),
             });
         }
-        if pin.path(&file).is_none() {
-            return Err(VerifyError::Unsupported);
-        }
+        pinned_path_of(pin.path(&file))?;
 
         Ok(Self { file, pin })
     }
@@ -159,11 +160,15 @@ pub fn verify(spec: &ModelSpec, path: &Path) -> Result<VerifiedModel, VerifyErro
         return Err(VerifyError::WrongHash);
     }
 
-    if pin.path(&file).is_none() {
-        return Err(VerifyError::Unsupported);
-    }
+    pinned_path_of(pin.path(&file))?;
     file.seek(SeekFrom::Start(0))?;
     Ok(VerifiedModel { file, pin })
+}
+
+/// The pinned path of a file, which a [`Pin`] may not have (a system where nothing can be pinned): then the
+/// file cannot be loaded safely and that is an error, not an empty path.
+fn pinned_path_of(path: Option<PathBuf>) -> Result<PathBuf, VerifyError> {
+    path.ok_or(VerifyError::Unsupported)
 }
 
 fn open_error(error: io::Error) -> VerifyError {
@@ -204,4 +209,18 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
             let _ = write!(text, "{byte:02x}");
             text
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_with_no_pinned_path_is_an_error_not_an_empty_path() {
+        assert!(matches!(pinned_path_of(None), Err(VerifyError::Unsupported)));
+        assert_eq!(
+            pinned_path_of(Some(PathBuf::from("/dev/fd/5"))).unwrap(),
+            PathBuf::from("/dev/fd/5")
+        );
+    }
 }

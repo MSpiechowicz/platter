@@ -122,6 +122,9 @@
       {#if platform.isWindows}
         This copy was not installed with the Platter setup. Platter tells you when an update is out. The new
         setup is on the release page.
+      {:else if platform.isMac}
+        This copy was not installed as ~/Applications/Platter.app. Platter tells you when an update is out.
+        The new version is on the release page.
       {:else}
         A package manager installs updates for this copy of Platter. Platter tells you when one is out.
       {/if}

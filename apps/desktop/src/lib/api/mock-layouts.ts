@@ -1,5 +1,5 @@
 import { isRootPath, isWindowsPath } from '../paths';
-import type { Category, SkipReason } from './types';
+import type { Category, OsName, SkipReason } from './types';
 
 /** A group of generated files. Sizes are drawn from a log-normal distribution and scaled to the bytes of the directory. */
 export interface FileGroup {
@@ -557,8 +557,82 @@ function windowsKids(): DirSpec[] {
   ];
 }
 
-/** Picks what the demo disk looks like for a given scan root. `dominant` is the lopsided layout of `?dominant`. */
-export function layoutFor(root: string, dominant = false): DirSpec[] {
+/** The home folder of the Mac demo disk: the personal folders by their Mac names, and `Library` with the caches. */
+function macHomeKids(): DirSpec[] {
+  return [
+    dir('Projekty', 150, [
+      project('platter', 60, { src: 4, target: 44, modules: 12, active: true }),
+      project('rust-playground', 34, { src: 3, target: 31 }),
+      project('web-shop', 30, { src: 5, modules: 25 }),
+      project('blog', 26, { src: 2, modules: 24 }),
+    ]),
+    dir('Library', 118, [
+      dir('Caches', 52, [
+        leaf('Google', 24, { count: 120, category: 'other', sigma: 1.2, ageDays: 14 }),
+        leaf('Homebrew', 18, { count: 90, category: 'package', sigma: 1.1, ageDays: 60 }),
+        leaf('pip', 10, { count: 60, category: 'archive', sigma: 1.1, ageDays: 70 }),
+      ]),
+      dir('Application Support', 66, [
+        leaf('Code', 20, { count: 80, category: ['code', 'other'], sigma: 1.2, ageDays: 60 }),
+        leaf('Slack', 14, { count: 60, category: 'other', sigma: 1.2, ageDays: 20 }),
+        leaf('Steam', 32, { count: 60, category: 'app', sigma: 1.5, ageDays: 90 }),
+      ]),
+    ]),
+    dir('Movies', 120, [
+      leaf('recordings', 84, { count: 38, category: 'video', sigma: 0.9, ageDays: 240 }),
+      leaf('films', 36, { count: 14, category: 'video', sigma: 0.5, ageDays: 700 }),
+    ]),
+    leaf('Downloads', 74, {
+      count: 120,
+      category: ['archive', 'document', 'diskImage', 'video', 'package'],
+      sigma: 1.6,
+      ageDays: 420,
+    }),
+    leaf('.Trash', 17, { count: 40, category: ['document', 'image', 'archive'], sigma: 1.4, ageDays: 210 }),
+    leaf('Pictures', 40, {
+      count: 240,
+      category: 'image',
+      sigma: 0.7,
+      ageDays: 900,
+      bucket: { size: 60, name: (i) => `20${String(19 + i).padStart(2, '0')}` },
+    }),
+    leaf('Documents', 20, {
+      count: 120,
+      category: ['document', 'archive'],
+      sigma: 1.3,
+      ageDays: 500,
+      bucket: { size: 40, name: numbered('folder-') },
+    }),
+    leaf('.npm', 9, { count: 80, category: 'package', sigma: 1.1, ageDays: 120 }),
+    dir('.cargo', 7, [leaf('registry', 7, { count: 70, category: 'package', sigma: 1.2, ageDays: 150 })]),
+    leaf('Music', 12, { count: 120, category: 'audio', sigma: 0.6, ageDays: 1200 }),
+  ];
+}
+
+/** A Mac system disk (`?os=macos`, scan root `/`): the user folder holds most of it, then `Applications`, `Library` and `System`. Weights are GB. */
+function macKids(): DirSpec[] {
+  return [
+    dir('Users', 305, [dir('demo', 305, macHomeKids())]),
+    leaf('Applications', 58, { count: 120, category: 'app', sigma: 1.5, ageDays: 150 }),
+    dir('Library', 24, [
+      leaf('Developer', 12, { count: 80, category: 'app', sigma: 1.4, ageDays: 120 }),
+      leaf('Caches', 7, { count: 60, category: 'other', sigma: 1.3, ageDays: 40 }),
+      leaf('Logs', 2, { count: 40, category: 'other', sigma: 1.0, ageDays: 10 }),
+    ]),
+    dir('System', 21, [leaf('Library', 21, { count: 200, category: 'app', sigma: 1.5, ageDays: 80 })]),
+    leaf('opt', 4, { count: 80, category: 'app', sigma: 1.3, ageDays: 200 }),
+    leaf('usr', 3, { count: 100, category: 'app', sigma: 1.4, ageDays: 150 }),
+    { name: 'dev', weight: 0, mount: true, skipped: 'system' },
+    { name: 'Volumes', weight: 0, mount: true, skipped: 'otherDisk' },
+    unreadable('private'),
+  ];
+}
+
+/**
+ * Picks what the demo disk looks like for a given scan root. `dominant` is the lopsided layout of `?dominant`, and
+ * `os` is the system of `?os`: a Mac has its own disk under `/` and its home under `/Users`.
+ */
+export function layoutFor(root: string, dominant = false, os?: OsName): DirSpec[] {
   if (dominant) {
     return dominantLayout();
   }
@@ -577,6 +651,14 @@ export function layoutFor(root: string, dominant = false): DirSpec[] {
     }
 
     return /^[A-Za-z]:\\Users\\/i.test(root) ? windowsHomeKids() : archiveKids();
+  }
+
+  if (os === 'macos') {
+    if (root === '/') {
+      return macKids();
+    }
+
+    return root.startsWith('/Users/') ? macHomeKids() : archiveKids();
   }
 
   if (root === '/') {

@@ -179,6 +179,20 @@ describe('UpdatesSettingsCard', () => {
       platform.os = 'linux';
     }
   });
+
+  it('says on macOS that this copy is not the installed one, and names no package manager', () => {
+    platform.os = 'macos';
+    updater.canInstall = false;
+
+    try {
+      render(UpdatesSettingsCard);
+
+      expect(screen.getByText(/not installed as ~\/Applications\/Platter\.app/)).toBeTruthy();
+      expect(screen.queryByText(/package manager/)).toBeNull();
+    } finally {
+      platform.os = 'linux';
+    }
+  });
 });
 
 function cleanupCard(): void {

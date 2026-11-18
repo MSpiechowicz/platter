@@ -1,12 +1,14 @@
 //! The user's rules in the CLI: `suggest` and `clean` read the same `rules.json` the app writes
 //! (`$XDG_CONFIG_HOME/platter/rules.json`, here in a temp folder). A broken file makes `clean` refuse.
 
-// Unix only. These tests move the rules file with `XDG_CONFIG_HOME` and the home folder with `HOME`. On
+// Linux only. These tests move the rules file with `XDG_CONFIG_HOME` and the home folder with `HOME`, and
+// look in the freedesktop trash. On macOS the file is `~/Library/Application Support/platter/config/rules.json`
+// and `XDG_*` is ignored, so the file would follow `HOME` only, and cleanup moves to `~/.Trash`. On
 // Windows the file is `%APPDATA%\platter\rules.json`, found through the profile's known folder, which no
 // environment variable moves: a test there would read and write the real user's rules. The same rules in
 // the same file are covered on Windows by `platter-platform` (`user_rules`) and by the desktop's
 // `commands::rules` tests.
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 use std::fs::{self, File, FileTimes};
 use std::path::{Path, PathBuf};

@@ -1,7 +1,8 @@
-// These tests build the Linux layout (a home with `/` paths, the freedesktop trash, symbolic links), so the
-// tests themselves run on Unix; what is Windows-specific is tested in `cleanup/wording.rs`, in `platter-cleanup` and in
-// `platter-platform` (the Recycle Bin, on Windows only).
-#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
+// The tests that clean or put back for real build the Linux layout (a home with `/` paths, the freedesktop
+// trash, symbolic links), so they run on Linux only; the rest of them run on every Unix. What is
+// Windows-specific is tested in `cleanup/wording.rs`, in `platter-cleanup` and in `platter-platform` (the
+// Recycle Bin, on Windows only), and what is macOS-specific in `platter-platform` (the Trash, on macOS only).
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use std::fs;
 #[cfg(unix)]
@@ -350,7 +351,7 @@ fn an_empty_history_is_an_overview_with_nothing_in_it() {
 
 // ---- Cleanups recorded by the worker ----
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_cleanup_that_deleted_something_is_recorded_when_it_ends() {
     let state = AppState::for_test();
@@ -380,7 +381,7 @@ fn a_cleanup_that_deleted_something_is_recorded_when_it_ends() {
     assert_eq!(wire["methods"][0], serde_json::json!({ "kind": "deleted" }));
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_history_that_cannot_be_used_stops_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -536,7 +537,7 @@ fn overview_now(state: &AppState) -> HistoryOverviewDto {
     tauri::async_runtime::block_on(overview(state, 30)).unwrap()
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_cleanup_that_trashed_is_in_the_trash_until_it_is_restored() {
     let state = approving();
@@ -575,7 +576,7 @@ fn a_cleanup_that_trashed_is_in_the_trash_until_it_is_restored() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn an_item_is_restored_once_and_what_came_back_is_not_offered_again() {
     let state = approving();
@@ -637,7 +638,7 @@ fn restoring_an_unknown_cleanup_is_not_found() {
     assert_eq!(error.code(), ApiErrorCode::NotFound);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_restore_from_the_history_takes_the_run_away_from_undo() {
     let state = approving();
@@ -651,7 +652,7 @@ fn a_restore_from_the_history_takes_the_run_away_from_undo() {
     assert!(trashed.home.join("a.iso").exists());
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn what_a_restore_could_not_put_back_stays_for_undo() {
     let state = approving();
@@ -672,7 +673,7 @@ fn what_a_restore_could_not_put_back_stays_for_undo() {
     assert!(trashed.home.join("a.iso").exists());
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn an_undo_marks_what_it_put_back_so_the_history_does_not_restore_it_again() {
     let state = approving();
@@ -691,7 +692,7 @@ fn an_undo_marks_what_it_put_back_so_the_history_does_not_restore_it_again() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn nothing_is_put_back_while_a_cleanup_runs_or_something_else_is_being_put_back() {
     let state = approving();
@@ -725,7 +726,7 @@ fn nothing_is_put_back_while_a_cleanup_runs_or_something_else_is_being_put_back(
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_cleanup_does_not_start_while_things_are_being_put_back() {
     let state = AppState::for_test();
@@ -752,7 +753,7 @@ fn a_cleanup_does_not_start_while_things_are_being_put_back() {
 
 // ---- Asking first ----
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn the_dialog_lists_the_places_that_go_back_with_a_count_and_the_size() {
     let dialog = Dialog::answering(true);
@@ -785,7 +786,7 @@ fn the_dialog_lists_the_places_that_go_back_with_a_count_and_the_size() {
     assert!(!question.text.contains(';'), "{}", question.text);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn an_undo_asks_the_same_question_and_goes_ahead_when_approved() {
     let dialog = Dialog::answering(true);
@@ -813,7 +814,7 @@ fn an_undo_asks_the_same_question_and_goes_ahead_when_approved() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_declined_undo_moves_nothing_and_leaves_the_run_to_undo_and_to_the_history() {
     let dialog = Dialog::answering(false);
@@ -836,7 +837,7 @@ fn a_declined_undo_moves_nothing_and_leaves_the_run_to_undo_and_to_the_history()
     assert_eq!(id, overview_now(&state).cleanups[0].id);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_declined_restore_from_the_history_moves_nothing_and_leaves_undo_and_the_run_as_they_were() {
     let dialog = Dialog::answering(false);
@@ -869,7 +870,7 @@ fn a_declined_restore_from_the_history_moves_nothing_and_leaves_undo_and_the_run
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_request_that_is_refused_shows_no_dialog() {
     let dialog = Dialog::answering(true);
@@ -891,7 +892,7 @@ fn a_request_that_is_refused_shows_no_dialog() {
     assert!(dialog.asked().is_empty());
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_that_cannot_be_put_back_any_more_when_the_dialog_closes_moves_nothing() {
     let dialog = Dialog::answering(true);
@@ -922,7 +923,7 @@ fn a_run_that_cannot_be_put_back_any_more_when_the_dialog_closes_moves_nothing()
     assert!(!state.history.is_restoring(), "the slot is free");
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_whose_paths_change_under_the_same_ids_while_the_dialog_is_open_moves_nothing() {
     let dialog = Dialog::answering(true);
@@ -998,7 +999,7 @@ fn a_restore_with_more_entries_when_the_dialog_closes_moves_nothing() {
     refused_after_a_change_while_the_dialog_is_open(platter_history::testing::duplicate_entries);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_that_empties_the_trash_while_a_restore_dialog_is_open_makes_the_restore_refuse() {
     let (state, dialog, _dir, file, trashed, id) = asked_on_file();
@@ -1059,7 +1060,7 @@ fn trash_folder_of(trashed: &Trashed) -> Vec<u8> {
     files.parent().unwrap().as_os_str().as_encoded_bytes().to_vec()
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn an_item_that_was_put_back_keeps_no_path_in_the_file() {
     let (state, _dir, file) = on_file();
@@ -1080,7 +1081,7 @@ fn an_item_that_was_put_back_keeps_no_path_in_the_file() {
     assert_eq!(overview_now(&state).cleanups[0].status, Status::Restored);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn an_item_found_gone_keeps_no_path_and_the_overview_says_the_same_as_before() {
     let (state, _dir, file) = on_file();
@@ -1106,7 +1107,7 @@ fn an_item_found_gone_keeps_no_path_and_the_overview_says_the_same_as_before() {
     assert_eq!(first, second, "what is shown does not change");
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn an_item_whose_trash_is_out_of_reach_keeps_its_paths_and_one_whose_trash_is_there_loses_them() {
     let (state, _dir, file) = on_file();
@@ -1137,7 +1138,7 @@ fn an_item_whose_trash_is_out_of_reach_keeps_its_paths_and_one_whose_trash_is_th
     assert_eq!(platter_history::testing::entries_with_paths(&file), 1);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_whose_items_are_all_gone_stays_no_longer_in_the_trash_without_any_path() {
     let (state, _dir, file) = on_file();
@@ -1164,7 +1165,7 @@ fn a_run_whose_items_are_all_gone_stays_no_longer_in_the_trash_without_any_path(
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn an_overview_does_not_forget_the_paths_while_something_is_being_put_back() {
     let (state, _dir, file) = on_file();
@@ -1189,7 +1190,7 @@ fn an_overview_does_not_forget_the_paths_while_something_is_being_put_back() {
     assert_eq!(platter_history::testing::entries_with_paths(&file), 0);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_that_emptied_the_trash_makes_the_history_forget_the_paths_of_what_was_in_it() {
     let (state, _dir, file) = on_file();
@@ -1236,7 +1237,7 @@ fn a_run_that_emptied_the_trash_makes_the_history_forget_the_paths_of_what_was_i
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_that_left_something_in_the_trash_does_not_make_the_history_forget_anything() {
     let trashed_run = |outcome| {
@@ -1281,7 +1282,7 @@ fn recorded_at(state: &AppState, home: &Path, trashed: &Trashed, back: i64) -> i
         .expect("recorded")
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn only_a_run_the_latest_overview_showed_can_be_put_back() {
     let state = approving();
@@ -1303,7 +1304,7 @@ fn only_a_run_the_latest_overview_showed_can_be_put_back() {
     assert!(!other.home.join("b.iso").exists());
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_older_than_the_window_is_not_shown_and_cannot_be_put_back() {
     let state = AppState::for_test();
@@ -1318,7 +1319,7 @@ fn a_run_older_than_the_window_is_not_shown_and_cannot_be_put_back() {
     assert!(!trashed.home.join("a.iso").exists(), "nothing was put back");
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_on_another_volume_than_the_one_shown_cannot_be_put_back() {
     let mut state = AppState::for_test();
@@ -1341,7 +1342,7 @@ fn a_run_on_another_volume_than_the_one_shown_cannot_be_put_back() {
     assert!(!trashed.home.join("a.iso").exists());
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_with_nothing_left_to_put_back_is_refused() {
     let state = approving();
@@ -1365,7 +1366,7 @@ impl VolumeProvider for Broken {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_history_that_panics_stops_neither_a_scan_nor_a_cleanup() {
     let mut state = AppState::for_test();
@@ -1386,7 +1387,7 @@ fn a_history_that_panics_stops_neither_a_scan_nor_a_cleanup() {
     state.history.record_scan(&root, &Totals::default());
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_is_kept_for_undo_and_the_history_before_the_ui_hears_it_ended() {
     let state = AppState::for_test();

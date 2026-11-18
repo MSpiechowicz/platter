@@ -1,7 +1,8 @@
 //! `platter-cli suggest` against a temp-dir home. HOME points at the fixture, so the home rules apply to it.
 
-// The rules of the two systems differ (the trash and `~/.cache` are Linux's, `AppData\Local\Temp` is
-// Windows'), so what depends on them is marked for its own system; the rest runs on both.
+// The rules of the systems differ (the trash and `~/.cache` are Linux's, `~/Library` is macOS's,
+// `AppData\Local\Temp` is Windows'), so what depends on them is marked for its own system; the rest runs
+// on all.
 
 use std::fs;
 #[cfg(unix)]
@@ -54,7 +55,7 @@ fn stdout_text(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).unwrap()
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn json_is_the_suggestions_wire_format() {
     let dir = fixture();
@@ -83,7 +84,7 @@ fn json_is_the_suggestions_wire_format() {
     assert!(totals["keep"].as_u64().unwrap() >= 10_000);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn the_table_lists_each_suggestion_and_a_total_per_verdict_without_the_real_home() {
     let dir = fixture();
@@ -174,7 +175,7 @@ fn set_times(path: &Path, accessed: SystemTime, modified: SystemTime) {
         .unwrap();
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn ids_of(report: &Value) -> Vec<String> {
     report["suggestions"]
         .as_array()
@@ -238,7 +239,7 @@ fn the_age_of_a_rust_target_is_its_newest_modification_and_a_mere_read_does_not_
     assert_eq!(recent["verdict"], "review");
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn files_with_more_than_one_hard_link_are_counted_in_shared_files() {
     let dir = tempfile::tempdir().unwrap();
@@ -261,7 +262,7 @@ fn files_with_more_than_one_hard_link_are_counted_in_shared_files() {
     assert_eq!(trash["items"], 1);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn an_excluded_folder_produces_no_suggestion() {
     let dir = fixture();

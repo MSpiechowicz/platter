@@ -24,4 +24,19 @@ describe('PlatformStore', () => {
     expect(store.Trash).toBe('Recycle Bin');
     expect(store.separator).toBe('\\');
   });
+
+  it('names the Trash and Finder, and keeps the slash, on macOS', () => {
+    const store = new PlatformStore();
+
+    store.os = 'macos';
+
+    expect(store.isMac).toBe(true);
+    expect(store.isWindows).toBe(false);
+    expect(store.trash).toBe('Trash');
+    expect(store.theTrash).toBe('the Trash');
+    expect(store.Trash).toBe('Trash');
+    expect(store.theFileManager).toBe('Finder');
+    expect(store.showInFileManager).toBe('Show in Finder');
+    expect(store.separator).toBe('/');
+  });
 });

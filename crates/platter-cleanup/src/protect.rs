@@ -64,6 +64,73 @@ const HOME_INSIDE: &[&str] = &[
     ".git-credentials",
 ];
 
+/// The system folders of macOS, besides the ones above (`/usr`, `/bin`, `/sbin`, `/opt`, `/etc`, `/var`,
+/// `/tmp`, which macOS has too): neither these nor anything above them may be a target. `/private` holds
+/// the real `/var`, `/tmp` and `/etc`, which are links to it, so both spellings are listed.
+const MAC_SYSTEM_FOLDERS: &[&str] = &[
+    "/System",
+    "/Library",
+    "/Applications",
+    "/Users",
+    "/Volumes",
+    "/cores",
+    "/private",
+    "/private/etc",
+    "/private/tmp",
+    "/private/var",
+];
+
+/// System folders of macOS nothing inside of may be a target (besides the ones above): the system, the
+/// folders shared by all users, and the system's own data below `/private/var` (by both spellings).
+const MAC_SYSTEM_INSIDE: &[&str] = &[
+    "/System",
+    "/Library",
+    "/Applications",
+    "/cores",
+    "/private/etc",
+    "/private/var/db",
+    "/private/var/protected",
+    "/private/var/root",
+    "/private/var/vm",
+    "/var/db",
+    "/var/protected",
+    "/var/root",
+    "/var/vm",
+];
+
+/// Folders of a macOS home (below the home folder, written with `/`) nothing inside of may be a target:
+/// the Trash itself, keys and credentials (`Library/Keychains`, `Library/Cookies`), mail and messages,
+/// what iCloud and the apps' sandboxes keep (`Mobile Documents`, `CloudStorage`, `Containers`,
+/// `Group Containers`), settings, accounts and contacts, the photo library, and the profiles of the
+/// browsers and mail programs. The ones of [`HOME_INSIDE`] hold on macOS too.
+const MAC_HOME_INSIDE: &[&str] = &[
+    ".Trash",
+    "Library/Keychains",
+    "Library/Mail",
+    "Library/Messages",
+    "Library/Cookies",
+    "Library/Mobile Documents",
+    "Library/CloudStorage",
+    "Library/Containers",
+    "Library/Group Containers",
+    "Library/Preferences",
+    "Library/Accounts",
+    "Library/Calendars",
+    "Library/Safari",
+    "Library/Application Support/AddressBook",
+    "Library/Application Support/MobileSync/Backup",
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/Chromium",
+    "Library/Application Support/Firefox",
+    "Library/Application Support/BraveSoftware",
+    "Library/Application Support/Microsoft Edge",
+    "Library/Application Support/Arc",
+    "Library/Application Support/Vivaldi",
+    "Library/Application Support/com.operasoftware.Opera",
+    "Library/Application Support/Thunderbird",
+    "Pictures/Photos Library.photoslibrary",
+];
+
 /// Folders of a Windows profile (below the profile folder, written with `/`) nothing inside of may be a
 /// target: keys and credentials, the settings that follow the user (`AppData\Roaming`), the per-user
 /// registry hive, and the profiles of the browsers and mail programs.
@@ -159,6 +226,7 @@ impl Protected {
         };
         match style {
             PathStyle::Posix => protected.add_posix_places(&home_parts),
+            PathStyle::Mac => protected.add_mac_places(&home_parts),
             PathStyle::Windows => protected.add_windows_places(env, &home_parts),
         }
 
@@ -176,11 +244,12 @@ impl Protected {
             .iter()
             .flat_map(|place| (1..place.len()).map(|length| place[..length].to_vec()))
             .collect();
-        // On Windows the folders above a place that is closed inside (`AppData`, `AppData\Local`,
-        // `AppData\Local\Microsoft`, `...\Google\Chrome`...) may not be targets either: moving one whole
-        // takes the closed place with it. On Linux they are left as they are (`~/.local` is no target of
-        // a rule, and a home folder's own list stays what it was).
-        if style == PathStyle::Windows {
+        // On Windows and macOS the folders above a place that is closed inside (`AppData`,
+        // `AppData\Local\Microsoft`, `...\Google\Chrome`; `~/Library`, `~/Library/Application Support`...)
+        // may not be targets either: moving one whole takes the closed place with it. On Linux they are
+        // left as they are (`~/.local` is no target of a rule, and a home folder's own list stays what it
+        // was).
+        if style != PathStyle::Posix {
             above.extend(
                 protected
                     .not_inside
@@ -206,6 +275,23 @@ impl Protected {
             self.not_inside.extend(self.style.owned(folder.as_bytes()));
         }
         for folder in HOME_INSIDE {
+            self.not_inside.push(below(home_parts, folder, '/'));
+        }
+    }
+
+    /// The macOS places: everything protected on Linux (the shared system folders are the same: `/usr`,
+    /// `/bin`, `/etc`... and the dot folders of a home), the system folders of macOS, and what in the
+    /// Library of the user is not the user's to clean. Names are compared without regard to case.
+    fn add_mac_places(&mut self, home_parts: &[Vec<u8>]) {
+        self.add_posix_places(home_parts);
+
+        for folder in MAC_SYSTEM_FOLDERS {
+            self.not_or_above.extend(self.style.owned(folder.as_bytes()));
+        }
+        for folder in MAC_SYSTEM_INSIDE {
+            self.not_inside.extend(self.style.owned(folder.as_bytes()));
+        }
+        for folder in MAC_HOME_INSIDE {
             self.not_inside.push(below(home_parts, folder, '/'));
         }
     }
@@ -303,10 +389,10 @@ impl Protected {
 
             if let Some(real) = real {
                 if *inside {
-                    // On Windows the folders above a closed place may not be targets (see
+                    // On Windows and macOS the folders above a closed place may not be targets (see
                     // `for_environment`). That holds where the place really is too: `AppData\Roaming`
                     // behind a junction to `D:\Sync\Roaming` makes `D:\Sync` a folder that holds it.
-                    if style == PathStyle::Windows {
+                    if style != PathStyle::Posix {
                         self.not_or_above
                             .extend((1..real.len()).map(|length| real[..length].to_vec()));
                     }
@@ -459,7 +545,7 @@ fn user_dir_parts(
     }
 
     let mut parts = home_parts.to_vec();
-    parts.push(dir.default_name().as_bytes().to_vec());
+    parts.push(dir.default_name(env.os).as_bytes().to_vec());
 
     Some(parts)
 }
@@ -586,6 +672,51 @@ mod tests {
         assert!(protected.refuses(b"D:\\Sync").is_some());
         assert!(protected.refuses(b"D:\\Sync\\Roaming\\x").is_some());
         assert_eq!(protected.refuses(b"D:\\Other"), None);
+    }
+
+    fn mac_environment() -> Environment {
+        Environment {
+            home: Some(PathBuf::from("/Users/me")),
+            os: Os::MacOs,
+            system_root: None,
+            ..environment()
+        }
+    }
+
+    #[test]
+    fn on_a_mac_the_folders_above_a_closed_place_are_refused_where_it_really_is() {
+        let keychains = b"/Users/me/Library/Keychains".to_vec();
+        let disk = Linked(
+            Disk(HashMap::from([(
+                keychains.clone(),
+                vec![(1, 1), (1, 2), (1, 3), (1, 4), (2, 90)],
+            )])),
+            HashMap::from([(keychains, b"/Volumes/Sync/Keys".to_vec())]),
+        );
+        let protected = Protected::on_disk(&mac_environment(), &disk).unwrap();
+
+        assert!(protected.refuses(b"/Volumes/Sync").is_some());
+        assert!(protected.refuses(b"/Volumes/Sync/Keys/x").is_some());
+        assert_eq!(protected.refuses(b"/Volumes/Other"), None);
+    }
+
+    #[test]
+    fn on_a_mac_another_path_to_the_library_is_refused_by_its_identity() {
+        let disk = Disk(HashMap::from([
+            (
+                b"/Users/me/Library".to_vec(),
+                vec![(1, 1), (1, 2), (1, 3), (1, 30)],
+            ),
+            (b"/Volumes/Alias/Library".to_vec(), vec![(1, 1), (1, 9), (1, 30)]),
+        ]));
+        let protected = Protected::on_disk(&mac_environment(), &disk).unwrap();
+
+        assert_eq!(protected.refuses(b"/Volumes/Alias/Library"), None);
+        assert!(
+            protected
+                .refuses_on_disk(&disk, b"/Volumes/Alias/Library")
+                .is_some()
+        );
     }
 
     #[test]

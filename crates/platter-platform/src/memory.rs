@@ -12,8 +12,8 @@ use platter_core::DEFAULT_MAX_MEMORY_BYTES;
 /// rest of the system and for the short-lived peak while the finished tree is assembled. There is no
 /// floor: with little free memory the budget is small and only a small folder fits, and the scan's
 /// `TooLarge` message says that is why. On Linux the memory comes from `MemAvailable` in `/proc/meminfo`,
-/// on Windows from the system (through `sysinfo`). Where it cannot be read, and on other systems, this is
-/// the core default.
+/// on Windows and macOS from the system (through `sysinfo`). Where it cannot be read, and on other
+/// systems, this is the core default.
 pub fn suggested_memory_budget() -> u64 {
     available_memory_bytes().map_or(DEFAULT_MAX_MEMORY_BYTES, memory_budget_for)
 }
@@ -31,13 +31,13 @@ pub fn available_memory_bytes() -> Option<u64> {
 }
 
 /// Memory the system can give to a program now without swapping (`sysinfo`'s available memory).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub fn available_memory_bytes() -> Option<u64> {
     memory_system().map(|system| system.available_memory())
 }
 
 /// Memory the system can give to a program now without swapping. `None` on this system.
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn available_memory_bytes() -> Option<u64> {
     None
 }
@@ -49,13 +49,13 @@ pub fn total_memory_bytes() -> Option<u64> {
 }
 
 /// All memory of the machine.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub fn total_memory_bytes() -> Option<u64> {
     memory_system().map(|system| system.total_memory())
 }
 
 /// All memory of the machine. `None` on this system.
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn total_memory_bytes() -> Option<u64> {
     None
 }
@@ -69,14 +69,14 @@ pub fn resident_bytes() -> Option<u64> {
     parse_resident(&std::fs::read_to_string("/proc/self/statm").ok()?, page)
 }
 
-/// Memory this process holds in RAM right now (its working set).
-#[cfg(windows)]
+/// Memory this process holds in RAM right now (its working set, on macOS its resident set).
+#[cfg(any(windows, target_os = "macos"))]
 pub fn resident_bytes() -> Option<u64> {
     resident_bytes_of(std::process::id())
 }
 
 /// Memory this process holds in RAM right now. `None` on this system.
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn resident_bytes() -> Option<u64> {
     None
 }
@@ -90,9 +90,9 @@ pub fn resident_bytes_of(pid: u32) -> Option<u64> {
     parse_resident(&std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?, page)
 }
 
-/// Memory the process `pid` holds in RAM right now (its working set). `None` for a process that is gone
-/// or that this one may not look at.
-#[cfg(windows)]
+/// Memory the process `pid` holds in RAM right now (its working set, on macOS its resident set). `None`
+/// for a process that is gone or that this one may not look at.
+#[cfg(any(windows, target_os = "macos"))]
 pub fn resident_bytes_of(pid: u32) -> Option<u64> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
@@ -108,14 +108,14 @@ pub fn resident_bytes_of(pid: u32) -> Option<u64> {
 }
 
 /// Memory the process `pid` holds in RAM right now. `None` on this system.
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn resident_bytes_of(pid: u32) -> Option<u64> {
     let _ = pid;
     None
 }
 
 /// The memory of the machine as `sysinfo` reads it now.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn memory_system() -> Option<sysinfo::System> {
     use sysinfo::{MemoryRefreshKind, System};
 
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(parse_mem_total("MemAvailable: 1 kB\n"), None);
     }
 
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn this_process_and_machine_report_memory() {
         let resident = resident_bytes().unwrap();
@@ -246,9 +246,9 @@ mod tests {
         assert!(suggested_memory_budget() > 0);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
-    fn this_machine_gets_a_budget_below_what_it_has_on_windows() {
+    fn this_machine_gets_a_budget_below_what_it_has_from_sysinfo() {
         let total = total_memory_bytes().unwrap();
 
         // Half of what is available, so never more than half of the machine's memory.

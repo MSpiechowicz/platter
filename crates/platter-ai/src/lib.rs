@@ -21,6 +21,11 @@ compile_error!(
     "the feature `gpu-vulkan` is not supported on Windows: the advisor runs on the processor there"
 );
 
+// The Metal backend of the advisor is for macOS only (the macOS build gets it from the desktop crate's target
+// dependency). It needs the llama.cpp runtime, which the feature itself brings.
+#[cfg(all(not(target_os = "macos"), feature = "gpu-metal"))]
+compile_error!("the feature `gpu-metal` is only supported on macOS");
+
 pub mod answer;
 pub mod device;
 pub mod download;
@@ -53,6 +58,7 @@ pub use answer::{
     By, FactRow, FactSheet, FactTotal, FileFact, OFFTOPIC_TEXT, OUTDATED_NOTE, Place, Segment, TotalKind,
     Units, format_size, render, template, template_segments,
 };
+pub use device::GpuPolicy;
 pub use download::{DownloadError, Helpers, SPACE_HEADROOM, download};
 pub use engine::{
     AiError, Engine, Exit, Generation, GpuDevice, IncidentKind, LoadInfo, Placement, ProgressHook,

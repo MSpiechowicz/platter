@@ -35,7 +35,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use platter_core::NodeId;
 
-use crate::device::choose;
+use crate::device::{GpuPolicy, choose};
 use crate::download::{DownloadError, Helpers, download};
 use crate::engine::{
     AiError, Engine, Exit, Generation, GpuDevice, IncidentKind, LoadInfo, Placement, RuntimeIncident,
@@ -253,6 +253,8 @@ pub struct WorkerConfig {
     /// Start with the graphics card blocked, as after a failure: the model loads on the processor until the
     /// user switches the card or says to try it again.
     pub gpu_blocked: bool,
+    /// Which graphics parts may be chosen. The OS's own by default ([`GpuPolicy::THIS_OS`]).
+    pub gpu_policy: GpuPolicy,
 }
 
 impl WorkerConfig {
@@ -268,6 +270,7 @@ impl WorkerConfig {
             budget: None,
             on_gpu_incident: None,
             gpu_blocked: false,
+            gpu_policy: GpuPolicy::THIS_OS,
         }
     }
 }
@@ -1402,9 +1405,12 @@ impl Worker {
                 gpus.clear();
             }
         }
-        let card = choose(&gpus, use_gpu && !self.card_failed(), &spec).cloned();
+        let policy = self.config.gpu_policy;
+        let card = choose(&gpus, use_gpu && !self.card_failed(), &spec, policy).cloned();
 
-        let ram_needed = if card.is_some() {
+        // The smaller figure is for a model whose weights sit in a card's own memory. Where the card shares
+        // the system's memory (Apple's) the weights are in it, as on the processor.
+        let ram_needed = if card.is_some() && !policy.shares_system_memory() {
             spec.gpu_min_free_bytes
         } else {
             spec.min_free_bytes

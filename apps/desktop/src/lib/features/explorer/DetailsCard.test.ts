@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import type { NodeDto } from '../../api/types';
+import { platform } from '../../state/platform.svelte';
 import DetailsCard from './DetailsCard.svelte';
 
 const node: NodeDto = {
@@ -59,6 +60,22 @@ describe('DetailsCard buttons', () => {
     expect((screen.getByRole('button', { name: 'Mark for cleanup' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
+  });
+
+  it('shows the folder in Finder on macOS, with the same button', async () => {
+    const onreveal = vi.fn();
+
+    platform.os = 'macos';
+
+    try {
+      render(DetailsCard, { props: props({ onreveal }) });
+      await fireEvent.click(screen.getByRole('button', { name: 'Show in Finder' }));
+
+      expect(screen.queryByRole('button', { name: 'Show in file manager' })).toBeNull();
+      expect(onreveal).toHaveBeenCalledOnce();
+    } finally {
+      platform.os = 'linux';
+    }
   });
 
   it('marks on a click, when there is a way to', async () => {

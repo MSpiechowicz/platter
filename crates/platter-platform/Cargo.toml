@@ -21,6 +21,10 @@ sysinfo.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { workspace = true, features = ["process", "param"] }
 
+# The macOS adapters (packages M1 to M3). Safe wrappers only: `unsafe` is forbidden.
+[target.'cfg(target_os = "macos")'.dependencies]
+rustix = { workspace = true, features = ["process", "param"] }
+
 # The Windows reader, probe, remover and tools (packages W1 to W3). Safe wrappers only: `unsafe` is forbidden.
 [target.'cfg(windows)'.dependencies]
 winapi-util.workspace = true

@@ -330,14 +330,15 @@ pub struct TrashedChildren {
 /// it acts and fails without touching anything when it differs: a link, another file in its place, a
 /// mount on the way. Nothing is resolved by path string below `/`; no symlink is ever followed.
 pub trait EntryRemover: Send + Sync {
-    /// Deletes for good. Never crosses into another mount inside a folder. `Unsupported` on Windows,
-    /// where cleanup only ever moves to the Recycle Bin.
+    /// Deletes for good. Never crosses into another mount inside a folder. `Unsupported` on Windows and
+    /// macOS, where cleanup only ever moves to the trash.
     fn remove(&self, path: &[u8], expected: &ExpectedEntry, mode: RemoveMode) -> io::Result<Removed>;
 
     /// Moves the entry to the user's trash, so it can be restored. Returns where it went. Linux:
     /// freedesktop layout under `trash_dir`, which must be on the same filesystem. Windows: the Recycle
     /// Bin, `trash_dir` is ignored, and the answer is the path of the item inside `$Recycle.Bin`; an
-    /// entry that was taken away but cannot be found there is an error carrying [`NotRecycled`].
+    /// entry that was taken away but cannot be found there is an error carrying [`NotRecycled`]. macOS:
+    /// `~/.Trash` (`trash_dir`) on its volume, else that volume's `.Trashes/<uid>`, never overwriting.
     fn trash(&self, path: &[u8], expected: &ExpectedEntry, trash_dir: &Path) -> io::Result<Vec<u8>>;
 
     /// Moves every direct child of the folder at `path` to the trash and leaves the folder (what
@@ -359,7 +360,7 @@ pub trait EntryRemover: Send + Sync {
 
     /// Puts an entry that [`trash`](Self::trash) moved to `trashed` back at `original`, when it is still
     /// the entry that was trashed (`expected`) and nothing has taken its old name since; then removes its
-    /// `.trashinfo` record (Linux). Linux never overwrites (`RENAME_NOREPLACE`). Windows looks at the old
+    /// `.trashinfo` record (Linux). Linux and macOS never overwrite (`RENAME_NOREPLACE`, `RENAME_EXCL`). Windows looks at the old
     /// name before it moves and refuses a taken one, but the shell's move is not atomic with that look.
     fn restore(&self, _trashed: &[u8], _expected: &ExpectedEntry, _original: &[u8]) -> io::Result<()> {
         Err(io::Error::from(io::ErrorKind::Unsupported))
