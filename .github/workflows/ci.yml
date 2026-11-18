@@ -164,6 +164,11 @@ jobs:
     name: macOS (${{ matrix.check }})
     runs-on: macos-15
     timeout-minutes: 60
+    # Built for the oldest macOS the app supports (`minimumSystemVersion` in tauri.conf.json), as the
+    # release is: version checks in llama.cpp's Metal code then happen at run time, which needs clang's
+    # runtime library at link time (see crates/platter-ai/build.rs).
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
     strategy:
       fail-fast: false
       matrix:
