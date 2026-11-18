@@ -33,8 +33,11 @@ async function open(api: HistoryApi, suggestions?: Fixture): Promise<HistoryStor
   return store;
 }
 
+/** The row of the Cleanups table that says `text`: the same words are also in the list of what is cleaned most. */
 const row = (text: string | RegExp): HTMLElement =>
-  screen.getByText(text).closest('tr') ?? (document.body as HTMLElement);
+  within(screen.getByRole('region', { name: 'Cleanups table' }))
+    .getByText(text)
+    .closest('tr') ?? (document.body as HTMLElement);
 
 describe('the History view', () => {
   beforeEach(() => {
@@ -466,5 +469,163 @@ describe('the first read', () => {
 
     expect(screen.queryByRole('status')).toBeNull();
     expect(screen.getByRole('heading', { name: /^Cleanups/ })).toBeTruthy();
+  });
+});
+
+describe('what you clean most', () => {
+  beforeEach(() => {
+    settings.set('units', 'GB');
+  });
+
+  it('lists the items by how many cleanups had them, with when each was cleaned last', async () => {
+    const api = mock();
+    const overview = await api.historyOverview(90);
+    const [first, ...others] = overview.cleanups;
+    const again = { ...first, id: 99, at: (first?.at ?? 0) + 60, what: ['Old recordings'] };
+
+    await open({
+      ...api,
+      historyOverview: async () => ({ ...overview, cleanups: [first, ...others, again] }),
+    });
+
+    const list = within(screen.getByRole('region', { name: 'Items cleaned most' }));
+    const items = list.getAllByRole('listitem').map((item) => item.textContent);
+
+    expect(screen.getByText('LAST 90 DAYS')).toBeTruthy();
+    expect(items).toHaveLength(8);
+    expect(items[0]).toMatch(/^Old recordings\s*twice\s*last on \d+ \w+$/);
+    expect(items[1]).toMatch(/once/);
+    expect(items.join(' ')).not.toContain(';');
+  });
+
+  it('is not there when nothing was cleaned', async () => {
+    await open(mock('empty'));
+
+    expect(screen.queryByRole('region', { name: 'Items cleaned most' })).toBeNull();
+    expect(screen.queryByText('What you clean most')).toBeNull();
+  });
+});
+
+describe('Ready to clean now', () => {
+  beforeEach(() => {
+    settings.set('units', 'GB');
+    ui.go('history');
+  });
+
+  /** The size on the row of the Ready card with this label. */
+  const sizeOf = (label: string): string | undefined =>
+    screen.getByText(label).closest('.recr')?.querySelector('.num')?.textContent?.trim();
+
+  it('says how much is safe and how much needs a review, and goes to Cleanup', async () => {
+    await open(mock(), await withSuggestions());
+
+    expect(screen.getByRole('heading', { name: 'Ready to clean now' })).toBeTruthy();
+    expect(sizeOf('Safe to clean')).toBe('105 GB');
+    expect(sizeOf('Needs your review')).toBe('268 GB');
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Go to Cleanup' }));
+
+    expect(ui.page).toBe('cleanup');
+  });
+
+  it('shows 0 B to review when nothing needs a review, and still goes to Cleanup', async () => {
+    const setup = await withSuggestions();
+
+    setup.store.load(setup.scanId, {
+      suggestions: DATA.suggestions.filter((item) => item.verdict === 'safe'),
+      totals: { safe: 105.4 * GB, review: 0, keep: 0 },
+    });
+    await open(mock(), setup);
+
+    expect(sizeOf('Safe to clean')).toBe('105 GB');
+    expect(sizeOf('Needs your review')).toBe('0 B');
+    expect(screen.getByRole('button', { name: 'Go to Cleanup' })).toBeTruthy();
+  });
+
+  it('offers a review instead when nothing is safe', async () => {
+    const setup = await withSuggestions();
+
+    setup.store.load(setup.scanId, {
+      suggestions: DATA.suggestions.filter((item) => item.verdict === 'review'),
+      totals: { safe: 0, review: 268 * GB, keep: 0 },
+    });
+    await open(mock(), setup);
+
+    expect(sizeOf('Safe to clean')).toBe('0 B');
+    expect(sizeOf('Needs your review')).toBe('268 GB');
+    expect(screen.queryByRole('button', { name: 'Go to Cleanup' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Review in Cleanup' })).toBeTruthy();
+  });
+
+  it('asks for a scan when there is none, and offers no button', async () => {
+    await open(mock());
+
+    expect(screen.getByText('Scan a disk to see what can be cleaned.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Go to Cleanup' })).toBeNull();
+  });
+});
+
+describe('waiting for the suggestions', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows the page only once the suggestions are in, and does not bring the spinner back for a later read', async () => {
+    let release: () => void = () => undefined;
+    const setup = await fixture((api) => ({
+      ...api,
+      getSuggestions: async (...args: Parameters<typeof api.getSuggestions>) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+
+        return api.getSuggestions(...args);
+      },
+    }));
+    const store = storeFor(mock());
+
+    vi.useFakeTimers();
+    setup.store.load(setup.scanId, undefined);
+    render(History, { props: { store, suggestions: setup.store, scanId: setup.scanId } });
+
+    // The history is in, but the suggestions are not: nothing is shown, then the spinner.
+    await vi.advanceTimersByTimeAsync(LOADING_DELAY_MS - 1);
+    expect(screen.queryByRole('heading', { name: /^Cleanups/ })).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(2);
+    expect(screen.getByRole('status')).toBeTruthy();
+
+    release();
+    await vi.advanceTimersByTimeAsync(LOADING_MIN_VISIBLE_MS + 1);
+
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('heading', { name: /^Cleanups/ })).toBeTruthy();
+    expect(screen.queryByText('Scan a disk to see what can be cleaned.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Go to Cleanup' })).toBeTruthy();
+
+    void store.load();
+    await vi.advanceTimersByTimeAsync(LOADING_DELAY_MS + 1);
+
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('heading', { name: /^Cleanups/ })).toBeTruthy();
+  });
+
+  it('stops waiting when the suggestions cannot be read', async () => {
+    const setup = await fixture((api) => ({
+      ...api,
+      getSuggestions: () => Promise.reject(new ApiRequestError('io', 'the backend is gone')),
+    }));
+
+    vi.useFakeTimers();
+    setup.store.load(setup.scanId, undefined);
+    render(History, { props: { store: storeFor(mock()), suggestions: setup.store, scanId: setup.scanId } });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(screen.getByRole('heading', { name: /^Cleanups/ })).toBeTruthy();
+    // There is a scan, only its suggestions failed: the card says so and does not ask for a scan.
+    expect(screen.getByText('What can be cleaned could not be read.')).toBeTruthy();
+    expect(screen.queryByText('Scan a disk to see what can be cleaned.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Go to Cleanup' })).toBeTruthy();
   });
 });

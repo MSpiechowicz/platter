@@ -3,6 +3,7 @@
   import type { Api } from '../../api/client';
   import { describeError } from '../../api/client';
   import type { CleanupPlanDto, ScanId } from '../../api/types';
+  import { fillHeight } from '../../components/layout/fillHeight.svelte';
   import Card from '../../components/ui/Card.svelte';
   import Loading from '../../components/ui/Loading.svelte';
   import Tag from '../../components/ui/Tag.svelte';
@@ -35,10 +36,6 @@
   const DEBOUNCE_MS = 300;
   /** The card is never shorter than this; a window too short for it scrolls the page instead. */
   const MIN_HEIGHT = 240;
-  /** The width at which the page is a single column. */
-  const SINGLE_COLUMN = '(max-width: 1000px)';
-  /** The bottom padding of the page, when the page has none to read. */
-  const PAGE_PADDING = 20;
 
   // The plan on screen. It stays while a newer one is asked for, so the card does not blink at every click.
   let plan = $state.raw<CleanupPlanDto | undefined>(first?.plan);
@@ -128,109 +125,17 @@
   const items = (total: number): string => `${total} item${total === 1 ? '' : 's'}`;
 
   // The card fills the page down to its bottom padding, so the page has no scroll bar of its own and the table scrolls
-  // inside the card. `cap` is that height. A short table makes a short card, and a single column is not capped at all
-  // (the same width the style sheet below makes the page one column at).
+  // inside the card. `fill.cap` is that height. A short table makes a short card, and a single column is not capped at
+  // all (the same width the style sheet below makes the page one column at).
   let content = $state<HTMLElement>();
-  let cap = $state<number>();
-
-  /** The distance from the top of the page, whatever the page is scrolled to and whatever the card is animated by. */
-  function documentTop(element: HTMLElement): number {
-    let top = 0;
-
-    for (
-      let current: Element | null = element;
-      current instanceof HTMLElement;
-      current = current.offsetParent
-    ) {
-      top += current.offsetTop;
-    }
-
-    return top;
-  }
-
-  function measure(): void {
-    const card = content?.parentElement;
-
-    if (!card) {
-      return;
-    }
-
-    if (window.matchMedia(SINGLE_COLUMN).matches) {
-      cap = undefined;
-
-      return;
-    }
-
-    const padding = parseFloat(getComputedStyle(card.closest('main') ?? document.body).paddingBottom);
-    const room = window.innerHeight - (Number.isNaN(padding) ? PAGE_PADDING : padding) - documentTop(card);
-
-    cap = Math.max(MIN_HEIGHT, Math.floor(room));
-  }
-
-  // The top of the card moves with whatever is above it, and the card gives way: that keeps the page as tall as the
-  // window, so only what is above is watched.
-  $effect(() => {
-    const card = content?.parentElement;
-
-    if (!card) {
-      return;
-    }
-
-    measure();
-    window.addEventListener('resize', measure);
-
-    if (typeof ResizeObserver === 'undefined') {
-      return () => window.removeEventListener('resize', measure);
-    }
-
-    const grid = card.parentElement;
-    const observer = new ResizeObserver(measure);
-
-    // The elements above the card, and the grid itself: it is as tall as they are.
-    const watch = (): void => {
-      observer.disconnect();
-
-      if (grid) {
-        observer.observe(grid);
-      }
-
-      for (const above of [...before(card), ...(grid ? before(grid) : [])]) {
-        observer.observe(above);
-      }
-    };
-
-    // What is above the card can be replaced (the Advisor for the result): the new elements are watched too.
-    const changes = new MutationObserver(() => {
-      watch();
-      measure();
-    });
-
-    watch();
-
-    if (grid) {
-      changes.observe(grid, { childList: true });
-    }
-
-    return () => {
-      window.removeEventListener('resize', measure);
-      observer.disconnect();
-      changes.disconnect();
-    };
-  });
-
-  /** The elements that come before `element` in its parent. */
-  function before(element: Element): Element[] {
-    const siblings = [...(element.parentElement?.children ?? [])];
-
-    return siblings.slice(0, siblings.indexOf(element));
-  }
+  const fill = fillHeight(() => content?.parentElement ?? undefined, MIN_HEIGHT);
 </script>
 
 <Card
   title="What happens when you clean"
   hint={preview ? `${items(preview.items).toUpperCase()} · ${fmt.size(preview.bytes)}` : undefined}
   class="plan-preview"
-  style={cap === undefined ? undefined : `max-height: ${cap}px`}
+  style={fill.cap === undefined ? undefined : `max-height: ${fill.cap}px`}
 >
   <div class="content" bind:this={content}>
     {#if selected.length === 0}
@@ -327,6 +232,8 @@
 <style>
   /* The card spans the whole grid of the page and gives way to the window (see `cap`). */
   :global(.plan-preview) {
+    /* The card is the box `cqw` is measured against. */
+    container-type: inline-size;
     grid-column: 1 / -1;
     min-height: 240px;
   }
@@ -454,10 +361,15 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
+    /* As in the Advisor: the scroll bar sits in the card's padding, and the rows keep the card's full width. */
+    margin-right: -16px;
+    padding-right: 16px;
   }
 
   table {
-    width: 100%;
+    /* Exactly as wide as the card's content, whatever the engine does with the scroll bar (as in the Advisor). */
+    width: calc(100% - 16px);
+    width: 100cqw;
     border-collapse: separate;
     border-spacing: 0;
     font-size: 13px;
