@@ -24,6 +24,7 @@
   import { loadOverview } from './model';
   import ReclaimableCard from './ReclaimableCard.svelte';
   import { warningLines } from './scanWarnings';
+  import UsageDaysCard from './UsageDaysCard.svelte';
 
   interface Props {
     ready: ReadyScan;
@@ -61,6 +62,16 @@
   const retrySuggestions = (): void => {
     attempt++;
   };
+
+  // The history of the last half year feeds the day-by-day card. It is read on its own, so a slow or failed answer
+  // never holds back the rest of the page, and read again once a cleanup has finished (its run is in the history).
+  const HISTORY_DAYS = 182;
+
+  const history = resource(() => {
+    void cleanup.freedTotal;
+
+    return api.historyOverview(HISTORY_DAYS);
+  });
 
   const warnings = $derived(warningLines(ready.warnings));
 
@@ -145,6 +156,10 @@
         />
       </div>
     </div>
+
+    <div class="usage">
+      <UsageDaysCard data={history.data} loading={history.loading} error={history.error} />
+    </div>
   {:else if overview.error && !shown.value}
     <Notice kind="error">The scan could not be read: {describeError(overview.error)}</Notice>
   {:else}
@@ -186,6 +201,11 @@
     grid-template-columns: 270px minmax(0, 1fr) var(--advisor-col);
     gap: 16px;
     align-items: stretch;
+  }
+
+  /* The day-by-day card spans the whole width under the grid, at every breakpoint. */
+  .usage {
+    margin-top: 16px;
   }
 
   .col {
