@@ -207,6 +207,9 @@ fn a_finished_scan_gets_labelled_suggestions_and_asking_again_gives_the_same_ans
     assert_eq!(first["suggestions"].as_array().unwrap().len(), 1);
 }
 
+/// Unix only: the fake filesystem holds `/`-separated paths and is scanned from `/`, so a Windows home
+/// can't be in it. The rules crate covers the units on every OS with a fake home.
+#[cfg(unix)]
 /// A scan with one disk image of 3 GiB in the user's home (when the machine has one), and the reason the
 /// `disk-images` rule gives for it under the `units` argument of `get_suggestions` (none sends no argument).
 fn disk_images_reason(window: &WebviewWindow<MockRuntime>, scan: u64, units: Option<&str>) -> String {
@@ -225,6 +228,7 @@ fn disk_images_reason(window: &WebviewWindow<MockRuntime>, scan: u64, units: Opt
     images["reason"].as_str().unwrap().to_owned()
 }
 
+#[cfg(unix)]
 #[test]
 fn the_units_argument_of_the_suggestions_sets_how_the_reasons_write_sizes() {
     let (_app, window) = app();
