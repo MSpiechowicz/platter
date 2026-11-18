@@ -21,6 +21,9 @@ advisor = ["platter-ai/llama"]
 # depend on the Vulkan loader; owner decision 2026-11-17), and a Windows build with this feature does not
 # compile (the advisor runs on the processor there; P1).
 gpu-vulkan = ["advisor", "platter-ai/gpu-vulkan"]
+# The advisor on the Apple GPU (Metal). macOS only: the macOS build gets it from the target dependency below,
+# and a build with this feature on another OS does not compile.
+gpu-metal = ["advisor", "platter-ai/gpu-metal"]
 
 [lib]
 name = "platter_desktop_lib"
@@ -54,6 +57,10 @@ gtk = "0.18"
 # The advisor's graphics card support is part of every Linux build (`default` has no `gpu-vulkan` so that
 # a Windows build with the default features compiles). `llama` comes with it.
 platter-ai = { workspace = true, features = ["gpu-vulkan"] }
+
+# The advisor's Apple GPU support is part of every macOS build, the same way (`llama` comes with it).
+[target.'cfg(target_os = "macos")'.dependencies]
+platter-ai = { workspace = true, features = ["gpu-metal"] }
 
 [dev-dependencies]
 platter-core = { workspace = true, features = ["testing"] }

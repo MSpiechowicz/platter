@@ -8,7 +8,7 @@
 //! [`runtime_environment`]) and every other descriptor of the parent is closed on exec.
 //!
 //! This module is the one place that knows how the helper is started and how it takes its descriptors.
-//! The Linux code is in `linux::runtime`; other Unix systems get functions that fail with `Unsupported`.
+//! The Linux code is in `linux::runtime` and the macOS code in `macos::runtime`; other Unix systems get functions that fail with `Unsupported`.
 //!
 //! On Windows (`windows::runtime`) the protocol runs over the helper's standard input and output pipes
 //! instead of a socket, the model is not handed over as a descriptor (the helper opens it by the path in the
@@ -102,11 +102,15 @@ pub fn spawn_advisor_runtime(
     {
         crate::linux::runtime::spawn(program, model, mode)
     }
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::runtime::spawn(program, model, mode)
+    }
     #[cfg(windows)]
     {
         crate::windows::runtime::spawn(program, model, mode)
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     {
         let _ = (program, model, mode);
         Err(io::Error::from(io::ErrorKind::Unsupported))
@@ -123,11 +127,15 @@ pub fn advisor_runtime_child() -> io::Result<(HelperEnd, Option<File>)> {
     {
         crate::linux::runtime::take_descriptors()
     }
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::runtime::take_descriptors()
+    }
     #[cfg(windows)]
     {
         crate::windows::runtime::take_handles()
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     {
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
@@ -194,27 +202,51 @@ pub fn windows_exit_text(code: i32) -> Option<String> {
     })
 }
 
-/// The environment of a helper, from the variables of the parent: nothing but the ones it needs. `HOME`
-/// (where the driver keeps its caches) and `XDG_CACHE_HOME` when they are set, `LANG=C`, and
+/// The environment of a helper, from the variables of the parent: nothing but the ones it needs.
+///
+/// On Linux: `HOME` (where the driver keeps its caches) and `XDG_CACHE_HOME` when they are set, `LANG=C`, and
 /// `VK_LOADER_LAYERS_DISABLE=~implicit~`, which keeps the Vulkan loader from starting the implicit layers that
 /// other programs install (overlays, capture tools) in the helper. `LD_LIBRARY_PATH` (an AppImage's libraries)
 /// is kept only when `APPIMAGE` is set and not empty, and then only its absolute, non-empty components: a
 /// relative one would lead to whatever folder the helper runs in. A helper for the processor also gets
 /// `GGML_VK_VISIBLE_DEVICES` empty, which shows the runtime no graphics card at all (it takes every one when
 /// the variable is missing).
+///
+/// On macOS: `HOME` and `TMPDIR` when they are set (the user's own folders: where the system keeps the
+/// compiled shaders of the Metal runtime) and `LANG=C`. There is no Vulkan and no loader path there, and no
+/// `DYLD_*` variable ever reaches the helper (the environment is cleared). A helper for the processor is kept
+/// from the graphics card by the load itself (no device is given to the model), not by a variable.
 #[cfg(unix)]
 pub fn runtime_environment(
     vars: impl Iterator<Item = (OsString, OsString)>,
     mode: RuntimeMode,
 ) -> Vec<(OsString, OsString)> {
-    const KEPT: [&str; 2] = ["HOME", "XDG_CACHE_HOME"];
+    environment_for(cfg!(target_os = "macos"), vars, mode)
+}
+
+/// [`runtime_environment`] for the rules of one system (`apple`: macOS's), so that both are tested on Linux.
+#[cfg(unix)]
+fn environment_for(
+    apple: bool,
+    vars: impl Iterator<Item = (OsString, OsString)>,
+    mode: RuntimeMode,
+) -> Vec<(OsString, OsString)> {
+    let kept: &[&str] = if apple {
+        &["HOME", "TMPDIR"]
+    } else {
+        &["HOME", "XDG_CACHE_HOME"]
+    };
 
     let vars: Vec<(OsString, OsString)> = vars.collect();
     let mut environment: Vec<(OsString, OsString)> = vars
         .iter()
-        .filter(|(name, _)| KEPT.iter().any(|kept| name == kept))
+        .filter(|(name, _)| kept.iter().any(|kept| name == kept))
         .cloned()
         .collect();
+    environment.push(("LANG".into(), "C".into()));
+    if apple {
+        return environment;
+    }
 
     let in_appimage = vars
         .iter()
@@ -229,7 +261,6 @@ pub fn runtime_environment(
         }
     }
 
-    environment.push(("LANG".into(), "C".into()));
     environment.push(("VK_LOADER_LAYERS_DISABLE".into(), "~implicit~".into()));
     if mode == RuntimeMode::Cpu {
         environment.push(("GGML_VK_VISIBLE_DEVICES".into(), OsString::new()));
@@ -255,9 +286,29 @@ fn absolute_components(list: &std::ffi::OsStr) -> Option<OsString> {
     (!kept.is_empty()).then(|| OsString::from_vec(kept.join(&b':')))
 }
 
+/// Whether a helper whose parent had the process id `at_start` when it began (`now`: the id of its parent
+/// now) has lost it. Without a death signal (macOS has none) the helper polls this. A parent that is `init`
+/// (id 1, or 0) already means the app was gone before the helper looked: it was adopted at once. An id that
+/// differs later means the app ended and the helper was adopted by `init`.
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn parent_is_gone(at_start: u32, now: u32) -> bool {
+    at_start <= 1 || now != at_start
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_parent_is_gone_when_it_was_init_at_the_start_or_the_id_changes() {
+        assert!(!parent_is_gone(4242, 4242), "the same parent is not gone");
+        assert!(parent_is_gone(4242, 1), "adopted by init");
+        assert!(parent_is_gone(4242, 7), "adopted by another reaper");
+        assert!(parent_is_gone(1, 1), "the app was already gone at the start");
+        assert!(parent_is_gone(0, 0));
+    }
 
     #[test]
     fn a_windows_exit_code_is_told_in_hexadecimal_with_its_name_when_it_is_a_known_failure() {
@@ -286,6 +337,14 @@ mod tests {
     #[cfg(unix)]
     mod environment {
         use super::super::*;
+
+        /// The Linux rules (the macOS ones are tested through `environment_for` directly).
+        fn runtime_environment(
+            vars: impl Iterator<Item = (OsString, OsString)>,
+            mode: RuntimeMode,
+        ) -> Vec<(OsString, OsString)> {
+            environment_for(false, vars, mode)
+        }
 
         fn vars(pairs: &[(&str, &str)]) -> impl Iterator<Item = (OsString, OsString)> {
             pairs
@@ -416,6 +475,48 @@ mod tests {
             assert_eq!(hidden(RuntimeMode::Cpu), Some(OsString::new()), "set, and empty");
             assert_eq!(hidden(RuntimeMode::Gpu), None);
             assert_eq!(hidden(RuntimeMode::Probe), None);
+        }
+
+        #[test]
+        fn on_macos_the_helper_gets_home_tmpdir_and_a_fixed_locale_and_nothing_else() {
+            let environment = environment_for(
+                true,
+                vars(&[
+                    ("HOME", "/Users/user"),
+                    ("TMPDIR", "/var/folders/xx/T/"),
+                    ("PATH", "/usr/bin"),
+                    ("XDG_CACHE_HOME", "/cache"),
+                    ("APPIMAGE", "/opt/Platter.AppImage"),
+                    ("LD_LIBRARY_PATH", "/app/lib"),
+                    ("DYLD_INSERT_LIBRARIES", "/evil.dylib"),
+                    ("DYLD_LIBRARY_PATH", "/evil"),
+                    ("LANG", "pl_PL.UTF-8"),
+                ]),
+                RuntimeMode::Gpu,
+            );
+
+            let mut names: Vec<_> = environment
+                .iter()
+                .map(|(name, _)| name.to_string_lossy())
+                .collect();
+            names.sort();
+            assert_eq!(names, ["HOME", "LANG", "TMPDIR"]);
+            assert_eq!(lookup(&environment, "LANG"), Some("C".into()));
+            assert_eq!(lookup(&environment, "TMPDIR"), Some("/var/folders/xx/T/".into()));
+        }
+
+        #[test]
+        fn on_macos_no_mode_adds_a_graphics_variable_and_unset_variables_are_not_made_up() {
+            for mode in [RuntimeMode::Probe, RuntimeMode::Cpu, RuntimeMode::Gpu] {
+                let environment = environment_for(true, vars(&[("HOME", "/Users/user")]), mode);
+
+                let mut names: Vec<_> = environment
+                    .iter()
+                    .map(|(name, _)| name.to_string_lossy())
+                    .collect();
+                names.sort();
+                assert_eq!(names, ["HOME", "LANG"], "{mode:?}");
+            }
         }
 
         #[cfg(target_os = "linux")]

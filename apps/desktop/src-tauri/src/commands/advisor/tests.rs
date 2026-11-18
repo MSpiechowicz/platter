@@ -181,7 +181,8 @@ fn the_status_is_sent_in_the_contracts_shape() {
         json["gpuSupported"],
         cfg!(any(
             feature = "gpu-vulkan",
-            all(feature = "advisor", target_os = "linux")
+            feature = "gpu-metal",
+            all(feature = "advisor", any(target_os = "linux", target_os = "macos"))
         ))
     );
     for gone in ["models", "recommended"] {

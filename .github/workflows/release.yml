@@ -1,7 +1,8 @@
 name: Release
 
-# Builds the Linux packages (AppImage, deb, rpm) and the Windows setup (NSIS, for the current user) for a
-# version tag and puts them, with SHA256SUMS, on a GitHub release.
+# Builds the Linux packages (AppImage, deb, rpm), the Windows setup (NSIS, for the current user) and the Mac
+# app (dmg and an app tarball, Apple Silicon) for a version tag and puts them, with SHA256SUMS, on a GitHub
+# release. The Mac build never blocks the others: if it fails, the release goes out without it.
 #
 # Two ways in:
 # - version.yml calls it after a merge to main raised the version and pushed the tag (`publish: true`: the
@@ -204,15 +205,117 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The Mac app (Apple Silicon). Like the others it can read the repository only and sees no secret. It is
+  # signed ad hoc (tauri.conf.json: signingIdentity "-") and not notarized. Its failure does not stop the
+  # release: `sign` and `publish` go on without it. The default features build the advisor for the processor
+  # and, through the desktop crate's macOS dependency, for the GPU (Metal). The runner has Xcode and cmake.
+  macos:
+    name: macOS app
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Called from version.yml the run's ref is main: build exactly what the tag names.
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          persist-credentials: false
+
+      # The tag must name the version the app carries (the workspace version in Cargo.toml).
+      - name: Check the tag against the version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::The tag $TAG does not match the version $version in Cargo.toml."
+            exit 1
+          fi
+
+      # See the Linux job: every build of a version is the same one.
+      - name: Refuse GGML variables in the environment
+        run: |
+          if env | grep -q '^GGML_'; then
+            env | grep '^GGML_' | cut -d= -f1
+            echo "::error::GGML_* variables are set. The release must be built without them."
+            exit 1
+          fi
+
+      - name: Check the build tools
+        run: |
+          [ "$(uname -m)" = arm64 ] || { echo "::error::The runner is not Apple Silicon."; exit 1; }
+          command -v cmake >/dev/null 2>&1 || { echo "::error::cmake is missing from the macos-15 image."; exit 1; }
+          cmake --version
+          xcrun --find clang
+
+      - name: Install the toolchain from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain || rustup toolchain install --profile minimal
+          rustup target add aarch64-apple-darwin
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # No cache on purpose: a release is built from a clean target folder. With --target the bundles are in
+      # target/aarch64-apple-darwin/release/bundle. The bundles that macOS cannot make are skipped, so this
+      # makes the app and the dmg.
+      - name: Build the app
+        run: pnpm -C apps/desktop tauri build --ci --target aarch64-apple-darwin
+
+      # A red macOS test must not ship an app: nothing below uploads it unless the tests pass. It runs after
+      # the build, which made the frontend that the desktop crate embeds.
+      - name: Test
+        run: cargo test --locked --workspace
+
+      # The updater takes a tarball of the app bundle. It is made here, not by Tauri, because Tauri signs its
+      # own updater files with the key, which this job must not see: the sign job signs the tarball.
+      - name: Collect the app and the dmg
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          bundle=target/aarch64-apple-darwin/release/bundle
+          mkdir packages
+          set -- "$bundle"/dmg/*.dmg
+          [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::Expected exactly one dmg."; exit 1; }
+          cp "$1" packages/
+          [ -d "$bundle/macos/Platter.app" ] || { echo "::error::The build made no Platter.app."; exit 1; }
+          app="$bundle/macos/Platter.app"
+          codesign --verify --deep --strict "$app"
+          # The hardened runtime must be on (flags=0x10002(adhoc,runtime)), with no entitlement that weakens it.
+          codesign -d --verbose=2 "$app" 2>&1 | grep -E '^CodeDirectory .*flags=.*runtime' ||
+            { echo "::error::The app is not signed with the hardened runtime."; exit 1; }
+          ! codesign -d --entitlements - "$app" 2>&1 | grep -E 'allow-dyld-environment-variables|disable-library-validation|allow-unsigned-executable-memory|disable-executable-page-protection|allow-jit|get-task-allow' ||
+            { echo "::error::The app has an entitlement that weakens the hardened runtime."; exit 1; }
+          COPYFILE_DISABLE=1 tar -czf "packages/Platter_${TAG#v}_aarch64.app.tar.gz" -C "$bundle/macos" Platter.app
+          ls -l packages
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-macos
+          path: packages/
+          if-no-files-found: error
+          retention-days: 7
+
   # The signing key is only ever in this job, which builds nothing. The one program from a dependency that
-  # runs with the key is the Tauri CLI, which signs the AppImage and the Windows setup: the desktop
+  # runs with the key is the Tauri CLI, which signs the AppImage, the Windows setup and the Mac app tarball: the desktop
   # package's dependencies are installed from pnpm-lock.yaml (integrity hashes checked, no install scripts
   # run) before the key is set, and the CLI is then started directly, not through pnpm (whose `exec` may
   # install again, with scripts, when it finds the dependencies out of date). The app checks
   # every update against the public key in tauri.conf.json, so only a file signed here is installed.
   sign:
     name: Sign and describe the update
-    needs: [linux, windows]
+    # The Mac build is optional: this job runs, and signs what there is, when it failed. Linux and Windows
+    # must have succeeded.
+    needs: [linux, windows, macos]
+    if: ${{ !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     permissions:
@@ -248,6 +351,13 @@ jobs:
           name: packages-windows
           path: windows
 
+      # Only a Mac build that passed (build and tests) is used.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.macos.result == 'success'
+        with:
+          name: packages-macos
+          path: macos
+
       # Before anything is signed: exactly one AppImage (with the deb and the rpm) from the Linux build and
       # exactly one setup, and nothing else, from the Windows build.
       - name: Check what the builds made
@@ -265,6 +375,27 @@ jobs:
             *) echo "::error::The Windows build made $1, not a setup."; exit 1 ;;
           esac
 
+      # The Mac build is optional. If it did not pass, or made anything but one dmg and one app tarball, its
+      # folder is removed and the release goes out without it: from here on the folder `macos` means "the
+      # Mac build is part of this release".
+      - name: Check what the Mac build made
+        env:
+          MAC_RESULT: ${{ needs.macos.result }}
+        run: |
+          if [ "$MAC_RESULT" != success ]; then
+            echo "::warning::The Mac build did not succeed ($MAC_RESULT). The release goes out without it."
+            rm -rf macos
+            exit 0
+          fi
+          dmgs=$(find macos -maxdepth 1 -name '*.dmg' | wc -l)
+          tars=$(find macos -maxdepth 1 -name '*.app.tar.gz' | wc -l)
+          files=$(find macos -mindepth 1 | wc -l)
+          if [ "$dmgs" -ne 1 ] || [ "$tars" -ne 1 ] || [ "$files" -ne 2 ]; then
+            echo "::warning::The Mac build made something other than one dmg and one app tarball. The release goes out without it."
+            ls -l macos
+            rm -rf macos
+          fi
+
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -276,15 +407,17 @@ jobs:
       - name: Install the Tauri CLI from the lockfile
         run: pnpm install --frozen-lockfile --ignore-scripts --filter platter-desktop-ui
 
-      - name: Sign the AppImage and the setup
+      - name: Sign the AppImage, the setup and the Mac app
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          for file in linux/*.AppImage windows/*-setup.exe; do
+          for file in linux/*.AppImage windows/*-setup.exe macos/*.app.tar.gz; do
+            [ -f "$file" ] || continue
             apps/desktop/node_modules/.bin/tauri signer sign "$file"
           done
           ls -l linux windows
+          if [ -d macos ]; then ls -l macos; fi
 
       # Only the files that were checked and signed go into the release.
       - name: Assemble the release
@@ -292,10 +425,16 @@ jobs:
           mkdir release
           cp linux/*.AppImage linux/*.AppImage.sig linux/*.deb linux/*.rpm release/
           cp windows/*-setup.exe windows/*-setup.exe.sig release/
+          if [ -d macos ]; then
+            cp macos/*.dmg macos/*.app.tar.gz macos/*.app.tar.gz.sig release/
+          fi
           # The deb and the rpm once more under names without the version, so that
           # releases/latest/download/<name> always names the newest one (the install commands in README.md).
           cp linux/*.deb release/platter_amd64.deb
           cp linux/*.rpm release/platter.x86_64.rpm
+          if [ -d macos ]; then
+            cp macos/*.dmg release/Platter_aarch64.dmg
+          fi
           ls -l release
 
       # The release notes are the message of the annotated tag (git tag -a v0.2.0 -m "..."), one line each.
@@ -338,6 +477,19 @@ jobs:
                 "windows-x86_64-nsis": {url: $setup_url, signature: $setup_signature, size: $setup_size},
                 "windows-x86_64": {url: $setup_url, signature: $setup_signature, size: $setup_size}
               }}' > release/latest.json
+          if [ -d macos ]; then
+            set -- release/*.app.tar.gz
+            [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "::error::Expected exactly one Mac app tarball."; exit 1; }
+            apptar=${1#release/}
+            jq \
+              --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$apptar" \
+              --rawfile signature "release/$apptar.sig" \
+              --argjson size "$(stat -c %s "release/$apptar")" \
+              '.platforms["darwin-aarch64-app"] = {url: $url, signature: $signature, size: $size}
+                | .platforms["darwin-aarch64"] = .platforms["darwin-aarch64-app"]' \
+              release/latest.json > latest.tmp
+            mv latest.tmp release/latest.json
+          fi
           cat release/latest.json
 
           cd release
@@ -354,8 +506,11 @@ jobs:
 
   publish:
     name: Release
-    # The sign job needs both builds, and nothing is published unless both succeeded and were signed.
-    needs: [linux, windows, sign]
+    # The sign job needs the Linux and Windows builds, and nothing is published unless both succeeded and
+    # were signed. The Mac build does not count: without it the release goes out as it is (`sign` leaves its
+    # files out then). `always()` keeps this job from being skipped with a failed `macos` in `needs`.
+    needs: [linux, windows, macos, sign]
+    if: ${{ always() && needs.linux.result == 'success' && needs.windows.result == 'success' && needs.sign.result == 'success' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:

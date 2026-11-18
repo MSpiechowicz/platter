@@ -82,8 +82,9 @@ pub struct CleanupReport {
 pub struct Disk<'a, P: EntryProbe, R: EntryRemover> {
     pub probe: &'a P,
     pub remover: &'a R,
-    /// The user's trash folder; `None` refuses every move to the trash. Not needed on Windows, where the
-    /// Recycle Bin is the shell's and the remover ignores it.
+    /// The user's trash folder (`~/.Trash` on macOS: the remover itself picks the `.Trashes/<uid>` of
+    /// another volume); `None` refuses every move to the trash. Not needed on Windows, where the Recycle
+    /// Bin is the shell's and the remover ignores it.
     pub trash_dir: Option<&'a Path>,
     /// Runs the tools that own a cache; `None` leaves those rules undone.
     pub tools: Option<&'a dyn ToolRunner>,
@@ -325,8 +326,9 @@ fn act<P: EntryProbe, R: EntryRemover>(
     })]
 }
 
-/// The folder a move to the trash goes under: the user's trash folder, or on Windows nothing in
-/// particular (the Recycle Bin is the shell's and the remover ignores it).
+/// The folder a move to the trash goes under: the user's trash folder (on macOS `~/.Trash`, which is
+/// always known when the home is), or on Windows nothing in particular (the Recycle Bin is the shell's
+/// and the remover ignores it).
 fn trash_dir_for<'a, P: EntryProbe, R: EntryRemover>(
     plan: &CleanupPlan,
     disk: &Disk<'a, P, R>,

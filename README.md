@@ -1,6 +1,6 @@
 # Platter
 
-See what's eating your disk, and clean it up safely. Linux and Windows, fully local, AI-assisted.
+See what's eating your disk, and clean it up safely. Linux, Windows and macOS, fully local, AI-assisted.
 
 > **Status:** early development. Every change on `main` that passes CI is released automatically.
 
@@ -15,7 +15,7 @@ Nothing leaves your computer. The only network calls are the optional model down
 
 ## Install
 
-Each command downloads the latest release from GitHub, checks it against the release's `SHA256SUMS` and installs it. All of them are for 64-bit x86.
+Each command downloads the latest release from GitHub, checks it against the release's `SHA256SUMS` and installs it. The Linux and Windows builds are for 64-bit x86. The Mac build is for Apple Silicon.
 
 **Linux, any distribution (AppImage, for your user only, updates itself):**
 
@@ -47,9 +47,17 @@ irm https://github.com/MSpiechowicz/platter/releases/latest/download/install.ps1
 
 It installs to `%LOCALAPPDATA%\Platter` and asks for no administrator rights. The setup is not code-signed yet, so Windows may warn the first time it runs. To remove it: `$env:PLATTER_UNINSTALL = '1'; irm https://github.com/MSpiechowicz/platter/releases/latest/download/install.ps1 | iex`.
 
+**macOS 13 or newer, Apple Silicon (for your user only, updates itself):**
+
+```sh
+curl -fsSL https://github.com/MSpiechowicz/platter/releases/latest/download/install.sh | sh
+```
+
+It installs to `~/Applications/Platter.app` and asks for no administrator rights. `sh install.sh --uninstall` removes it again. The app is not notarized by Apple. A download made by the command above opens without a prompt. If you download `Platter_aarch64.dmg` in a browser instead, macOS blocks the first start. Open System Settings, Privacy & Security, and click "Open Anyway". To let Platter scan every folder, give it Full Disk Access in System Settings, Privacy & Security, Full Disk Access. The Mac build is signed ad hoc, so macOS treats each update as a new app and may ask again for Full Disk Access (or for access to a folder). Switch Platter on again in the same list after an update.
+
 ## Platforms
 
-Linux and Windows. The OS-specific code sits behind a small platform layer (`platter-platform`), so macOS support can be added without touching the scanner, analysis, cleanup logic or UI.
+Linux, Windows and macOS (Apple Silicon). The OS-specific code sits behind a small platform layer (`platter-platform`), so the scanner, analysis, cleanup logic and UI are the same everywhere.
 
 ## Tech
 

@@ -7,6 +7,10 @@
 //! and leave the process without a descriptor for anything else. A directory that cannot claim a slot
 //! keeps no descriptor, and its children are reopened from the scan root instead (slower, but it holds
 //! at most two descriptors whatever the depth).
+//!
+//! Shared by the Linux and macOS readers. Only Linux uses it until the macOS reader (package M1) does.
+
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -20,7 +24,7 @@ static HELD: AtomicUsize = AtomicUsize::new(0);
 
 /// Default size of the budget: half the soft `RLIMIT_NOFILE`, the rest is left to the workers that are
 /// reading and to the rest of the process.
-pub(super) fn default_limit() -> usize {
+pub(crate) fn default_limit() -> usize {
     match getrlimit(Resource::Nofile).current {
         Some(soft) => usize::try_from(soft / 2).unwrap_or(usize::MAX),
         None => UNLIMITED_FD_BUDGET,
@@ -35,11 +39,11 @@ pub fn descriptors_held() -> usize {
 
 /// One claimed slot of the budget, given back when dropped.
 #[derive(Debug)]
-pub(super) struct Slot(());
+pub(crate) struct Slot(());
 
 impl Slot {
     /// Claims a slot unless `limit` slots are in use already.
-    pub fn claim(limit: usize) -> Option<Slot> {
+    pub(crate) fn claim(limit: usize) -> Option<Slot> {
         HELD.try_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
             (held < limit).then_some(held + 1)
         })

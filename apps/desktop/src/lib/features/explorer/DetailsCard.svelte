@@ -6,6 +6,7 @@
   import { CATEGORY_META } from '../../categories';
   import { formatCount, formatDate } from '../../format';
   import { fmt } from '../../state/fmt.svelte';
+  import { platform } from '../../state/platform.svelte';
   import { visibleText } from '../overview/display';
   import { formatShare } from './layout/scale';
 
@@ -92,8 +93,8 @@
     <Button
       class="reveal"
       disabled={!node}
-      title="Show in file manager"
-      aria-label="Show in file manager"
+      title={platform.showInFileManager}
+      aria-label={platform.showInFileManager}
       onclick={onreveal}
     >
       <svg viewBox="0 0 16 16" aria-hidden="true"

@@ -36,7 +36,8 @@ const NODE_TOOL_DIRS: &[&str] = &[
     ".cursor-server",
     ".windsurf",
 ];
-const SYSTEM_PREFIXES: &[&str] = &["/usr", "/opt"];
+/// Folders of the system, of the machine's apps and of macOS: nothing below them is a project of the user's.
+const SYSTEM_PREFIXES: &[&str] = &["/usr", "/opt", "/Applications", "/Library", "/System"];
 /// The same on Windows: below `%SystemRoot%` and these folders at the root of the system drive.
 const WINDOWS_SYSTEM_FOLDERS: &[&str] = &["Program Files", "Program Files (x86)", "ProgramData"];
 
@@ -123,7 +124,27 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::new("win-crash-dumps", "Crash dumps", Safe, Matcher::Home("AppData/Local/CrashDumps"),
         "Memory dumps Windows saved when programs crashed. They are mainly useful for debugging those crashes.").only_on(Os::Windows),
 
+    // macOS. Cleaning only moves to the Trash, so nothing is lost for good. `~/Library/Caches` is one
+    // `review` rule that holds the caches of every app, the package managers' included (Homebrew, pip,
+    // Yarn): the outermost match wins, so a rule of its own for one of those could never fire.
+    Rule::new("mac-xcode-derived-data", "Xcode build data", Safe, Matcher::Home("Library/Developer/Xcode/DerivedData"),
+        "Build products and indexes Xcode keeps for your projects. Xcode builds them again the next time you build.").only_on(Os::MacOs),
+    Rule::new("mac-simulator-caches", "iOS Simulator caches", Safe, Matcher::Home("Library/Developer/CoreSimulator/Caches"),
+        "Caches of the iOS Simulator. The Simulator makes them again when it needs them.").only_on(Os::MacOs),
+    Rule::new("mac-pnpm-store", "pnpm store (Library)", Safe, Matcher::Home("Library/pnpm/store"),
+        "The shared package store of pnpm. pnpm downloads again what a project needs and the store no longer has. Files that projects still link to are not freed until those projects are cleaned too.").only_on(Os::MacOs),
+
     // Review: probably removable, but only the owner can tell.
+    Rule::new("mac-app-caches", "Library caches", Review, Matcher::Home("Library/Caches"),
+        "Caches of your apps and tools, Homebrew and pip among them. Apps make them again, but a large download kept here would have to be downloaded again, and some apps keep things here that cannot be rebuilt.").only_on(Os::MacOs),
+    Rule::new("mac-logs", "Application logs", Review, Matcher::Home("Library/Logs"),
+        "Logs your apps and the system wrote for you. They are mainly useful for finding out why something went wrong.").only_on(Os::MacOs),
+    Rule::new("mac-device-support", "iOS device support files", Review, Matcher::Home("Library/Developer/Xcode/iOS DeviceSupport"),
+        "Symbols Xcode copied from iPhones and iPads you connected. Xcode copies them again the next time such a device is connected, which takes a while.").only_on(Os::MacOs),
+    Rule::new("mac-docker-vm", "Docker Desktop disk image", Review, Matcher::Home("Library/Containers/com.docker.docker/Data/vms"),
+        "The disk image Docker Desktop keeps its images, containers and volumes in. Removing it deletes all of them. Platter does not clean it: it lies in a folder that is protected. Use Docker Desktop to free its space.").only_on(Os::MacOs),
+    Rule::new("mac-trash", "Trash folder", Review, Matcher::Home(".Trash"),
+        "Files you moved to the Trash, and what Platter moved there. Platter cannot empty it. Empty it in Finder when you are sure you want them gone for good.").only_on(Os::MacOs),
     Rule::new("win-component-store", "Windows component store", Review, Matcher::System("WinSxS"),
         "Older versions of Windows components that Windows keeps for updates and repairs. Windows can clean it itself, which asks for administrator rights and can take a while. Platter never removes files from it directly.").only_on(Os::Windows),
     Rule::new("pacman-cache", "Pacman package cache", Review, Matcher::Fixed("/var/cache/pacman/pkg"),
@@ -156,6 +177,14 @@ pub(crate) const RULES: &[Rule] = &[
     // Keep: shown so the user can see what is deliberately left alone. Nothing inside is suggested.
     Rule::new("steam-library", "Steam library", Keep, Matcher::Home(".local/share/Steam/steamapps/common"),
         "Installed games. Left alone on purpose: they would have to be downloaded again.").only_on(Os::Linux),
+    Rule::new("mac-iphone-backups", "iPhone and iPad backups", Keep, Matcher::Home("Library/Application Support/MobileSync/Backup"),
+        "Backups of your devices. Left alone on purpose: they may be the only copy of what is on them.").only_on(Os::MacOs),
+    Rule::new("mac-mail", "Mail", Keep, Matcher::Home("Library/Mail"),
+        "Your mail and its settings. Left alone on purpose. Nothing inside is suggested for cleanup.").only_on(Os::MacOs),
+    Rule::new("mac-messages", "Messages", Keep, Matcher::Home("Library/Messages"),
+        "Your messages and their attachments. Left alone on purpose. Nothing inside is suggested for cleanup.").only_on(Os::MacOs),
+    Rule::new("mac-keychains", "Keychains", Keep, Matcher::Home("Library/Keychains"),
+        "Your passwords and keys. Left alone on purpose. Nothing inside is suggested for cleanup.").only_on(Os::MacOs),
     Rule::new("documents", "Documents", Keep, Matcher::UserDir(UserDir::Documents),
         "Your documents folder. Left alone on purpose. Nothing inside is suggested for cleanup."),
     Rule::new("pictures", "Pictures", Keep, Matcher::UserDir(UserDir::Pictures),

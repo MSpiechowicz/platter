@@ -13,7 +13,7 @@ vi.mock('./api/mock-advisor', () => ({
   setMockAdvisorState: (value: string) => state.calls.push(`mock:${value}`),
 }));
 
-async function boot(hooks: Record<string, unknown>, os?: 'windows') {
+async function boot(hooks: Record<string, unknown>, os?: 'windows' | 'macos') {
   vi.resetModules();
   vi.doMock('./hooks', () => ({
     hooks: {
@@ -106,6 +106,7 @@ describe('bootstrap: the system', () => {
   it('takes the system from the advisor status, Linux without one', async () => {
     expect((await boot({})).platform.os).toBe('linux');
     expect((await boot({}, 'windows')).platform.os).toBe('windows');
+    expect((await boot({}, 'macos')).platform.os).toBe('macos');
   });
 
   it('scans the drive root of Windows when there is no volume and no root in the URL', async () => {

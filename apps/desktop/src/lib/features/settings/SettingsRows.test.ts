@@ -100,6 +100,28 @@ describe('Settings on Windows', () => {
   });
 });
 
+describe('Settings on macOS', () => {
+  afterEach(() => {
+    platform.os = 'linux';
+  });
+
+  it('has no Cleanup card, because cleaning only moves to the Trash and no pacman or administrator row is left', () => {
+    platform.os = 'macos';
+    render(SettingsPage);
+
+    expect(screen.queryByRole('region', { name: 'Cleanup' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Keep package versions/ })).toBeNull();
+    expect(screen.queryByRole('switch', { name: 'Ask for administrator rights when needed' })).toBeNull();
+    expect(screen.getByRole('switch', { name: 'Install updates automatically' })).toBeTruthy();
+  });
+
+  it('keeps the Cleanup card on Linux', () => {
+    render(SettingsPage);
+
+    expect(screen.getByRole('region', { name: 'Cleanup' })).toBeTruthy();
+  });
+});
+
 describe('Theme', () => {
   it('saves the choice and shows it at once', async () => {
     render(SettingsPage);

@@ -1,10 +1,12 @@
-//! The real model runtime: llama.cpp through `llama-cpp-2`, on the CPU or (feature `gpu-vulkan`) on one
-//! graphics card.
+//! The real model runtime: llama.cpp through `llama-cpp-2`, on the CPU or on one graphics card (feature
+//! `gpu-vulkan` on Linux, `gpu-metal` on macOS, where the card is Apple's unified-memory GPU).
 //!
 //! The backend is started once per process (a second start fails) and kept for good, with its logging
-//! silenced. The model is loaded from the verified descriptor's `/proc/self/fd/N` path (Linux), or on Windows
-//! from the path of the file that is held open with a share mode that lets nobody change it (see
-//! `crate::verify`): either way, `VerifiedModel::path` names the checked bytes. Each answer
+//! silenced. The model is loaded from the verified descriptor's path: `/proc/self/fd/N` on Linux, `/dev/fd/N`
+//! on macOS (opening it duplicates the descriptor, so the file that loads is the open file that was checked,
+//! whatever its name points to now), or on Windows the path of the file that is held open with a share mode
+//! that lets nobody change it (see `crate::verify`): in every case `VerifiedModel::path` names the checked
+//! bytes. Each answer
 //! gets a fresh context (the context borrows the model, so it cannot be kept next to it without
 //! `unsafe`); that costs a few milliseconds and means nothing of an earlier prompt can leak into the
 //! next answer.
@@ -34,7 +36,9 @@ const CONTEXT_ROUND: u32 = 256;
 /// Tokens decoded at a time.
 const BATCH_TOKENS: u32 = 512;
 
-/// The graphics cards llama.cpp sees. Empty in a CPU-only build and when no Vulkan driver is there.
+/// The graphics cards llama.cpp sees. Empty in a CPU-only build and when no Vulkan driver is there. On macOS
+/// it is the one Metal device, which llama.cpp reports as a discrete card ([`crate::device::GpuPolicy`] accepts
+/// it either way).
 pub fn gpus() -> Result<Vec<GpuDevice>, AiError> {
     backend()?;
 
@@ -147,8 +151,12 @@ impl Engine for LlamaEngine {
                 .with_n_gpu_layers(u32::MAX),
         };
 
+        let path = model
+            .path()
+            .map_err(|error| AiError::Load(format!("The model could not be loaded: {error}")))?;
+
         let started = Instant::now();
-        let loaded = LlamaModel::load_from_file(backend, model.path(), &params)
+        let loaded = LlamaModel::load_from_file(backend, path, &params)
             .map_err(|error| AiError::Load(format!("The model could not be loaded: {error}")))?;
 
         self.model = Some(loaded);

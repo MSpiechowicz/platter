@@ -97,6 +97,30 @@ export const MOCK_WINDOWS_VOLUMES: VolumeDto[] = [
   },
 ];
 
+/** The volumes of a Mac (`?os=macos`): the system disk mounted at `/`, and a stick under `/Volumes`. */
+export const MOCK_MAC_VOLUMES: VolumeDto[] = [
+  {
+    id: 'disk3s1s1',
+    mountPoint: '/',
+    label: 'Macintosh HD',
+    device: '/dev/disk3s1s1',
+    fsType: 'apfs',
+    total: 494 * GB,
+    available: 163 * GB,
+    removable: false,
+  },
+  {
+    id: 'disk4s1',
+    mountPoint: '/Volumes/USB',
+    label: 'USB',
+    device: '/dev/disk4s1',
+    fsType: 'exfat',
+    total: 58 * GB,
+    available: 31 * GB,
+    removable: true,
+  },
+];
+
 const btrfsRoot = MOCK_VOLUMES[0] as VolumeDto;
 
 /** A disk with several physical filesystems, and a btrfs root whose subvolumes are mounted in many places. */
@@ -135,7 +159,7 @@ export interface MockOptions {
   pickedFolder?: string | null;
   /** Test hook: what the picker for a folder to leave out returns (`null`: cancelled). */
   pickedExcluded?: string | null;
-  /** Test hook: the system the mock stands for: the folders the pickers offer follow its path style (default `linux`). */
+  /** Test hook: the system the mock stands for: the volumes, the folders the pickers offer and the demo disk follow it (default `linux`). */
   os?: OsName;
   /** Test hook: warnings the finished scan reports. */
   warnings?: ScanWarning[];
@@ -328,9 +352,11 @@ export function createMockApi(options: MockOptions = {}): Api {
   const durationMs = options.durationMs ?? 2000;
   const tickMs = options.tickMs ?? 100;
   const clock = options.now ?? (() => Math.floor(Date.now() / 1000));
-  const windows = options.os === 'windows';
-  const volumes = options.volumes ?? (windows ? MOCK_WINDOWS_VOLUMES : MOCK_VOLUMES);
-  const demoHome = windows ? 'C:\\Users\\demo' : '/home/demo';
+  const demoVolumes = { windows: MOCK_WINDOWS_VOLUMES, macos: MOCK_MAC_VOLUMES, linux: MOCK_VOLUMES };
+  const demoHomes = { windows: 'C:\\Users\\demo', macos: '/Users/demo', linux: '/home/demo' };
+  const os = options.os ?? 'linux';
+  const volumes = options.volumes ?? demoVolumes[os];
+  const demoHome = demoHomes[os];
   const warnings = options.warnings;
   const scans = new Map<ScanId, ScanRecord>();
   let nextId: ScanId = 1;
@@ -513,6 +539,7 @@ export function createMockApi(options: MockOptions = {}): Api {
         bytes: bytesFor(scanOptions.root),
         now: clock(),
         dominant: options.dominant,
+        os,
       });
       const record: ScanRecord = { tree, onEvent, timer: null, running: true };
 

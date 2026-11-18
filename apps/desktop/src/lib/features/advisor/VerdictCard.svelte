@@ -34,9 +34,10 @@
       ? [
           {
             title: 'Built-in rules',
-            text: platform.isWindows
-              ? 'Known places: caches and build folders.'
-              : 'Known places: caches, build folders, trash.',
+            text:
+              platform.isWindows || platform.isMac
+                ? 'Known places: caches and build folders.'
+                : 'Known places: caches, build folders, trash.',
             unit: 'folders',
             data: labels.rules,
           },

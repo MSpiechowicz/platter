@@ -1,7 +1,9 @@
-// These tests build the Linux layout (a home with `/` paths, the freedesktop trash, symbolic links), so the
-// tests themselves run on Unix; what is Windows-specific is tested in `wording.rs` (here) and in `platter-cleanup`,
-// `platter-platform` (the Recycle Bin, on Windows only).
-#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
+// These tests build the Linux layout (a home with `/` paths, the freedesktop trash, symbolic links). The
+// ones that run a cleanup for real, or expect what Linux does (a rule deletes for good), run on Linux only,
+// the rest on every Unix. What is Windows-specific is tested in `wording.rs` (here) and in
+// `platter-cleanup`, `platter-platform` (the Recycle Bin, on Windows only), what is macOS-specific in
+// `platter-platform` (the Trash, on macOS only).
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use std::fs::{self, File, FileTimes};
 use std::path::{Path, PathBuf};
@@ -180,7 +182,7 @@ fn a_plan_names_only_known_rules() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_plan_is_described_and_kept_in_the_backend() {
     let state = AppState::for_test();
@@ -230,7 +232,7 @@ fn a_declined_confirmation_deletes_nothing_and_uses_the_plan_up() {
     assert!(!state.scans.is_outdated(scan));
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn an_approved_cleanup_runs_reports_and_outdates_the_scan() {
     let state = AppState::for_test();
@@ -285,7 +287,7 @@ fn an_approved_cleanup_runs_reports_and_outdates_the_scan() {
     assert_eq!(wire["outdatedScan"], scan);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn an_older_plan_of_an_outdated_scan_is_refused() {
     let state = AppState::for_test();

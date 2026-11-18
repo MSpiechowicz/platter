@@ -73,6 +73,18 @@ fn is_hidden(fs_type: &str, mount_point: &Path) -> bool {
         || HIDDEN_MOUNT_NAME_PREFIXES
             .iter()
             .any(|prefix| name.starts_with(prefix))
+        || hidden_by_os(fs_type, mount_point)
+}
+
+/// What only this OS hides: on macOS `/System/Volumes/*` and the virtual and network filesystems.
+#[cfg(target_os = "macos")]
+fn hidden_by_os(fs_type: &str, mount_point: &Path) -> bool {
+    crate::macos::volumes::is_hidden(fs_type, mount_point)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hidden_by_os(_fs_type: &str, _mount_point: &Path) -> bool {
+    false
 }
 
 /// How a volume is named to the user.
@@ -83,14 +95,28 @@ struct Identity {
 }
 
 /// The id, device and label of a volume, from the name `sysinfo` gives the disk (the device node on
-/// Linux, the volume label on Windows).
-#[cfg(not(windows))]
+/// Linux, the volume label on Windows and macOS).
+#[cfg(not(any(windows, target_os = "macos")))]
 fn identify(name: String, fs_type: &str, mount_point: &Path, _removable: bool) -> Identity {
     let label = label_for(&name, fs_type, mount_point);
 
     Identity {
         id: mount_point.to_string_lossy().into_owned(),
         device: name,
+        label,
+    }
+}
+
+/// On macOS the name `sysinfo` gives is the volume's name (`Macintosh HD`), which is the label. The device
+/// is the node the kernel says holds it (`/dev/disk3s1s1`), and the name stands in when it says nothing.
+#[cfg(target_os = "macos")]
+fn identify(name: String, _fs_type: &str, mount_point: &Path, _removable: bool) -> Identity {
+    let label = macos_label(&name, mount_point);
+    let device = crate::macos::volumes::device_of(mount_point).unwrap_or(name);
+
+    Identity {
+        id: mount_point.to_string_lossy().into_owned(),
+        device,
         label,
     }
 }
@@ -124,6 +150,22 @@ fn windows_label(volume_label: &str, removable: bool) -> String {
     }
 }
 
+/// The label of a macOS volume: the volume name when it has one, else the mount point's last component, or `Root`
+/// (as for a volume of any other system).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_label(volume_name: &str, mount_point: &Path) -> String {
+    let name = volume_name.trim();
+
+    if !name.is_empty() {
+        return name.to_owned();
+    }
+
+    match mount_point.file_name() {
+        Some(last) => last.to_string_lossy().into_owned(),
+        None => "Root".to_owned(),
+    }
+}
+
 /// `C:` for the mount point `C:\` (or `c:`), `None` for anything else (a volume mounted in a folder).
 #[cfg_attr(not(windows), allow(dead_code))]
 fn drive_letter(mount_point: &str) -> Option<String> {
@@ -140,7 +182,7 @@ fn drive_letter(mount_point: &str) -> Option<String> {
 }
 
 /// Filesystem label when the OS knows one, else the mount point's last component, else `Root`.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn label_for(device: &str, fs_type: &str, mount_point: &Path) -> String {
     if let Some(label) = os_label(device, fs_type) {
         return label;
@@ -156,7 +198,7 @@ fn os_label(device: &str, fs_type: &str) -> Option<String> {
     crate::linux::labels::label_of(device, fs_type)
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn os_label(_device: &str, _fs_type: &str) -> Option<String> {
     None
 }
@@ -203,7 +245,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn labels_fall_back_to_the_mount_point_name() {
         assert_eq!(
@@ -211,6 +253,29 @@ mod tests {
             "backup"
         );
         assert_eq!(label_for("/dev/none-existent", "ext4", Path::new("/")), "Root");
+    }
+
+    #[test]
+    fn a_macos_volume_is_labelled_by_its_name_and_falls_back_like_the_others() {
+        assert_eq!(macos_label("Macintosh HD", Path::new("/")), "Macintosh HD");
+        assert_eq!(macos_label(" Backup ", Path::new("/Volumes/Backup 2")), "Backup");
+        assert_eq!(macos_label("", Path::new("/Volumes/Backup 2")), "Backup 2");
+        assert_eq!(macos_label("  ", Path::new("/")), "Root");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_system_volumes_are_not_listed_on_a_mac() {
+        assert!(is_hidden("apfs", Path::new("/System/Volumes/Data")));
+        assert!(is_hidden("devfs", Path::new("/dev")));
+        assert!(!is_hidden("apfs", Path::new("/")));
+
+        for volume in SystemVolumes.list() {
+            assert!(
+                !volume.mount_point.starts_with("/System/Volumes"),
+                "{volume:?} is listed"
+            );
+        }
     }
 
     #[test]

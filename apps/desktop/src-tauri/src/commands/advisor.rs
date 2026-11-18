@@ -151,10 +151,12 @@ impl From<&Device> for DeviceDto {
 }
 
 /// Whether this build can run the model on a graphics card: every Linux build with the advisor (the
-/// desktop crate's target dependency turns Vulkan on there), and any build that asks for `gpu-vulkan`.
+/// desktop crate's target dependency turns Vulkan on there), every macOS build with it (Metal, the same
+/// way), and any build that asks for `gpu-vulkan` or `gpu-metal`.
 const GPU_SUPPORTED: bool = cfg!(any(
     feature = "gpu-vulkan",
-    all(feature = "advisor", target_os = "linux")
+    feature = "gpu-metal",
+    all(feature = "advisor", any(target_os = "linux", target_os = "macos"))
 ));
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

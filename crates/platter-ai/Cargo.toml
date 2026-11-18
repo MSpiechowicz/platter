@@ -18,6 +18,9 @@ llama = ["dep:llama-cpp-2", "dep:llama-cpp-sys-2"]
 # `glslc` to build). The binary links libvulkan.so.1, so it does not start without the Vulkan loader (owner
 # decision 2026-11-17: a package dependency). The CPU path stays and is the fallback.
 gpu-vulkan = ["llama", "llama-cpp-2/vulkan"]
+# The model runtime with llama.cpp's Metal backend as well (macOS only; a build with it on another OS fails
+# with a `compile_error!`). The CPU path stays and is the fallback.
+gpu-metal = ["llama", "llama-cpp-2/metal"]
 # `FakeFetch` and `FakeEngine`, so tests of this and other crates need neither the network nor a model.
 testing = []
 

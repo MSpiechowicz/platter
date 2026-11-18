@@ -1,6 +1,6 @@
 import { baseName, joinPath } from '../paths';
 import { layoutFor, type DirSpec, type FileGroup } from './mock-layouts';
-import type { Category, NodeKind, SkipReason } from './types';
+import type { Category, NodeKind, OsName, SkipReason } from './types';
 
 export const BLOCK_SIZE = 4096;
 export const DAY = 86_400;
@@ -63,6 +63,8 @@ export interface TreeOptions {
   now: number;
   /** Use the lopsided demo layout, where one folder holds nearly everything. */
   dominant?: boolean;
+  /** The system the demo disk stands for (default `linux`): a Mac has `Users`, `Applications` and `Library` where Linux has `home`. */
+  os?: OsName;
   /** Absolute paths of folders the user leaves out of scans. Never the root. */
   excluded?: readonly string[];
 }
@@ -299,7 +301,7 @@ export function buildTree(options: TreeOptions): MockTree {
   const rootSpec: DirSpec = {
     name: rootName(options.root),
     weight: 1,
-    kids: layoutFor(options.root, options.dominant),
+    kids: layoutFor(options.root, options.dominant, options.os),
   };
   const rootDraft = buildDir(rootSpec, options.bytes, ctx, options.root, true);
 

@@ -30,14 +30,16 @@ impl UserDir {
         UserDir::Videos,
     ];
 
-    /// The folder's name below the home directory when the machine does not say otherwise.
-    pub const fn default_name(self) -> &'static str {
-        match self {
-            UserDir::Desktop => "Desktop",
-            UserDir::Documents => "Documents",
-            UserDir::Music => "Music",
-            UserDir::Pictures => "Pictures",
-            UserDir::Videos => "Videos",
+    /// The folder's name below the home directory on `os` when the machine does not say otherwise. The
+    /// videos folder is `Movies` on macOS.
+    pub const fn default_name(self, os: Os) -> &'static str {
+        match (self, os) {
+            (UserDir::Desktop, _) => "Desktop",
+            (UserDir::Documents, _) => "Documents",
+            (UserDir::Music, _) => "Music",
+            (UserDir::Pictures, _) => "Pictures",
+            (UserDir::Videos, Os::MacOs) => "Movies",
+            (UserDir::Videos, _) => "Videos",
         }
     }
 }
@@ -67,6 +69,70 @@ impl Environment {
             .iter()
             .find(|(kind, _)| *kind == dir)
             .map(|(_, path)| path.clone())
-            .or_else(|| self.home.as_ref().map(|home| home.join(dir.default_name())))
+            .or_else(|| {
+                self.home
+                    .as_ref()
+                    .map(|home| home.join(dir.default_name(self.os)))
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn environment(os: Os, home: &str) -> Environment {
+        Environment {
+            home: Some(PathBuf::from(home)),
+            user_dirs: Vec::new(),
+            now: 0,
+            os,
+            system_root: None,
+        }
+    }
+
+    #[test]
+    fn the_videos_folder_is_called_movies_on_macos_and_videos_elsewhere() {
+        assert_eq!(UserDir::Videos.default_name(Os::MacOs), "Movies");
+        for os in [Os::Linux, Os::Windows, Os::Other] {
+            assert_eq!(UserDir::Videos.default_name(os), "Videos");
+        }
+    }
+
+    #[test]
+    fn the_other_personal_folders_keep_their_names_on_every_os() {
+        for os in [Os::Linux, Os::MacOs, Os::Windows, Os::Other] {
+            assert_eq!(UserDir::Desktop.default_name(os), "Desktop");
+            assert_eq!(UserDir::Documents.default_name(os), "Documents");
+            assert_eq!(UserDir::Music.default_name(os), "Music");
+            assert_eq!(UserDir::Pictures.default_name(os), "Pictures");
+        }
+    }
+
+    #[test]
+    fn a_personal_folder_without_a_configured_place_is_below_the_home_under_the_name_of_the_os() {
+        let mac = environment(Os::MacOs, "/Users/u");
+        let linux = environment(Os::Linux, "/home/u");
+
+        assert_eq!(
+            mac.user_dir(UserDir::Videos),
+            Some(PathBuf::from("/Users/u/Movies"))
+        );
+        assert_eq!(
+            linux.user_dir(UserDir::Videos),
+            Some(PathBuf::from("/home/u/Videos"))
+        );
+    }
+
+    #[test]
+    fn a_configured_place_wins_over_the_default_name() {
+        let mut mac = environment(Os::MacOs, "/Users/u");
+        mac.user_dirs
+            .push((UserDir::Videos, PathBuf::from("/Volumes/Media/Films")));
+
+        assert_eq!(
+            mac.user_dir(UserDir::Videos),
+            Some(PathBuf::from("/Volumes/Media/Films"))
+        );
     }
 }

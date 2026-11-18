@@ -582,7 +582,7 @@ fn shown_path(tree: &Tree, env: &Environment, rule: &Rule, found: &Found) -> Str
         Matcher::Home(relative) => format!("~/{relative}"),
         Matcher::System(relative) => format!("%SystemRoot%/{relative}"),
         Matcher::UserDir(dir) => env.user_dir(*dir).map_or_else(
-            || format!("~/{}", dir.default_name()),
+            || format!("~/{}", dir.default_name(env.os)),
             |path| shorten_home(&path, home),
         ),
         Matcher::Named(named) => {

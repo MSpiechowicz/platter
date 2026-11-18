@@ -9,7 +9,7 @@ pub fn physical_cores() -> Option<usize> {
 }
 
 /// Physical cores (not hardware threads), from the system through `sysinfo`.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub fn physical_cores() -> Option<usize> {
     sysinfo::System::physical_core_count()
         .ok()
@@ -17,7 +17,7 @@ pub fn physical_cores() -> Option<usize> {
 }
 
 /// Physical cores. Not known on this system.
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn physical_cores() -> Option<usize> {
     None
 }
@@ -75,7 +75,7 @@ mod tests {
         assert_eq!(parse_physical_cores(""), None);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn the_cores_of_this_machine_are_known() {
         let cores = physical_cores().expect("the system reports its cores");

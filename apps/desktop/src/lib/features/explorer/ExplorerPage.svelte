@@ -10,6 +10,7 @@
   import { cleanup } from '../../state/cleanup.svelte';
   import { delayed } from '../../state/delayed.svelte';
   import { fmt } from '../../state/fmt.svelte';
+  import { platform } from '../../state/platform.svelte';
   import { scan } from '../../state/scan.svelte';
   import { settings, type ExplorerView } from '../../state/settings.svelte';
   import { ui } from '../../state/ui.svelte';
@@ -210,7 +211,7 @@
     try {
       await store.reveal();
     } catch (error) {
-      ui.toast('Could not open the file manager', describeError(error), 'error');
+      ui.toast(`Could not open ${platform.theFileManager}`, describeError(error), 'error');
     }
   }
 

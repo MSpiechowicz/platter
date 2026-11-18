@@ -3,7 +3,11 @@
 //! `tauri.conf.json` and checks every download against the public key there, so only a build signed with
 //! the owner's key is installed.
 //!
-//! Two kinds of copy update themselves. An AppImage replaces itself and `restart_app` starts the new one.
+//! Three kinds of copy update themselves. An AppImage replaces itself and `restart_app` starts the new one.
+//! So does a macOS app bundle (`<name>.app/Contents/MacOS/<program>`) whose folder the user can write to: the
+//! updater unpacks the signed `.app.tar.gz` next to it, swaps the two bundles, and `restart_app` starts the new
+//! one from the same path. A bundle in a folder that needs an administrator (the updater would ask for the
+//! password in a system dialog) is told about the update and gets the release page, as a package does.
 //! A copy installed by the Windows setup (NSIS, for the current user) downloads and checks the new setup
 //! in `install_update` and keeps it, and `restart_app` runs it: the updater ends the app and the setup
 //! starts the new version, so the installation waits for the user's click on Windows, also when the
@@ -71,6 +75,9 @@ impl PendingUpdate {
 enum InstallKind {
     /// An AppImage: replaced in place, started again by `restart_app`.
     AppImage,
+    /// A macOS app bundle in a folder the user can write to: replaced in place by the updater, started again
+    /// by `restart_app`.
+    AppBundle,
     /// Installed by the Windows setup: the new setup is run by `restart_app`.
     Setup,
     /// Updated by something else (a package manager, the user): the release page is offered.
@@ -99,8 +106,8 @@ pub struct UpdateOfferDto {
     pub notes: Vec<String>,
     /// Size of the download in bytes, when the release says.
     pub size_bytes: Option<u64>,
-    /// This copy can install it itself (it runs from an AppImage, or the Windows setup installed it).
-    /// Otherwise the release page is offered.
+    /// This copy can install it itself (it runs from an AppImage, from an app bundle in a folder the user can
+    /// write to, or the Windows setup installed it). Otherwise the release page is offered.
     pub can_install: bool,
 }
 
@@ -128,8 +135,17 @@ pub async fn check_update(
         .build()
         .map_err(|error| CommandError::io(format!("Updates cannot be checked: {error}")))?
         .check()
-        .await
-        .map_err(|error| CommandError::io(format!("Updates could not be checked: {error}")))?;
+        .await;
+    let found = match found {
+        Ok(found) => found,
+        // The macOS build is the one a release may lack (its job never blocks publishing): a release
+        // without it is not a failed check, this copy has nothing to update to. Elsewhere a missing entry
+        // is a broken release and is shown as an error.
+        Err(error) if cfg!(target_os = "macos") && release_lacks_this_platform(&error) => None,
+        Err(error) => {
+            return Err(CommandError::io(format!("Updates could not be checked: {error}")));
+        }
+    };
 
     let can_install = install_kind().can_install();
     let offer = found.as_ref().map(|update| UpdateOfferDto {
@@ -146,10 +162,20 @@ pub async fn check_update(
     })
 }
 
-/// Downloads the update the last check found and checks its signature. An AppImage then replaces itself.
-/// A copy installed by the Windows setup keeps the setup instead, and `restart_app` runs it. The new
-/// version starts with `restart_app` in both cases. Refused when nothing was found, or when this copy is
-/// neither of the two.
+/// Whether the check failed only because the newest release has no entry for this platform in its
+/// `latest.json` (the updater's `TargetNotFound`, or `TargetsNotFound` when it tried the fallback names).
+fn release_lacks_this_platform(error: &tauri_plugin_updater::Error) -> bool {
+    matches!(
+        error,
+        tauri_plugin_updater::Error::TargetNotFound(_) | tauri_plugin_updater::Error::TargetsNotFound(_)
+    )
+}
+
+/// Downloads the update the last check found and checks its signature. An AppImage, or a macOS app bundle
+/// in a folder the user can write to, then replaces itself. A copy installed by the Windows setup keeps
+/// the setup instead, and `restart_app` runs it. The new version starts with `restart_app` in every case
+/// (on macOS from the same bundle path, which now holds the new bundle). Refused when nothing was found, or
+/// when this copy is none of the three.
 #[tauri::command]
 pub async fn install_update(
     pending: State<'_, PendingUpdate>,
@@ -160,6 +186,9 @@ pub async fn install_update(
         return Err(CommandError::invalid(match current_os() {
             Os::Windows => {
                 "This copy of Platter was not installed by its setup. Download the new setup from the release page."
+            }
+            Os::MacOs => {
+                "This copy of Platter is not an app in a folder you can write to. Download the new version from the release page."
             }
             _ => "This copy of Platter was installed by a package. Update it with your package manager.",
         }));
@@ -256,18 +285,50 @@ fn install_kind() -> InstallKind {
         current_os(),
         std::env::var_os("APPIMAGE").as_deref(),
         std::env::current_exe().ok().as_deref(),
+        &platter_platform::folder_writable,
     )
 }
 
 /// An AppImage on Linux. On Windows a copy that the NSIS setup installed: the setup writes its uninstaller
 /// (`uninstall.exe`) into the folder of the program, and a copy that was only unpacked or built does not
-/// have one. Nothing else updates itself.
-fn install_kind_of(os: Os, appimage: Option<&OsStr>, exe: Option<&Path>) -> InstallKind {
+/// have one. On macOS an app bundle whose folder `writable` says the user can write to (the updater swaps the
+/// bundle for the new one, and asks an administrator's password in a system dialog when it cannot). Nothing
+/// else updates itself.
+fn install_kind_of(
+    os: Os,
+    appimage: Option<&OsStr>,
+    exe: Option<&Path>,
+    writable: &dyn Fn(&Path) -> bool,
+) -> InstallKind {
     match os {
         Os::Linux if runs_from_appimage(appimage) => InstallKind::AppImage,
         Os::Windows if installed_by_setup(exe) => InstallKind::Setup,
+        Os::MacOs if bundle_folder(exe).is_some_and(writable) => InstallKind::AppBundle,
         _ => InstallKind::Elsewhere,
     }
+}
+
+/// The folder that holds the app bundle the program `exe` is in: `/Applications` for
+/// `/Applications/Platter.app/Contents/MacOS/platter`. `None` for a program that is anywhere else in or
+/// outside a bundle (a build in `target/`, a binary on the path).
+fn bundle_folder(exe: Option<&Path>) -> Option<&Path> {
+    let macos_folder = exe?.parent()?;
+    if macos_folder.file_name()? != "MacOS" {
+        return None;
+    }
+
+    let contents = macos_folder.parent()?;
+    if contents.file_name()? != "Contents" {
+        return None;
+    }
+
+    let bundle = contents.parent()?;
+    let named = bundle.file_name()?.to_str()?;
+    if named.len() <= ".app".len() || !named.ends_with(".app") {
+        return None;
+    }
+
+    bundle.parent()
 }
 
 /// Whether the folder of the program `exe` holds the setup's uninstaller (a file, not a link to one).
@@ -321,6 +382,22 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn a_release_without_a_build_for_this_system_is_no_failed_check() {
+        use tauri_plugin_updater::Error;
+
+        assert!(release_lacks_this_platform(&Error::TargetNotFound(
+            "darwin-aarch64".to_owned()
+        )));
+        assert!(release_lacks_this_platform(&Error::TargetsNotFound(vec![
+            "darwin-aarch64-app".to_owned(),
+            "darwin-aarch64".to_owned(),
+        ])));
+
+        assert!(!release_lacks_this_platform(&Error::ReleaseNotFound));
+        assert!(!release_lacks_this_platform(&Error::Network("down".to_owned())));
+    }
 
     #[test]
     fn notes_become_short_lines_without_list_markers() {
@@ -411,12 +488,15 @@ mod tests {
     #[test]
     fn only_an_appimage_installs_updates_itself_on_linux() {
         let nowhere = None;
-        let appimage = |path: &str| install_kind_of(Os::Linux, Some(OsStr::new(path)), nowhere);
+        let appimage = |path: &str| install_kind_of(Os::Linux, Some(OsStr::new(path)), nowhere, &|_| false);
 
         assert_eq!(appimage("/home/me/.local/bin/platter"), InstallKind::AppImage);
         assert_eq!(appimage(""), InstallKind::Elsewhere);
         assert_eq!(appimage("relative/Platter.AppImage"), InstallKind::Elsewhere);
-        assert_eq!(install_kind_of(Os::Linux, None, nowhere), InstallKind::Elsewhere);
+        assert_eq!(
+            install_kind_of(Os::Linux, None, nowhere, &|_| false),
+            InstallKind::Elsewhere
+        );
         assert!(InstallKind::AppImage.can_install());
         assert!(!InstallKind::Elsewhere.can_install());
     }
@@ -430,12 +510,20 @@ mod tests {
         }
         std::fs::write(installed.path().join(NSIS_UNINSTALLER), b"MZ").unwrap();
         let kind = |folder: &tempfile::TempDir| {
-            install_kind_of(Os::Windows, None, Some(&folder.path().join("platter.exe")))
+            install_kind_of(
+                Os::Windows,
+                None,
+                Some(&folder.path().join("platter.exe")),
+                &|_| false,
+            )
         };
 
         assert_eq!(kind(&installed), InstallKind::Setup);
         assert_eq!(kind(&unpacked), InstallKind::Elsewhere);
-        assert_eq!(install_kind_of(Os::Windows, None, None), InstallKind::Elsewhere);
+        assert_eq!(
+            install_kind_of(Os::Windows, None, None, &|_| false),
+            InstallKind::Elsewhere
+        );
         assert!(InstallKind::Setup.can_install());
     }
 
@@ -445,7 +533,12 @@ mod tests {
         std::fs::create_dir(folder.path().join(NSIS_UNINSTALLER)).unwrap();
 
         assert_eq!(
-            install_kind_of(Os::Windows, None, Some(&folder.path().join("platter.exe"))),
+            install_kind_of(
+                Os::Windows,
+                None,
+                Some(&folder.path().join("platter.exe")),
+                &|_| false
+            ),
             InstallKind::Elsewhere
         );
     }
@@ -457,18 +550,82 @@ mod tests {
         let exe = folder.path().join("platter");
 
         assert_eq!(
-            install_kind_of(Os::Linux, None, Some(&exe)),
+            install_kind_of(Os::Linux, None, Some(&exe), &|_| true),
             InstallKind::Elsewhere,
             "an uninstall.exe next to a Linux program"
         );
         assert_eq!(
-            install_kind_of(Os::Windows, Some(OsStr::new("/home/me/Platter.AppImage")), None),
+            install_kind_of(
+                Os::Windows,
+                Some(OsStr::new("/home/me/Platter.AppImage")),
+                None,
+                &|_| true
+            ),
             InstallKind::Elsewhere
         );
         assert_eq!(
-            install_kind_of(Os::MacOs, None, Some(&exe)),
-            InstallKind::Elsewhere
+            install_kind_of(Os::MacOs, None, Some(&exe), &|_| true),
+            InstallKind::Elsewhere,
+            "a program that is not in a bundle"
         );
+        assert_eq!(
+            install_kind_of(
+                Os::Linux,
+                None,
+                Some(Path::new("/Applications/Platter.app/Contents/MacOS/platter")),
+                &|_| true
+            ),
+            InstallKind::Elsewhere,
+            "a bundle path means nothing on Linux"
+        );
+    }
+
+    #[test]
+    fn on_macos_a_bundle_in_a_folder_the_user_can_write_to_installs_updates_itself() {
+        let folder = tempfile::tempdir().unwrap();
+        let macos = folder.path().join("Platter.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let exe = macos.join("platter");
+        let kind =
+            |exe: &Path| install_kind_of(Os::MacOs, None, Some(exe), &platter_platform::folder_writable);
+
+        assert_eq!(kind(&exe), InstallKind::AppBundle);
+        assert!(InstallKind::AppBundle.can_install());
+        assert_eq!(
+            install_kind_of(Os::MacOs, None, Some(&exe), &|_| false),
+            InstallKind::Elsewhere,
+            "a folder the user cannot write to"
+        );
+        assert_eq!(
+            kind(&folder.path().join("missing/Gone.app/Contents/MacOS/platter")),
+            InstallKind::Elsewhere,
+            "a folder that is not there is not one the user can write to"
+        );
+    }
+
+    #[test]
+    fn the_folder_asked_about_is_the_one_that_holds_the_bundle() {
+        let folder = |exe: &str| bundle_folder(Some(Path::new(exe))).map(Path::to_path_buf);
+
+        assert_eq!(
+            folder("/Applications/Platter.app/Contents/MacOS/platter"),
+            Some("/Applications".into())
+        );
+        assert_eq!(
+            folder("/Users/me/Applications/Platter.app/Contents/MacOS/platter"),
+            Some("/Users/me/Applications".into())
+        );
+        for not_a_bundle in [
+            "/Users/me/platter/target/release/platter",
+            "/Applications/Platter.app/Contents/Resources/platter",
+            "/Applications/Platter/Contents/MacOS/platter",
+            "/Applications/.app/Contents/MacOS/platter",
+            "/Applications/Platter.app/MacOS/platter",
+            "platter",
+        ] {
+            assert_eq!(folder(not_a_bundle), None, "{not_a_bundle}");
+        }
+        assert_eq!(bundle_folder(None), None);
     }
 
     #[test]

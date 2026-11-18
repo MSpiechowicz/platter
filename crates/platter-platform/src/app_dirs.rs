@@ -5,6 +5,10 @@
 //! specification says (and as [`crate::environment`] does for the other variables it reads). Folders
 //! are created with mode 0700 and files with mode 0600.
 //!
+//! On macOS the folders are `~/Library/Application Support/platter` (data) and
+//! `~/Library/Application Support/platter/config` (settings), and `XDG_*` is ignored: it is not how a
+//! Mac is set up. They are created with the same modes and held to the same rules as on Linux.
+//!
 //! On Windows the folders are `%APPDATA%\platter` (settings) and `%LOCALAPPDATA%\platter` (data), from the
 //! known folders of the profile. They are not given a mode: a folder below the profile is closed to other
 //! users by the profile's own access rules.
@@ -16,27 +20,37 @@ use std::path::{Path, PathBuf};
 
 const APP_DIR: &str = "platter";
 
-/// The folder for the app's settings (`$XDG_CONFIG_HOME/platter`, on Windows `%APPDATA%\platter`), not
-/// created. `None` without a home.
+/// The folder for the app's settings (`$XDG_CONFIG_HOME/platter`, on macOS
+/// `~/Library/Application Support/platter/config`, on Windows `%APPDATA%\platter`), not created. `None`
+/// without a home.
 pub fn config_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         windows_app_dir(known_folders::KnownFolder::RoamingAppData)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_config_dir(user_home())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         app_dir(std::env::var_os("XDG_CONFIG_HOME"), ".config")
     }
 }
 
-/// The folder for the app's data (`$XDG_DATA_HOME/platter`, on Windows `%LOCALAPPDATA%\platter`), not
-/// created. `None` without a home.
+/// The folder for the app's data (`$XDG_DATA_HOME/platter`, on macOS
+/// `~/Library/Application Support/platter`, on Windows `%LOCALAPPDATA%\platter`), not created. `None`
+/// without a home.
 pub fn data_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         windows_app_dir(known_folders::KnownFolder::LocalAppData)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_data_dir(user_home())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         app_dir(std::env::var_os("XDG_DATA_HOME"), ".local/share")
     }
@@ -50,19 +64,35 @@ fn windows_app_dir(folder: known_folders::KnownFolder) -> Option<PathBuf> {
         .map(|base| base.join(APP_DIR))
 }
 
+/// The home folder, when it is an absolute path that is not `/`.
 #[cfg_attr(windows, allow(dead_code))]
-fn app_dir(xdg: Option<OsString>, home_default: &str) -> Option<PathBuf> {
-    let home = || std::env::home_dir().filter(|home| home.is_absolute() && home.parent().is_some());
+fn user_home() -> Option<PathBuf> {
+    std::env::home_dir().filter(|home| home.is_absolute() && home.parent().is_some())
+}
 
+#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
+fn app_dir(xdg: Option<OsString>, home_default: &str) -> Option<PathBuf> {
     xdg.map(PathBuf::from)
         .filter(|path| path.is_absolute())
-        .or_else(|| home().map(|home| home.join(home_default)))
+        .or_else(|| user_home().map(|home| home.join(home_default)))
         .map(|base| base.join(APP_DIR))
+}
+
+/// The data folder on macOS for the home folder `home`: `Library/Application Support/platter` in it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_data_dir(home: Option<PathBuf>) -> Option<PathBuf> {
+    home.map(|home| home.join("Library/Application Support").join(APP_DIR))
+}
+
+/// The settings folder on macOS for the home folder `home`: `config` in the data folder.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_config_dir(home: Option<PathBuf>) -> Option<PathBuf> {
+    macos_data_dir(home).map(|data| data.join("config"))
 }
 
 /// Creates `path` and the folders above it that are missing, each with mode 0700, and closes the
 /// folder to group and others when it already existed more open. Fails when `path` is not a folder, or
-/// (on Linux) when another user owns the folder it leads to (root may use any folder). On Linux the
+/// (on Linux and macOS) when another user owns the folder it leads to (root may use any folder). There the
 /// folder is opened once and checked and changed through that descriptor, so the path cannot be swapped
 /// between the check and the change.
 pub fn create_private_dir(path: &Path) -> io::Result<()> {
@@ -72,14 +102,14 @@ pub fn create_private_dir(path: &Path) -> io::Result<()> {
 }
 
 /// The user id that owns what `meta` describes, where it is known.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn owner_of_meta(meta: &std::fs::Metadata) -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
 
     Some(meta.uid())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn owner_of_meta(_meta: &std::fs::Metadata) -> Option<u32> {
     None
 }
@@ -88,7 +118,7 @@ fn owner_of_meta(_meta: &std::fs::Metadata) -> Option<u32> {
 /// whatever its mode is made to be. `owner` is `None` where it cannot be told. The owner must be the
 /// effective user, except that root (for example under `sudo`) may use any folder it was pointed at,
 /// since it could read and change it whoever owns it.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn refuse_another_owner(path: &Path, owner: Option<u32>) -> io::Result<()> {
     if owner_is_acceptable(owner, rustix::process::geteuid().as_raw()) {
         return Ok(());
@@ -101,12 +131,12 @@ fn refuse_another_owner(path: &Path, owner: Option<u32>) -> io::Result<()> {
 }
 
 /// Whether something owned by `owner` (`None`: not known) may be used by the user `euid`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn owner_is_acceptable(owner: Option<u32>, euid: u32) -> bool {
     euid == 0 || owner.is_none_or(|owner| owner == euid)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn refuse_another_owner(_path: &Path, _owner: Option<u32>) -> io::Result<()> {
     Ok(())
 }
@@ -131,7 +161,7 @@ fn make_dirs(path: &Path) -> io::Result<()> {
 /// managers make, is the user's choice): what is checked and changed is the folder the descriptor holds,
 /// so the name cannot be swapped between the check and the change. Root never follows a link at the name:
 /// root accepts any owner, so a link a user made (to `/etc`, say) would have root close a system folder.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn close_dir_to_others(path: &Path) -> io::Result<()> {
     use rustix::fs::Mode;
     use std::os::unix::fs::PermissionsExt;
@@ -176,7 +206,7 @@ fn close_dir_to_others(path: &Path) -> io::Result<()> {
 }
 
 /// How the data folder is opened: a link at its name is followed, except by root.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn open_folder_flags(root: bool) -> rustix::fs::OFlags {
     use rustix::fs::OFlags;
 
@@ -185,7 +215,7 @@ fn open_folder_flags(root: bool) -> rustix::fs::OFlags {
 }
 
 /// Where there is no way to open a folder without following a link, the folder is checked by its path.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn close_dir_to_others(path: &Path) -> io::Result<()> {
     let meta = std::fs::metadata(path)?;
     if !meta.is_dir() {
@@ -210,7 +240,7 @@ fn close_dir_to_others(path: &Path) -> io::Result<()> {
 /// Opens `path` for reading and writing, creating it with mode 0600 when it does not exist, and keeps
 /// what it holds (no truncation). A link at `path` is refused (never followed), and so is anything but a
 /// regular file. A file that already existed is closed to group and others (mode 0600, set on the open
-/// file), and one that another user owns is refused (on Linux). Used for a download that continues where
+/// file), and one that another user owns is refused (on Linux and macOS). Used for a download that continues where
 /// it stopped, and for files the app keeps its data in.
 pub fn open_private_file(path: &Path) -> io::Result<File> {
     let mut options = std::fs::OpenOptions::new();
@@ -308,19 +338,19 @@ pub fn is_same_file(_file: &File, _path: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn no_follow(options: &mut std::fs::OpenOptions) {
     use std::os::unix::fs::OpenOptionsExt;
 
     options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 fn no_follow(_options: &mut std::fs::OpenOptions) {}
 
 /// Closes a file that already existed more open than 0600 (the mode is set on the open file, so the
 /// path cannot be swapped under it).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn close_file_to_others(file: &File, meta: &std::fs::Metadata) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -332,12 +362,12 @@ fn close_file_to_others(file: &File, meta: &std::fs::Metadata) -> io::Result<()>
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn close_file_to_others(_file: &File, _meta: &std::fs::Metadata) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn private_mode(options: &mut std::fs::OpenOptions) {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -346,7 +376,7 @@ fn private_mode(options: &mut std::fs::OpenOptions) {
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 fn private_mode(options: &mut std::fs::OpenOptions) {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -365,12 +395,12 @@ fn private_mode(options: &mut std::fs::OpenOptions) {
 fn private_mode(_options: &mut std::fs::OpenOptions) {}
 
 /// What `O_NOFOLLOW` reports for a link at the path (`ELOOP`).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn no_follow_refusal(error: &io::Error) -> bool {
     error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn no_follow_refusal(_error: &io::Error) -> bool {
     false
 }
@@ -379,7 +409,7 @@ fn no_follow_refusal(_error: &io::Error) -> bool {
 /// when another open file description (this or another process) holds it. The lock belongs to the open
 /// file description: it ends when `file` and every copy of its descriptor are closed, or the process ends.
 /// Fails with `Unsupported` where locking is not available (the advisor does not run there).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn lock_exclusive(file: &File) -> io::Result<bool> {
     use rustix::fs::{FlockOperation, flock};
 
@@ -402,13 +432,13 @@ pub fn lock_exclusive(file: &File) -> io::Result<bool> {
 }
 
 /// See the Linux version. Not available on this system.
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn lock_exclusive(_file: &File) -> io::Result<bool> {
     Err(io::Error::from(io::ErrorKind::Unsupported))
 }
 
 /// Bytes a normal user can still write on the filesystem holding `path` (a folder that exists).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn free_space(path: &Path) -> io::Result<u64> {
     let stats = rustix::fs::statvfs(path)?;
 
@@ -452,7 +482,7 @@ fn mount_holding(path: &Path, mounts: &[(&Path, u64)]) -> Option<u64> {
 }
 
 /// Bytes a normal user can still write on the filesystem holding `path`. Not known on this system.
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn free_space(_path: &Path) -> io::Result<u64> {
     Err(io::Error::from(io::ErrorKind::Unsupported))
 }
@@ -482,8 +512,40 @@ mod tests {
     fn config_and_data_are_different_places_below_the_app_name() {
         if let (Some(config), Some(data)) = (config_dir(), data_dir()) {
             assert_ne!(config, data);
-            assert!(config.ends_with("platter") && data.ends_with("platter"));
+            assert!(data.ends_with("platter"));
+            if cfg!(target_os = "macos") {
+                assert!(config.ends_with("platter/config"), "{config:?}");
+            } else {
+                assert!(config.ends_with("platter"), "{config:?}");
+            }
         }
+    }
+
+    #[test]
+    fn on_macos_the_folders_are_in_application_support_whatever_xdg_says() {
+        let home = Some(PathBuf::from("/Users/me"));
+
+        assert_eq!(
+            macos_data_dir(home.clone()),
+            Some(PathBuf::from("/Users/me/Library/Application Support/platter"))
+        );
+        assert_eq!(
+            macos_config_dir(home),
+            Some(PathBuf::from(
+                "/Users/me/Library/Application Support/platter/config"
+            ))
+        );
+        assert_eq!(macos_data_dir(None), None);
+        assert_eq!(macos_config_dir(None), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn this_mac_keeps_its_folders_below_the_home() {
+        let home = user_home().expect("the test user has a home folder");
+
+        assert_eq!(data_dir(), macos_data_dir(Some(home.clone())));
+        assert_eq!(config_dir(), macos_config_dir(Some(home)));
     }
 
     #[cfg(unix)]
@@ -543,7 +605,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_file_that_was_more_open_is_closed_and_keeps_its_content() {
         use std::os::unix::fs::PermissionsExt;
@@ -563,7 +625,7 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"keep");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_file_or_folder_of_another_user_is_refused() {
         let root = tempfile::tempdir().unwrap();
@@ -581,7 +643,7 @@ mod tests {
         assert!(refused.to_string().contains("another user"), "{refused}");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_folder_kept_elsewhere_by_a_link_is_used_and_closed_to_others() {
         use std::os::unix::fs::PermissionsExt;
@@ -603,7 +665,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn root_does_not_follow_a_link_at_the_folder_and_a_user_does() {
         use rustix::fs::OFlags;
@@ -632,7 +694,7 @@ mod tests {
         assert_eq!(mode, 0o644, "the other name's file is not changed");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_folder_reached_through_a_link_above_it_is_still_used() {
         let root = tempfile::tempdir().unwrap();
@@ -644,7 +706,7 @@ mod tests {
         assert!(root.path().join("real/platter").is_dir());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_folder_of_the_user_is_accepted_and_root_may_use_any_folder() {
         assert!(owner_is_acceptable(Some(1000), 1000));
@@ -664,7 +726,7 @@ mod tests {
         assert!(owner_is_acceptable(Some(0), 0));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_link_and_a_folder_are_refused_as_private_files() {
         let root = tempfile::tempdir().unwrap();
@@ -698,7 +760,7 @@ mod tests {
         assert!(!is_same_file(&file, &path).unwrap());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_link_or_a_missing_file_is_not_the_same_file() {
         let root = tempfile::tempdir().unwrap();
@@ -714,7 +776,7 @@ mod tests {
         assert!(is_same_file(&file, &path).is_err());
     }
 
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn free_space_of_an_existing_folder_is_known_and_a_missing_one_fails() {
         let root = tempfile::tempdir().unwrap();
@@ -723,7 +785,7 @@ mod tests {
         assert!(free_space(&root.path().join("missing")).is_err());
     }
 
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn a_lock_is_exclusive_between_open_files_and_ends_with_its_file() {
         let root = tempfile::tempdir().unwrap();
@@ -736,7 +798,7 @@ mod tests {
         assert!(!lock_exclusive(&second).unwrap(), "held by the first");
         // `flock` is by open file description, so asking again on the same file is fine; `LockFileEx` is
         // by handle and a second request on the holding handle is refused like any other.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         assert!(
             lock_exclusive(&first).unwrap(),
             "asking again on the same file is fine"

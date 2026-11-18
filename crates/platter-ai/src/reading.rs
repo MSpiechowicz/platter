@@ -91,6 +91,8 @@ impl WellKnown {
             "public" | "publiczny" => Some(WellKnown::Public),
             "templates" | "szablony" => Some(WellKnown::Templates),
             "videos" | "wideo" => Some(WellKnown::Videos),
+            // macOS names the videos folder Movies. Elsewhere a Movies folder is just a folder.
+            "movies" if cfg!(target_os = "macos") => Some(WellKnown::Videos),
             _ => None,
         }
     }

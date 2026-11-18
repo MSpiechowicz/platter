@@ -5,6 +5,10 @@
 //!
 //! - **Posix**: `/a/b`. The top is `/`, which has no components; a name is any bytes but `/` and NUL.
 //!   Names are compared as exact bytes.
+//! - **Mac**: `/a/b` as Posix, but names are compared the way Windows does (see below): APFS and HFS+ are
+//!   case-insensitive by default, so `/users/u/library/keychains` is the Keychains folder. A volume that
+//!   is case-sensitive makes this err toward over-protecting, which is what a protected place wants. Names
+//!   that differ only in Unicode normalization are not told apart here: the guard also compares identities.
 //! - **Windows**: `X:\a\b`, drive-absolute only. The first component is the drive root (`C:\`, with its
 //!   backslash), then the names. The separator is `\` and `/` is not one: a name that holds a `/` is
 //!   refused, so a path that mixes them never passes as something it is not. A UNC share (`\\host\share`),
@@ -25,6 +29,8 @@ use platter_rules::{fold_windows_name, same_windows_name};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PathStyle {
     Posix,
+    /// Posix syntax, names compared without regard to case.
+    Mac,
     Windows,
 }
 
@@ -71,22 +77,29 @@ impl Default for PathStyle {
 }
 
 impl PathStyle {
-    /// The style of paths on `os`: Windows on Windows, Posix everywhere else.
+    /// The style of paths on `os`: Windows on Windows, Mac on macOS, Posix everywhere else.
     pub fn for_os(os: Os) -> Self {
         match os {
             Os::Windows => Self::Windows,
-            Os::Linux | Os::MacOs | Os::Other => Self::Posix,
+            Os::MacOs => Self::Mac,
+            Os::Linux | Os::Other => Self::Posix,
         }
     }
 
     /// The style of the OS this program was built for, for the callers that have no `Environment`.
     pub fn host() -> Self {
-        if cfg!(windows) { Self::Windows } else { Self::Posix }
+        if cfg!(windows) {
+            Self::Windows
+        } else if cfg!(target_os = "macos") {
+            Self::Mac
+        } else {
+            Self::Posix
+        }
     }
 
     pub(crate) fn separator(self) -> u8 {
         match self {
-            Self::Posix => b'/',
+            Self::Posix | Self::Mac => b'/',
             Self::Windows => b'\\',
         }
     }
@@ -96,7 +109,7 @@ impl PathStyle {
     /// is allowed), and on Windows anything described in the module's text.
     pub(crate) fn components(self, path: &[u8]) -> Option<Vec<&[u8]>> {
         match self {
-            Self::Posix => posix_components(path),
+            Self::Posix | Self::Mac => posix_components(path),
             Self::Windows => windows_components(path),
         }
     }
@@ -120,23 +133,23 @@ impl PathStyle {
     pub(crate) fn same_name(self, a: &[u8], b: &[u8]) -> bool {
         match self {
             Self::Posix => a == b,
-            Self::Windows => same_windows_name(a, b),
+            Self::Mac | Self::Windows => same_windows_name(a, b),
         }
     }
 
-    /// The components as they are compared: Windows folds case (see [`same_windows_name`]), so that
-    /// sorting them puts a folder before what is inside it whatever the spelling.
+    /// The components as they are compared: Windows and macOS fold case (see [`same_windows_name`]), so
+    /// that sorting them puts a folder before what is inside it whatever the spelling.
     pub(crate) fn folded(self, parts: &[Vec<u8>]) -> Vec<Vec<u8>> {
         match self {
             Self::Posix => parts.to_vec(),
-            Self::Windows => parts.iter().map(|part| fold_windows_name(part)).collect(),
+            Self::Mac | Self::Windows => parts.iter().map(|part| fold_windows_name(part)).collect(),
         }
     }
 
     /// The path of `parts` (the inverse of [`PathStyle::owned`]).
     pub(crate) fn join(self, parts: &[Vec<u8>]) -> Vec<u8> {
         match self {
-            Self::Posix => {
+            Self::Posix | Self::Mac => {
                 let mut path = Vec::new();
                 for part in parts {
                     path.push(b'/');
@@ -175,7 +188,7 @@ impl PathStyle {
 
         match (self, last) {
             (_, None) => &[],
-            (Self::Posix, Some(at)) => &path[..at],
+            (Self::Posix | Self::Mac, Some(at)) => &path[..at],
             // `C:\name`: the parent is `C:\`, which keeps its backslash.
             (Self::Windows, Some(at)) if at <= 2 => &path[..=at],
             (Self::Windows, Some(at)) => &path[..at],
@@ -193,7 +206,7 @@ impl PathStyle {
     pub(crate) fn show(self, parts: &[Vec<u8>]) -> String {
         match self {
             // The top has no components: `/`.
-            Self::Posix if parts.is_empty() => "/".to_owned(),
+            Self::Posix | Self::Mac if parts.is_empty() => "/".to_owned(),
             _ => String::from_utf8_lossy(&self.join(parts)).into_owned(),
         }
     }
@@ -449,8 +462,45 @@ mod tests {
     #[test]
     fn the_style_comes_from_the_os() {
         assert_eq!(PathStyle::for_os(Os::Windows), PathStyle::Windows);
-        for os in [Os::Linux, Os::MacOs, Os::Other] {
+        assert_eq!(PathStyle::for_os(Os::MacOs), PathStyle::Mac);
+        for os in [Os::Linux, Os::Other] {
             assert_eq!(PathStyle::for_os(os), PathStyle::Posix);
         }
+    }
+
+    #[test]
+    fn mac_paths_have_the_syntax_of_posix_and_compare_names_without_regard_to_case() {
+        let mac = PathStyle::Mac;
+        let users = mac.components(b"/Users/Me").unwrap();
+
+        assert_eq!(mac.components(b"/a/b/").unwrap(), [&b"a"[..], b"b"]);
+        for bad in [&b"a/b"[..], b"", b"/a/../b", b"/a/./b", b"/a//b", b"C:\\a"] {
+            assert!(mac.components(bad).is_none(), "{bad:?}");
+        }
+
+        assert!(mac.is_within(&mac.components(b"/users/me/Library").unwrap(), &users));
+        assert!(mac.is_within(&mac.components("/USERS/ME".as_bytes()).unwrap(), &users));
+        assert!(!mac.is_within(&mac.components(b"/Users/Mem").unwrap(), &users));
+        assert!(!mac.is_within(&mac.components(b"/Users").unwrap(), &users));
+        // Linux stays exact.
+        assert!(!POSIX.is_within(&POSIX.components(b"/users/me").unwrap(), &users));
+    }
+
+    #[test]
+    fn mac_paths_join_split_and_show_like_posix() {
+        let mac = PathStyle::Mac;
+        let parts = mac.owned(b"/Users/me/Library").unwrap();
+
+        assert_eq!(mac.join(&parts), b"/Users/me/Library");
+        assert_eq!(mac.show(&[]), "/");
+        assert_eq!(mac.parent(b"/Users/me"), b"/Users");
+        assert_eq!(mac.parent(b"/Users"), b"");
+        assert_eq!(mac.file_name(b"/Users/me"), b"me");
+        assert_eq!(mac.child(b"/", b"a"), b"/a");
+        assert_eq!(mac.child(b"/a", b"b"), b"/a/b");
+        assert_eq!(
+            mac.folded(&mac.owned(b"/Users/ME").unwrap()),
+            mac.folded(&mac.owned(b"/users/me").unwrap())
+        );
     }
 }

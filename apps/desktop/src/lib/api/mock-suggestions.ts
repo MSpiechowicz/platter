@@ -408,17 +408,20 @@ function environmentOf(tree: MockTree): Environment {
     return windowsEnvironment(tree, root, userDirs);
   }
 
-  const inside = /^\/home\/[^/]+/.exec(root);
+  const inside = /^\/(?:home|Users)\/[^/]+/.exec(root);
 
   if (inside) {
     return { root, home: inside[0], sep: '/', now: tree.now, userDirs };
   }
 
   if (root === '/') {
-    const top = childrenOf(tree, tree.nodes[0] as MockNode).find((child) => child.name === 'home');
+    // The folder of the users: `home` on Linux, `Users` on a Mac.
+    const top = childrenOf(tree, tree.nodes[0] as MockNode).find(
+      (child) => child.name === 'home' || child.name === 'Users',
+    );
     const user = top && childrenOf(tree, top).find((child) => child.kind === 'dir');
 
-    return { root, home: user ? `/home/${user.name}` : null, sep: '/', now: tree.now, userDirs };
+    return { root, home: user ? `/${top.name}/${user.name}` : null, sep: '/', now: tree.now, userDirs };
   }
 
   return { root, home: null, sep: '/', now: tree.now, userDirs };

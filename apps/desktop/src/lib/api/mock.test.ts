@@ -1073,3 +1073,40 @@ describe('the Windows demo disk', () => {
     expect((await api.getPath(id, first)).path).toMatch(/^C:\\Users\\demo\\Projekty\\[^\\]+\\target$/);
   });
 });
+
+describe('the macOS demo disk', () => {
+  const MAC = { ...FAST, os: 'macos' as const };
+
+  it('lists the disk at / and a stick under /Volumes, and offers folders under /Users', async () => {
+    const api = createMockApi(MAC);
+
+    expect((await api.listVolumes()).map((volume) => volume.mountPoint)).toEqual(['/', '/Volumes/USB']);
+    expect(await api.pickFolder()).toBe('/Users/demo');
+    expect(await api.pickExcludedFolder()).toBe('/Users/demo/Videos');
+  });
+
+  it('scans / with the user folders under Users and the volume usage', async () => {
+    const api = createMockApi(MAC);
+    const { id, rootId, totals } = await scan(api, '/');
+    const [volume] = await api.listVolumes();
+    const top = await allChildren(api, id, rootId);
+    const users = top.find((child) => child.name === 'Users');
+    const [profile] = await allChildren(api, id, users?.id ?? rootId);
+
+    expect(totals.allocated).toBeGreaterThan(0);
+    expect(volume?.total).toBeGreaterThan(totals.allocated);
+    expect(top.find((child) => child.name === 'home')).toBeUndefined();
+    expect((await api.getPath(id, users?.id ?? rootId)).path).toBe('/Users');
+    expect((await api.getPath(id, profile?.id ?? rootId)).path).toBe('/Users/demo');
+  });
+
+  it('suggests folders of the home by their paths, with ~ for it, and none of Linux', async () => {
+    const api = createMockApi(MAC);
+    const { id } = await scan(api, '/');
+    const { suggestions } = await api.getSuggestions(id);
+    const targets = suggestions.find((entry) => entry.id === 'rust-target');
+
+    expect(targets?.path).toBe('~/Projekty/rust-playground/target');
+    expect(suggestions.find((entry) => entry.id === 'pacman-cache')).toBeUndefined();
+  });
+});
