@@ -157,15 +157,13 @@ jobs:
           # The last run above failed on purpose; its exit code must not become the step's.
           exit 0
 
-  # The macOS port (P2, Apple Silicon only), not required yet: `continue-on-error` keeps a red run from
-  # blocking a merge (and so a release) until its first green run, after which it is removed. Clippy and the
-  # tests run as two jobs side by side, as on Windows. The runner has Xcode (clang, the Metal framework) and
+  # The macOS port (P2, Apple Silicon only), required like `rust` and `windows` since its first green run
+  # (PR #9). Clippy and the tests run as two jobs side by side, as on Windows. The runner has Xcode (clang, the Metal framework) and
   # cmake, which llama.cpp and its bindings need.
   macos:
     name: macOS (${{ matrix.check }})
     runs-on: macos-15
     timeout-minutes: 60
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
