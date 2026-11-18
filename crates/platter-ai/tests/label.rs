@@ -249,11 +249,13 @@ fn a_folder_that_takes_longer_than_its_time_is_skipped_and_the_job_goes_on() {
 #[test]
 fn the_whole_job_stops_when_its_time_is_used_up_and_keeps_the_labels() {
     let (mut engine, control) = loaded();
+    // Two folders fit (600 ms), the third has 150 ms of the 300 it needs: room for a slow runner to wake
+    // the watcher late without letting the third folder finish.
     for _ in 0..10 {
-        control.push_slow_reply(REVIEW, Duration::from_millis(100));
+        control.push_slow_reply(REVIEW, Duration::from_millis(300));
     }
     let limits = Budget {
-        total: Duration::from_millis(250),
+        total: Duration::from_millis(750),
         ..budget()
     };
 
@@ -272,7 +274,7 @@ fn the_whole_job_stops_when_its_time_is_used_up_and_keeps_the_labels() {
         2,
         "the third folder was cut by the end of the job's time"
     );
-    assert!(run.ms >= 250 && started.elapsed() < Duration::from_secs(3));
+    assert!(run.ms >= 750 && started.elapsed() < Duration::from_secs(3));
     assert!(control.judges() < 10);
 }
 

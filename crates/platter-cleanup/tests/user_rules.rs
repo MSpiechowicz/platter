@@ -1,5 +1,7 @@
 //! Planning with the user's own rules: a `keep` blocks every kind of plan, a `safe` goes to the trash
 //! and never past the guard. Planning never changes anything.
+// Some helpers serve only the Linux-only tests below.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -847,7 +849,9 @@ impl EntryProbe for HungMount<'_> {
 }
 
 // Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
-#[cfg(unix)]
+// The kept folders are learnt in the host's path style and these plans are Linux ones, so on macOS
+// (Mac style) every plan would be refused. Linux CI covers it; tests/macos.rs covers macOS.
+#[cfg(target_os = "linux")]
 #[test]
 fn keep_folders_on_a_hung_mount_cannot_hold_planning_and_the_rest_still_protect_by_path() {
     let fs = aliased_fs();
@@ -1288,7 +1292,9 @@ fn a_keep_link_to_the_home_folder_or_above_protects_only_the_link_itself() {
 }
 
 // Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
-#[cfg(unix)]
+// The kept folders are learnt in the host's path style and these plans are Linux ones, so on macOS
+// (Mac style) every plan would be refused. Linux CI covers it; tests/macos.rs covers macOS.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_hung_keep_first_does_not_cost_a_later_keep_its_real_location() {
     let fs = linked_fs();
@@ -1356,7 +1362,9 @@ fn learned_within(
 }
 
 // Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
-#[cfg(unix)]
+// The kept folders are learnt in the host's path style and these plans are Linux ones, so on macOS
+// (Mac style) every plan would be refused. Linux CI covers it; tests/macos.rs covers macOS.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_link_keep_behind_many_hung_keeps_is_still_read_by_text_and_protects_where_it_leads() {
     let fs = kept_through_link_fs();
@@ -1472,7 +1480,9 @@ fn a_link_keep_whose_way_cannot_be_followed_in_time_refuses_every_plan() {
 }
 
 // Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
-#[cfg(unix)]
+// The kept folders are learnt in the host's path style and these plans are Linux ones, so on macOS
+// (Mac style) every plan would be refused. Linux CI covers it; tests/macos.rs covers macOS.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_hung_keep_that_is_not_a_link_does_not_stop_planning() {
     let fs = kept_through_link_fs();
@@ -1557,7 +1567,9 @@ fn a_link_that_leads_nowhere_in_a_few_hops_is_not_resolved_and_refuses_every_pla
 }
 
 // Models Unix link resolution on a FakeFs with POSIX paths. Linux CI covers it.
-#[cfg(unix)]
+// The kept folders are learnt in the host's path style and these plans are Linux ones, so on macOS
+// (Mac style) every plan would be refused. Linux CI covers it; tests/macos.rs covers macOS.
+#[cfg(target_os = "linux")]
 #[test]
 fn without_hung_keeps_the_same_link_keep_refuses_as_kept() {
     let fs = kept_through_link_fs();

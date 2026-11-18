@@ -1128,14 +1128,15 @@ fn a_job_that_runs_out_of_time_reports_it_and_the_status_is_clean() {
     let rig = Rig::new(Start {
         budget: Some(Budget {
             per_folder: Duration::from_secs(10),
-            total: Duration::from_millis(150),
+            total: Duration::from_millis(450),
             max_tokens: 96,
             ..Budget::default()
         }),
         ..on_disk()
     });
+    // One folder fits, the second has 150 ms of the 300 it needs: room for a slow runner.
     for _ in 0..5 {
-        rig.control.push_slow_reply(REVIEW, Duration::from_millis(100));
+        rig.control.push_slow_reply(REVIEW, Duration::from_millis(300));
     }
 
     let run = rig.handle.label(items(5)).unwrap();

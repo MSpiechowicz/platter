@@ -228,9 +228,9 @@ fn rule_dto(rule: &UserRule, home: Option<&Path>) -> UserRuleDto {
     }
 }
 
-// The Linux disk model (a `FakeFs` with `/mnt`, `/var/cache/pacman`, `/etc`): the paths and the rules it
-// exercises exist on Unix only.
-#[cfg(all(test, unix))]
+// The Linux disk model (a `FakeFs` with `/mnt`, `/var/cache/pacman`, `/etc`): the paths and the built-in
+// rules it exercises are Linux ones (macOS has neither the rules nor names that are not UTF-8).
+#[cfg(all(test, target_os = "linux"))]
 mod tests;
 
 // The same commands on a real folder, on every system.
