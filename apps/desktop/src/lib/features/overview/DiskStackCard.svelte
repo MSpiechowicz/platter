@@ -1,7 +1,7 @@
 <script lang="ts">
   import Card from '../../components/ui/Card.svelte';
   import { fmt } from '../../state/fmt.svelte';
-  import { formatShare } from '../../format';
+  import { percentText } from '../../format';
   import type { NodeId } from '../../api/types';
   import type { Slab } from './slabs';
   import { layoutStack, STACK_VIEWBOX, type PlacedSlab } from './stack';
@@ -104,7 +104,7 @@
     {placed.name}
   </text>
   <text class="sz" x={placed.text.x} y={placed.text.y + 11} text-anchor={placed.text.anchor}>
-    {fmt.size(slab.size)} · {formatShare(slab.share)}
+    {fmt.size(slab.size)} · {percentText(slab.share)}
   </text>
   {#if placed.inside !== ''}
     <text class="in" x={placed.text.x} y={placed.text.y + 27} text-anchor={placed.text.anchor}

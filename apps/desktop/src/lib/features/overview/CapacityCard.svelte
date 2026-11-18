@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Totals, VolumeDto } from '../../api/types';
-  import { formatCount } from '../../format';
+  import { formatCount, percentText } from '../../format';
   import Card from '../../components/ui/Card.svelte';
   import SegRing from '../../components/ui/SegRing.svelte';
   import { countUp } from '../../motion/countUp.svelte';
@@ -26,11 +26,7 @@
       return undefined;
     }
 
-    const percent = (totals.allocated / container.total) * 100;
-
-    return percent > 0 && percent < 0.1
-      ? '<0.1%'
-      : `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;
+    return percentText(totals.allocated / container.total, { fine: true });
   });
 
   const used = $derived(volume ? volume.total - volume.available : totals.allocated);
@@ -41,7 +37,7 @@
    */
   const sharesBlocks = $derived(volume?.fsType === 'btrfs' && totals.allocated > used);
 
-  const animatedShare = countUp(() => share * 100);
+  const animatedShare = countUp(() => share);
   const animatedUsed = countUp(() => used);
   const animatedFree = countUp(() => volume?.available ?? 0);
 </script>
@@ -51,7 +47,7 @@
     {#if volume}
       <div class="gauge">
         <SegRing value={share} size={190} segments={56}>
-          <b class="num">{Math.round(animatedShare.value)}%</b>
+          <b class="num">{percentText(animatedShare.value)}</b>
           <span class="label">USED</span>
         </SegRing>
       </div>

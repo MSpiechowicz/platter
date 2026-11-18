@@ -18,6 +18,9 @@
 //! let suggestions = evaluate(&tree, &environment, &RuleSet::builtin());
 //! ```
 
+// Not `deny`: `#[allow]` cannot lift a `forbid`, so the clippy.toml lists cannot be switched off in a module.
+#![forbid(clippy::disallowed_methods, clippy::disallowed_types)]
+
 mod display;
 mod evaluate;
 mod explain;
@@ -29,10 +32,15 @@ mod resolve;
 mod rule;
 mod table;
 
-pub use evaluate::{ADVISOR_ID, RuleMatches, Suggestions, evaluate, evaluate_with, matches, scan_is_kept};
+pub use evaluate::{
+    ADVISOR_ID, RuleMatches, Suggestions, evaluate, evaluate_with, evaluate_with_units, matches,
+    scan_is_kept, scan_root_is_claimed,
+};
 pub use explain::{Covering, Explainer};
 pub use found::MAX_NODES;
 pub use names::{fold_windows_name, same_windows_name};
 pub use platter_core::dto::{SuggestionDto, SuggestionSource, SuggestionsDto, Verdict, VerdictTotals};
+pub use platter_core::units::Units;
 pub use platter_core::{Environment, Os};
-pub use rule::{Age, Files, Matcher, Named, Rule, RuleSet};
+pub use resolve::workspace_root;
+pub use rule::{Age, Files, FilesIn, Matcher, Named, Rule, RuleSet};

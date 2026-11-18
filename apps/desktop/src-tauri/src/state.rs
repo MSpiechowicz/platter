@@ -10,6 +10,11 @@
 //! - at most one finished tree is kept. When a scan finishes, every other finished tree is dropped, so
 //!   the UI always has the latest result and a rescan does not hold two multi-hundred-MB trees;
 //! - at most [`MAX_RUNNING`] scans run at once; `start` beyond that is rejected as `invalid`;
+//! - the scans share one memory budget (see [`ScanRegistry::begin_within`]): a running scan holds the grant
+//!   it was given, a finished tree holds its own size, and a new scan gets what is left of the pool. The
+//!   grant is given back when the scan finishes, is abandoned or is dropped, and a tree's share when the
+//!   tree is evicted or dropped. A tree that a query still holds after that is no longer counted: it
+//!   is already missing from the free memory the next pool is made from, and it ends with the query;
 //! - a scan that is cancelled or fails leaves nothing behind;
 //! - `cancel` is a no-op for an unknown or already ended scan, like `drop_scan`: a cancel can race with
 //!   the scan finishing, and neither outcome is an error for the UI;
@@ -24,8 +29,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use platter_ai::Stopped;
 use platter_core::dto::{ScanId, SuggestionsDto};
-use platter_core::{CancelToken, ModelLabel, Tree};
+use platter_core::{CancelToken, DEFAULT_MAX_MEMORY_BYTES, ModelLabel, Tree, Units};
 use platter_platform::Platform;
+use platter_platform::memory::memory_budget_for;
 
 use crate::commands::advisor::AdvisorService;
 use crate::commands::advisor::log::QuestionLog;
@@ -37,6 +43,17 @@ use crate::user_rules::UserRulesStore;
 
 /// Scans that may run at the same time.
 pub const MAX_RUNNING: usize = 4;
+
+/// Queries (`get_children`, `get_lod`) that run at the same time.
+pub const MAX_QUERIES: usize = 32;
+
+/// The least memory a scan may be given while other scans or trees hold memory. With less it is refused
+/// instead of started to fail as too large.
+pub const MIN_SHARED_GRANT_BYTES: u64 = 128 << 20;
+
+/// The refusal of a scan while the memory it may use is held by others.
+pub const MEMORY_IN_USE: &str = "Platter is already using the memory it may use for scans. \
+                                 Wait for a scan to finish or cancel one, then try again.";
 
 pub struct AppState {
     pub platform: Arc<Platform>,
@@ -58,11 +75,15 @@ pub struct AppState {
     /// How many `find_folders` calls have started, for the same reason as `entry_searches`.
     pub folder_searches: Arc<AtomicU64>,
     /// The walks over a whole tree that the web view can start (searches, asks about a folder) and that run
-    /// now: at most [`WalkSlots::MAX`], so a page that calls in a loop cannot pile them up.
+    /// now: at most [`WalkSlots::DEFAULT_MAX`], so a page that calls in a loop cannot pile them up.
     pub walks: Arc<WalkSlots>,
     /// The same for `get_summary`, which walks a whole subtree: a pool of its own, so a search never keeps the
     /// Overview's summary out.
     pub summaries: Arc<WalkSlots>,
+    /// The same for `get_children` and `get_lod`, which sort or walk part of a tree on the blocking pool:
+    /// a pool of its own with room for the many calls a view makes at once, so a page that calls in a loop
+    /// still cannot fill the blocking pool.
+    pub queries: Arc<WalkSlots>,
     /// The scan roots the backend handed to the UI itself: volume mount points from `list_volumes`
     /// and folders from its own folder dialog. `start_scan` accepts nothing else.
     pub roots: Mutex<HashMap<String, Option<(u64, u64)>>>,
@@ -118,6 +139,7 @@ impl AppState {
             folder_searches: Arc::new(AtomicU64::new(0)),
             walks: Arc::new(WalkSlots::default()),
             summaries: Arc::new(WalkSlots::default()),
+            queries: Arc::new(WalkSlots::new(MAX_QUERIES)),
             roots: Mutex::new(HashMap::new()),
             confirm: OnceLock::new(),
         }
@@ -164,9 +186,17 @@ impl Default for AppState {
 }
 
 enum Slot {
-    /// A running scan and the disk epoch it began in.
-    Running(CancelToken, u64),
+    Running(Running),
     Finished(Finished),
+}
+
+/// A running scan.
+struct Running {
+    cancel: CancelToken,
+    /// The disk epoch it began in.
+    epoch: u64,
+    /// The memory it may use (its `max_memory_bytes`), taken from the shared budget until it ends.
+    grant: u64,
 }
 
 /// What the local model said about the folders of one scan in its last labelling run.
@@ -207,15 +237,21 @@ struct SuggestionsKey {
     labels_generation: u64,
     advisor_enabled: bool,
     user_rules_generation: u64,
+    /// The sizes in the reasons are written in these units.
+    units: Units,
 }
 
 /// A finished scan: its tree, the suggestions computed from it, and the model's labels of it.
 #[derive(Clone)]
 struct Finished {
     tree: Arc<Tree>,
+    /// The memory the tree holds ([`Tree::memory_bytes`]), taken from the shared budget while it is kept.
+    memory: u64,
     /// The result for the key it was made for. Held while a result is made, so concurrent first calls
     /// wait for it instead of repeating it.
-    suggestions: Arc<Mutex<Option<(SuggestionsKey, SuggestionsDto)>>>,
+    /// At most one result per size unit (`Units` is the only part of the key two callers may differ in at the
+    /// same time: the web view in the settings' units, the advisor in GB), so they do not push each other out.
+    suggestions: Arc<Mutex<Vec<(SuggestionsKey, SuggestionsDto)>>>,
     labels: Arc<Mutex<ScanLabels>>,
     /// A cleanup ran on this scan's disk: the tree no longer describes it.
     outdated: Arc<AtomicBool>,
@@ -230,6 +266,53 @@ struct Inner {
     slots: HashMap<ScanId, Slot>,
 }
 
+impl Inner {
+    /// The memory the running scans were granted and the memory the finished trees hold.
+    fn memory(&self) -> (u64, u64) {
+        let (mut running, mut held) = (0u64, 0u64);
+        for slot in self.slots.values() {
+            match slot {
+                // A cancelled scan is stopping: what it holds is already missing from the free memory, and it
+                // takes no more, so a scan started right after a cancel is not refused for it.
+                Slot::Running(scan) if scan.cancel.is_cancelled() => {}
+                Slot::Running(scan) => running = running.saturating_add(scan.grant),
+                Slot::Finished(finished) => held = held.saturating_add(finished.memory),
+            }
+        }
+
+        (running, held)
+    }
+
+    /// Allocates the next id and registers a running scan with `grant` under it.
+    fn register(&mut self, grant: u64) -> CommandResult<(ScanId, CancelToken, u64)> {
+        let running = self
+            .slots
+            .values()
+            .filter(|slot| matches!(slot, Slot::Running(..)))
+            .count();
+        if running >= MAX_RUNNING {
+            return Err(CommandError::invalid(format!(
+                "{MAX_RUNNING} scans are already running, so cancel one first"
+            )));
+        }
+
+        self.last_id += 1;
+        let id = self.last_id;
+        let cancel = CancelToken::new();
+        let epoch = self.epoch;
+        self.slots.insert(
+            id,
+            Slot::Running(Running {
+                cancel: cancel.clone(),
+                epoch,
+                grant,
+            }),
+        );
+
+        Ok((id, cancel, grant))
+    }
+}
+
 #[derive(Default)]
 pub struct ScanRegistry {
     inner: Mutex<Inner>,
@@ -242,28 +325,43 @@ impl ScanRegistry {
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Allocates the next id and registers a running scan under it.
+    /// Allocates the next id and registers a running scan under it, with no memory taken from the budget.
+    /// The app itself starts scans with [`Self::begin_within`].
+    #[cfg(test)]
     pub fn begin(&self) -> CommandResult<(ScanId, CancelToken)> {
-        let mut inner = self.lock();
-
-        let running = inner
-            .slots
-            .values()
-            .filter(|slot| matches!(slot, Slot::Running(..)))
-            .count();
-        if running >= MAX_RUNNING {
-            return Err(CommandError::invalid(format!(
-                "{MAX_RUNNING} scans are already running, so cancel one first"
-            )));
-        }
-
-        inner.last_id += 1;
-        let id = inner.last_id;
-        let cancel = CancelToken::new();
-        let epoch = inner.epoch;
-        inner.slots.insert(id, Slot::Running(cancel.clone(), epoch));
+        let (id, cancel, _) = self.lock().register(0)?;
 
         Ok((id, cancel))
+    }
+
+    /// [`Self::begin`] with a share of the memory all scans may use together, which is the grant the scan
+    /// must stay within (its `max_memory_bytes`).
+    ///
+    /// The pool is half of the memory that is free (`available`, `None` where it cannot be read, then the
+    /// core default) plus what finished trees hold: that memory is not free, yet it is Platter's to give
+    /// to a scan. The grant is the pool less what the finished trees hold and what the running scans were
+    /// granted, so a scan takes all that is left and the scans never grant more than the pool together.
+    ///
+    /// Refused as `invalid` when other scans or trees hold memory and less than
+    /// [`MIN_SHARED_GRANT_BYTES`] is left. With nothing held the scan is never refused, however little is
+    /// left: it then fails as too large, with a message that says why.
+    ///
+    /// A running scan holds all that is left of the pool, so in practice one scan runs at a time: a second one
+    /// is refused until the first ends or is cancelled (a cancelled scan stops counting at once).
+    pub fn begin_within(&self, available: Option<u64>) -> CommandResult<(ScanId, CancelToken, u64)> {
+        let mut inner = self.lock();
+        let (running, held) = inner.memory();
+        let others = running.saturating_add(held);
+
+        let pool = available.map_or(DEFAULT_MAX_MEMORY_BYTES, |available| {
+            memory_budget_for(available.saturating_add(held))
+        });
+        let grant = pool.saturating_sub(others);
+        if others > 0 && grant < MIN_SHARED_GRANT_BYTES {
+            return Err(CommandError::invalid(MEMORY_IN_USE));
+        }
+
+        inner.register(grant)
     }
 
     /// Stores the tree of a running scan and evicts every other finished tree.
@@ -272,18 +370,22 @@ impl ScanRegistry {
     pub fn finish(&self, id: ScanId, tree: Tree) -> Option<Arc<Tree>> {
         let mut inner = self.lock();
 
-        let Some(Slot::Running(_, began)) = inner.slots.get(&id) else {
+        let Some(Slot::Running(scan)) = inner.slots.get(&id) else {
             return None;
         };
-        let outdated = *began < inner.epoch;
+        let outdated = scan.epoch < inner.epoch;
 
+        // The grant ends with the running slot and the evicted trees' share with theirs: the tree that
+        // is stored holds its own size from now on.
         inner.slots.retain(|_, slot| !matches!(slot, Slot::Finished(_)));
 
+        let memory = tree.memory_bytes() as u64;
         let tree = Arc::new(tree);
         inner.slots.insert(
             id,
             Slot::Finished(Finished {
                 tree: Arc::clone(&tree),
+                memory,
                 suggestions: Arc::default(),
                 labels: Arc::default(),
                 outdated: Arc::new(AtomicBool::new(outdated)),
@@ -293,7 +395,7 @@ impl ScanRegistry {
         Some(tree)
     }
 
-    /// Forgets a running scan that ended without a tree (cancelled or failed).
+    /// Forgets a running scan that ended without a tree (cancelled or failed), giving its grant back.
     pub fn abandon(&self, id: ScanId) {
         let mut inner = self.lock();
 
@@ -304,15 +406,16 @@ impl ScanRegistry {
 
     /// Raises the cancel flag of a running scan. A finished or unknown scan is left alone.
     pub fn cancel(&self, id: ScanId) {
-        if let Some(Slot::Running(cancel, _)) = self.lock().slots.get(&id) {
-            cancel.cancel();
+        if let Some(Slot::Running(scan)) = self.lock().slots.get(&id) {
+            scan.cancel.cancel();
         }
     }
 
-    /// Frees a scan: cancels it when running, drops the tree when finished. Unknown ids are fine.
+    /// Frees a scan: cancels it when running, drops the tree when finished. Either gives its memory back
+    /// to the budget. Unknown ids are fine.
     pub fn drop_scan(&self, id: ScanId) {
-        if let Some(Slot::Running(cancel, _)) = self.lock().slots.remove(&id) {
-            cancel.cancel();
+        if let Some(Slot::Running(scan)) = self.lock().slots.remove(&id) {
+            scan.cancel.cancel();
         }
     }
 
@@ -321,16 +424,31 @@ impl ScanRegistry {
         Ok(self.finished(id)?.tree)
     }
 
-    /// The suggestions of a finished scan. `compute` runs the first time and again whenever the labels, the
-    /// advisor option or the user's rules (`user_rules_generation`) changed since (concurrent calls wait for it instead of repeating it); otherwise
-    /// the stored result is returned. It gets the model's labels of the scan, none while the advisor is
-    /// switched off. It may take long, so call this off the async runtime. The result lives and dies with
-    /// the scan.
+    /// [`Self::suggestions_in`] with the sizes in the reasons in binary units (the tests of the cache do not
+    /// look at the reasons).
+    #[cfg(test)]
     pub fn suggestions(
         &self,
         id: ScanId,
         advisor_enabled: bool,
         user_rules_generation: u64,
+        compute: impl FnOnce(&Tree, &[ModelLabel]) -> SuggestionsDto,
+    ) -> CommandResult<SuggestionsDto> {
+        self.suggestions_in(id, advisor_enabled, user_rules_generation, Units::Binary, compute)
+    }
+
+    /// The suggestions of a finished scan. `compute` runs the first time and again whenever the labels, the
+    /// advisor option, the user's rules (`user_rules_generation`) or the `units` of the sizes in the
+    /// reasons changed since (concurrent calls wait for it instead of repeating it); otherwise
+    /// the stored result is returned. It gets the model's labels of the scan, none while the advisor is
+    /// switched off, and must write the reasons in `units`. It may take long, so call this off the async
+    /// runtime. The result lives and dies with the scan.
+    pub fn suggestions_in(
+        &self,
+        id: ScanId,
+        advisor_enabled: bool,
+        user_rules_generation: u64,
+        units: Units,
         compute: impl FnOnce(&Tree, &[ModelLabel]) -> SuggestionsDto,
     ) -> CommandResult<SuggestionsDto> {
         let finished = self.finished(id)?;
@@ -346,12 +464,11 @@ impl ScanRegistry {
             labels_generation: generation,
             advisor_enabled,
             user_rules_generation,
+            units,
         };
 
         let mut stored = lock(&finished.suggestions);
-        if let Some((made_for, suggestions)) = stored.as_ref()
-            && *made_for == key
-        {
+        if let Some((_, suggestions)) = stored.iter().find(|(made_for, _)| *made_for == key) {
             return Ok(suggestions.clone());
         }
 
@@ -360,7 +477,14 @@ impl ScanRegistry {
             _ => &[],
         };
         let suggestions = compute(&finished.tree, labels);
-        *stored = Some((key, suggestions.clone()));
+        // A result made for other labels, options or rules is stale; one in the other unit is kept.
+        stored.retain(|(made_for, _)| {
+            SuggestionsKey {
+                units: key.units,
+                ..*made_for
+            } == key
+        });
+        stored.push((key, suggestions.clone()));
 
         Ok(suggestions)
     }
@@ -800,6 +924,50 @@ mod tests {
     }
 
     #[test]
+    fn suggestions_are_made_once_per_unit_and_kept_for_both() {
+        let registry = ScanRegistry::default();
+        let (id, _) = registry.begin().unwrap();
+        registry.finish(id, tiny_tree()).unwrap();
+        let runs = std::sync::atomic::AtomicUsize::new(0);
+        let compute = |_: &Tree, _: &[ModelLabel]| {
+            runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            empty_suggestions()
+        };
+        let runs_so_far = || runs.load(std::sync::atomic::Ordering::SeqCst);
+
+        registry
+            .suggestions_in(id, true, 0, Units::Decimal, compute)
+            .unwrap();
+        registry
+            .suggestions_in(id, true, 0, Units::Decimal, compute)
+            .unwrap();
+        assert_eq!(runs_so_far(), 1);
+
+        registry
+            .suggestions_in(id, true, 0, Units::Binary, compute)
+            .unwrap();
+        registry
+            .suggestions_in(id, true, 0, Units::Binary, compute)
+            .unwrap();
+        assert_eq!(runs_so_far(), 2, "other units");
+
+        // The web view in GiB and the advisor in GB take turns without making either again.
+        for units in [Units::Decimal, Units::Binary, Units::Decimal] {
+            registry.suggestions_in(id, true, 0, units, compute).unwrap();
+        }
+        assert_eq!(runs_so_far(), 2, "both are kept");
+
+        // Anything else that changes makes both stale.
+        registry
+            .suggestions_in(id, false, 0, Units::Decimal, compute)
+            .unwrap();
+        registry
+            .suggestions_in(id, false, 0, Units::Binary, compute)
+            .unwrap();
+        assert_eq!(runs_so_far(), 4, "the advisor option changed");
+    }
+
+    #[test]
     fn suggestions_are_made_again_when_the_user_rules_change() {
         let registry = ScanRegistry::default();
         let (id, _) = registry.begin().unwrap();
@@ -894,11 +1062,212 @@ mod tests {
         assert_eq!(rejected.code(), ApiErrorCode::Invalid);
         assert!(registry.begin().is_ok());
     }
+
+    const GIB: u64 = 1 << 30;
+    const MIB: u64 = 1 << 20;
+
+    fn grant_of(registry: &ScanRegistry, available: Option<u64>) -> u64 {
+        registry.begin_within(available).unwrap().2
+    }
+
+    /// The grant a scan would get now, without keeping it.
+    fn probe(registry: &ScanRegistry, available: Option<u64>) -> u64 {
+        let (id, _, grant) = registry.begin_within(available).unwrap();
+        registry.abandon(id);
+
+        grant
+    }
+
+    fn refused(registry: &ScanRegistry, available: Option<u64>) -> bool {
+        match registry.begin_within(available) {
+            Ok((id, ..)) => {
+                registry.abandon(id);
+                false
+            }
+            Err(error) => {
+                assert_eq!(error.code(), ApiErrorCode::Invalid);
+                assert_eq!(serde_json::to_value(&error).unwrap()["message"], MEMORY_IN_USE);
+                true
+            }
+        }
+    }
+
+    #[test]
+    fn a_scan_alone_gets_half_of_the_free_memory_or_the_default_when_it_is_unknown() {
+        let registry = ScanRegistry::default();
+
+        assert_eq!(grant_of(&registry, Some(8 * GIB)), 4 * GIB);
+        assert_eq!(
+            grant_of(&ScanRegistry::default(), None),
+            DEFAULT_MAX_MEMORY_BYTES,
+            "MemAvailable unreadable"
+        );
+    }
+
+    #[test]
+    fn with_no_free_memory_the_first_scan_still_starts_and_fails_as_too_large_instead() {
+        let registry = ScanRegistry::default();
+
+        assert_eq!(grant_of(&registry, Some(0)), 0);
+        assert_eq!(grant_of(&ScanRegistry::default(), Some(1)), 0);
+    }
+
+    #[test]
+    fn a_kept_tree_counts_as_free_memory_of_the_pool_and_reduces_the_next_grant() {
+        let registry = ScanRegistry::default();
+        let (id, ..) = registry.begin_within(Some(8 * GIB)).unwrap();
+        let tree = tiny_tree();
+        let held = tree.memory_bytes() as u64;
+        registry.finish(id, tree).unwrap();
+
+        let grant = grant_of(&registry, Some(8 * GIB));
+
+        assert!(held > 0);
+        assert_eq!(grant, memory_budget_for(8 * GIB + held) - held);
+        assert!(grant < 4 * GIB, "the tree takes its share of what a scan may use");
+        assert!(grant > 4 * GIB - held, "and it is not counted as taken twice");
+    }
+
+    #[test]
+    fn the_grants_of_running_scans_never_exceed_the_pool_together() {
+        let registry = ScanRegistry::default();
+
+        let first = grant_of(&registry, Some(4 * GIB));
+        let second = grant_of(&registry, Some(8 * GIB));
+
+        assert_eq!(first, 2 * GIB);
+        assert_eq!(
+            second,
+            2 * GIB,
+            "the pool of 4 GiB less the 2 GiB the first holds"
+        );
+        assert!(refused(&registry, Some(8 * GIB)), "nothing is left for a third");
+    }
+
+    #[test]
+    fn a_scan_takes_the_whole_pool_so_that_a_second_one_waits_until_it_ends() {
+        let registry = ScanRegistry::default();
+        let (first, ..) = registry.begin_within(Some(GIB)).unwrap();
+
+        assert!(refused(&registry, Some(GIB)));
+
+        registry.abandon(first);
+        assert_eq!(grant_of(&registry, Some(GIB)), 512 * MIB);
+    }
+
+    #[test]
+    fn a_scan_started_right_after_a_cancel_is_not_refused_for_the_one_that_is_stopping() {
+        let registry = ScanRegistry::default();
+        let (_, cancel, _) = registry.begin_within(Some(GIB)).unwrap();
+        assert!(refused(&registry, Some(GIB)));
+
+        // The user cancels and scans again before the first walk has noticed.
+        cancel.cancel();
+        assert_eq!(grant_of(&registry, Some(GIB)), 512 * MIB);
+    }
+
+    #[test]
+    fn a_scan_is_refused_only_when_others_hold_memory_and_less_than_128_mib_is_left() {
+        let registry = ScanRegistry::default();
+        let (id, ..) = registry.begin_within(Some(4 * GIB)).unwrap();
+        registry.finish(id, tiny_tree()).unwrap();
+
+        assert!(refused(&registry, Some(100 * MIB)), "50 MiB of the pool is left");
+        assert!(refused(&registry, Some(255 * MIB)), "just under 128 MiB");
+        assert!(!refused(&registry, Some(260 * MIB)), "128 MiB is enough");
+        assert!(!refused(&registry, None), "the default pool is large");
+
+        let alone = ScanRegistry::default();
+        assert!(
+            !refused(&alone, Some(100 * MIB)),
+            "nothing is held, so nothing is refused"
+        );
+        assert!(!refused(&alone, Some(0)));
+    }
+
+    #[test]
+    fn finishing_a_scan_gives_the_grant_back_and_keeps_only_the_tree() {
+        let registry = ScanRegistry::default();
+        let (id, ..) = registry.begin_within(Some(GIB)).unwrap();
+        assert!(refused(&registry, Some(GIB)));
+        let tree = tiny_tree();
+        let held = tree.memory_bytes() as u64;
+
+        registry.finish(id, tree).unwrap();
+
+        assert_eq!(
+            grant_of(&registry, Some(GIB)),
+            memory_budget_for(GIB + held) - held
+        );
+    }
+
+    #[test]
+    fn an_evicted_or_dropped_tree_gives_its_memory_back() {
+        let registry = ScanRegistry::default();
+        let (first, ..) = registry.begin_within(Some(GIB)).unwrap();
+        registry.finish(first, tiny_tree()).unwrap();
+        let (second, ..) = registry.begin_within(Some(GIB)).unwrap();
+        let tree = tiny_tree();
+        let held = tree.memory_bytes() as u64;
+        let first_tree = registry.tree(first).unwrap();
+
+        registry.finish(second, tree).unwrap();
+
+        assert_eq!(
+            probe(&registry, Some(GIB)),
+            memory_budget_for(GIB + held) - held,
+            "only the newest tree is held, even while a query still has the evicted one"
+        );
+        drop(first_tree);
+
+        registry.drop_scan(second);
+
+        assert_eq!(probe(&registry, Some(GIB)), 512 * MIB);
+    }
+
+    #[test]
+    fn abandoning_or_dropping_a_running_scan_gives_its_grant_back() {
+        for end in [ScanRegistry::abandon, ScanRegistry::drop_scan] {
+            let registry = ScanRegistry::default();
+            let (id, ..) = registry.begin_within(Some(GIB)).unwrap();
+            assert!(refused(&registry, Some(GIB)));
+
+            end(&registry, id);
+
+            assert_eq!(grant_of(&registry, Some(GIB)), 512 * MIB);
+        }
+    }
+
+    #[test]
+    fn with_unreadable_free_memory_the_default_pool_is_shared_the_same_way() {
+        let registry = ScanRegistry::default();
+        let (id, ..) = registry.begin_within(None).unwrap();
+        registry.finish(id, tiny_tree()).unwrap();
+        let held = registry.tree(id).unwrap().memory_bytes() as u64;
+
+        assert_eq!(grant_of(&registry, None), DEFAULT_MAX_MEMORY_BYTES - held);
+    }
+
+    #[test]
+    fn the_number_of_running_scans_is_bounded_with_the_budget_too() {
+        let registry = ScanRegistry::default();
+        // Every scan is given a share (a free memory that grows with each), so only the count is left.
+        for step in 1..=MAX_RUNNING as u64 {
+            registry.begin_within(Some(step * 8 * GIB)).unwrap();
+        }
+
+        let error = registry.begin_within(Some(64 * GIB)).unwrap_err();
+
+        assert_eq!(error.code(), ApiErrorCode::Invalid);
+        let message = serde_json::to_value(&error).unwrap()["message"].to_string();
+        assert!(message.contains("already running"), "{message}");
+    }
 }
 
 /// The walks over a whole tree that run now (see `AppState::walks`).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct WalkSlots {
+    max: usize,
     running: std::sync::atomic::AtomicUsize,
 }
 
@@ -907,20 +1276,35 @@ pub struct WalkSlots {
 pub struct WalkSlot(Arc<WalkSlots>);
 
 impl WalkSlots {
-    /// The most walks that run at once. The web view waits for each answer, so it never needs more.
-    pub const MAX: usize = 4;
+    /// The most walks a pool lets run at once unless it is made for more. The web view waits for each
+    /// answer, so it never needs more.
+    pub const DEFAULT_MAX: usize = 4;
 
-    /// Takes a slot, or refuses (`invalid`) while [`Self::MAX`] walks run.
+    /// A pool of `max` slots.
+    pub fn new(max: usize) -> Self {
+        Self {
+            max,
+            running: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Takes a slot, or refuses (`invalid`) while as many walks run as the pool has slots.
     pub fn take(self: &Arc<Self>) -> crate::error::CommandResult<WalkSlot> {
         use std::sync::atomic::Ordering;
 
         self.running
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |running| {
-                (running < Self::MAX).then_some(running + 1)
+                (running < self.max).then_some(running + 1)
             })
             .map_err(|_| crate::error::CommandError::invalid(BUSY_WALKING))?;
 
         Ok(WalkSlot(Arc::clone(self)))
+    }
+}
+
+impl Default for WalkSlots {
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_MAX)
     }
 }
 
@@ -930,7 +1314,7 @@ impl Drop for WalkSlot {
     }
 }
 
-/// The refusal of a walk while [`WalkSlots::MAX`] run.
+/// The refusal of a walk while every slot of its pool is taken.
 pub const BUSY_WALKING: &str = "Platter is busy with other work on this scan. Try again in a moment.";
 
 #[cfg(test)]
@@ -940,12 +1324,27 @@ mod walk_tests {
     #[test]
     fn at_most_four_walks_run_and_a_finished_one_gives_its_slot_back() {
         let slots = Arc::new(WalkSlots::default());
-        let held: Vec<WalkSlot> = (0..WalkSlots::MAX).map(|_| slots.take().unwrap()).collect();
+        let held: Vec<WalkSlot> = (0..WalkSlots::DEFAULT_MAX)
+            .map(|_| slots.take().unwrap())
+            .collect();
 
         let refused = slots.take().expect_err("a fifth walk is refused");
         assert_eq!(serde_json::to_value(&refused).unwrap()["message"], BUSY_WALKING);
 
         drop(held);
         assert!(slots.take().is_ok());
+    }
+
+    #[test]
+    fn a_pool_has_as_many_slots_as_it_was_made_with_and_pools_do_not_share() {
+        let queries = Arc::new(WalkSlots::new(MAX_QUERIES));
+        let walks = Arc::new(WalkSlots::default());
+        let held: Vec<WalkSlot> = (0..MAX_QUERIES).map(|_| queries.take().unwrap()).collect();
+
+        assert!(queries.take().is_err(), "the 33rd query is refused");
+        assert!(walks.take().is_ok(), "the other pool is not affected");
+
+        drop(held);
+        assert!(queries.take().is_ok());
     }
 }

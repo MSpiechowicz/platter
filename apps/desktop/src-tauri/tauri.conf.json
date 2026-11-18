@@ -56,20 +56,6 @@
       "nsis": {
         "installMode": "currentUser"
       }
-    },
-    "linux": {
-      "deb": {
-        "depends": [
-          "libvulkan1"
-        ],
-        "desktopTemplate": "platter.desktop"
-      },
-      "rpm": {
-        "depends": [
-          "vulkan-loader"
-        ],
-        "desktopTemplate": "platter.desktop"
-      }
     }
   },
   "plugins": {

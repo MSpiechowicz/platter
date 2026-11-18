@@ -124,7 +124,7 @@ export function lodOf(tree: MockTree, rootNode: MockNode, maxNodes: number, maxD
 
   offerChildrenOf(root);
 
-  for (let offer = offers.pop(); offer && used < budget; offer = offers.pop()) {
+  for (let offer = offers.pop(); offer; offer = offers.pop()) {
     const cost = costOf(offer.parent);
 
     if (used + cost > budget) {

@@ -6,7 +6,7 @@ use platter_core::dto::Verdict;
 use platter_core::{Environment, NodeId, NodeKind, Os, Tree, UserRule};
 
 use crate::resolve::{locate, same_os_str, strip_prefix_folded};
-use crate::rule::{Matcher, Named, Rule, RuleSet};
+use crate::rule::{FilesIn, Matcher, Named, Rule, RuleSet};
 
 /// What a rule does at a node it is anchored to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +69,7 @@ impl Plan {
                     }
                 }
                 Matcher::Files(files) => {
-                    if let Some(path) = under_home(env, files.home_relative) {
+                    if let Some(path) = files_folder(env, files.location) {
                         push_anchor(
                             &mut anchors,
                             tree,
@@ -136,6 +136,14 @@ impl Plan {
 
 fn under_home(env: &Environment, relative: &str) -> Option<PathBuf> {
     env.home.as_ref().map(|home| home.join(relative))
+}
+
+/// The folder a file rule looks below, when known.
+fn files_folder(env: &Environment, location: FilesIn) -> Option<PathBuf> {
+    match location {
+        FilesIn::Home(relative) => under_home(env, relative),
+        FilesIn::UserDir(dir) => env.user_dir(dir),
+    }
 }
 
 /// The folders a path rule (fixed, home or personal folder, or the user's own) is about, when known.

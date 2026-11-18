@@ -7,6 +7,7 @@ import { createMockUserRules, type MockUserRulesOptions } from './mock-user-rule
 import { toDto } from './mock-dto';
 import { isAbsolutePath, isSamePath, joinPath } from '../paths';
 import { REAL_BYTES, REAL_ROOT, SKEW_BYTES, SKEW_ROOT } from './mock-layouts';
+import { nameFilter, sorter } from './mock-children';
 import { lodOf } from './mock-lod';
 import { largestDirs } from './mock-summary';
 import { suggestionsOf } from './mock-suggestions';
@@ -22,7 +23,6 @@ import type {
   ScanEvent,
   ScanId,
   ScanOptions,
-  SortKey,
   SummaryDto,
   VolumeDto,
   ScanWarning,
@@ -178,7 +178,6 @@ export interface MockOptions {
 /** Elapsed time reported for an instant scan, so the header does not read "in 0 s". */
 const INSTANT_SCAN_ELAPSED_MS = 2140;
 const FOLDER_BYTES = 186 * GB;
-const UNREADABLE_DIRS = 3;
 
 interface ScanRecord {
   tree: MockTree;
@@ -208,35 +207,6 @@ const utf8Length = (text: string): number => encoder.encode(text).length;
 const fail = (code: 'notFound' | 'invalid', message: string): never => {
   throw new ApiRequestError(code, message);
 };
-
-function sorter(sort: SortKey): (a: MockNode, b: MockNode) => number {
-  // Like the backend: ASCII-lowercased byte order (`file10` before `file2`), then id. The mock's names are
-  // ASCII, where UTF-16 order and UTF-8 byte order agree.
-  const lower = (name: string): string => name.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
-  const byName = (a: MockNode, b: MockNode): number => {
-    const left = lower(a.name);
-    const right = lower(b.name);
-
-    if (left === right) {
-      return a.id - b.id;
-    }
-
-    return left < right ? -1 : 1;
-  };
-
-  switch (sort) {
-    case 'sizeDesc':
-      return (a, b) => b.allocated - a.allocated || byName(a, b);
-    case 'sizeAsc':
-      return (a, b) => a.allocated - b.allocated || byName(a, b);
-    case 'nameAsc':
-      return byName;
-    case 'filesDesc':
-      return (a, b) => b.files - a.files || byName(a, b);
-    case 'mtimeDesc':
-      return (a, b) => b.mtime - a.mtime || byName(a, b);
-  }
-}
 
 const AGE_LIMITS_DAYS: [AgeBucket, number][] = [
   ['week', 7],
@@ -445,7 +415,10 @@ export function createMockApi(options: MockOptions = {}): Api {
     const { tree, onEvent } = record;
     const total = tree.nodes[0] as MockNode;
     const dirs = directoryPaths(tree);
-    const dirCount = tree.nodes.filter((node) => node.kind === 'dir').length;
+    // As the backend's totals: every directory and mount except the root, and an error for each folder that could
+    // not be read and for each warning (a warning counts as an error too).
+    const dirCount = tree.nodes.filter((node) => node.kind === 'dir' || node.kind === 'mount').length - 1;
+    const errorCount = tree.nodes.filter((node) => node.unreadable === true).length + (warnings?.length ?? 0);
     const started = Date.now();
 
     const finish = (): void => {
@@ -459,7 +432,7 @@ export function createMockApi(options: MockOptions = {}): Api {
           apparent: total.apparent,
           files: total.files,
           dirs: dirCount,
-          errors: UNREADABLE_DIRS,
+          errors: errorCount,
         },
         elapsedMs: durationMs > 0 ? Date.now() - started : INSTANT_SCAN_ELAPSED_MS,
         ...(warnings && warnings.length > 0 ? { warnings } : {}),
@@ -488,7 +461,7 @@ export function createMockApi(options: MockOptions = {}): Api {
         files: Math.round(total.files * eased),
         dirs: Math.round(dirCount * eased),
         bytes: Math.round(total.allocated * eased),
-        errors: Math.floor(UNREADABLE_DIRS * eased),
+        errors: Math.floor(errorCount * eased),
         currentPath: dirs[Math.floor(fraction * (dirs.length - 1))] ?? tree.rootPath,
       });
 
@@ -592,13 +565,9 @@ export function createMockApi(options: MockOptions = {}): Api {
         return fail('invalid', `the name filter must not be longer than ${MAX_NAME_FILTER_BYTES} bytes`);
       }
 
-      const needle = query === undefined || query.trim() === '' ? undefined : query.toLowerCase();
+      const matches = nameFilter(query);
       const children = childrenOf(tree, parent);
-      const sorted = (
-        needle === undefined
-          ? children
-          : children.filter((child) => child.name.toLowerCase().includes(needle))
-      ).sort(sorter(sort));
+      const sorted = (matches === undefined ? children : children.filter(matches)).sort(sorter(sort));
       const window = Math.min(limit, MAX_LIMIT);
 
       return {
@@ -631,8 +600,8 @@ export function createMockApi(options: MockOptions = {}): Api {
       return summaryOf(tree, target);
     },
 
-    async getSuggestions(scan) {
-      return suggestionsOf(scanOf(scan).tree, labelsOf(scan), userRulesView().rules);
+    async getSuggestions(scan, units) {
+      return suggestionsOf(scanOf(scan).tree, labelsOf(scan), userRulesView().rules, units);
     },
 
     ...cleanupApi,

@@ -88,9 +88,33 @@ pub struct VerifiedTarget {
     allocated: u64,
     apparent: u64,
     mtime: i64,
-    /// Files that made the rule match a folder (`Cargo.toml` next to `target`): every group must still
-    /// hold one regular file when the target is acted on. Each inner list is a choice of paths.
-    markers: Vec<Vec<Vec<u8>>>,
+    /// Files that made the rule match a folder (`Cargo.toml` next to `target`, or a pnpm workspace's two
+    /// files above a member): every group must still be satisfied when the target is acted on.
+    markers: Vec<MarkerGroup>,
+}
+
+/// One condition on the files that made a rule match: it holds while some alternative holds, and an
+/// alternative holds while every path in it is a regular file. Paths are complete, exactly the files the
+/// plan looked at, so acting on the target checks the same files again and not whatever is nearby.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkerGroup {
+    alternatives: Vec<Vec<Vec<u8>>>,
+}
+
+impl MarkerGroup {
+    /// A group satisfied by any one of `alternatives`, each a list of paths that must all be files.
+    pub fn one_of(alternatives: Vec<Vec<Vec<u8>>>) -> Self {
+        Self { alternatives }
+    }
+
+    /// A group satisfied by the one file at `path`.
+    pub fn file(path: Vec<u8>) -> Self {
+        Self::one_of(vec![vec![path]])
+    }
+
+    pub fn alternatives(&self) -> &[Vec<Vec<u8>>] {
+        &self.alternatives
+    }
 }
 
 impl VerifiedTarget {
@@ -147,7 +171,7 @@ impl VerifiedTarget {
     pub fn apparent(&self) -> u64 {
         self.apparent
     }
-    pub fn markers(&self) -> &[Vec<Vec<u8>>] {
+    pub fn markers(&self) -> &[MarkerGroup] {
         &self.markers
     }
 }
@@ -173,7 +197,7 @@ impl<P: EntryProbe> Guard<'_, P> {
         node: NodeId,
         verdict: Verdict,
         by_tool: bool,
-        markers: &[&[&str]],
+        markers: &[MarkerGroup],
     ) -> Result<VerifiedTarget, Refusal> {
         let tree = self.tree;
 
@@ -261,17 +285,7 @@ impl<P: EntryProbe> Guard<'_, P> {
             return Err(Refusal::Changed("it was modified after the scan".to_owned()));
         }
 
-        let parent = style.parent(&path);
-        let markers: Vec<Vec<Vec<u8>>> = markers
-            .iter()
-            .map(|choices| {
-                choices
-                    .iter()
-                    .map(|name| style.child(parent, name.as_bytes()))
-                    .collect()
-            })
-            .collect();
-        markers_present(self.probe, style, &markers).map_err(Refusal::Changed)?;
+        markers_present(self.probe, style, markers).map_err(Refusal::Changed)?;
 
         Ok(VerifiedTarget {
             node,
@@ -284,7 +298,7 @@ impl<P: EntryProbe> Guard<'_, P> {
             allocated: tree.allocated(node),
             apparent: tree.apparent(node),
             mtime: tree.mtime(node),
-            markers,
+            markers: markers.to_vec(),
         })
     }
 }
@@ -295,27 +309,40 @@ pub(crate) fn same_file(meta: &platter_core::EntryMeta, mtime: i64, apparent: u6
     meta.mtime == mtime && (apparent == 0 || meta.apparent == apparent)
 }
 
-/// Every group of `markers` still holds a regular file; otherwise what is missing.
+/// Every group of `markers` still holds: some alternative of it has all its paths as regular files.
+/// Otherwise what is missing.
 pub(crate) fn markers_present(
     probe: &impl EntryProbe,
     style: PathStyle,
-    markers: &[Vec<Vec<u8>>],
+    markers: &[MarkerGroup],
 ) -> Result<(), String> {
-    for choices in markers {
-        let present = choices.iter().any(|marker| {
-            probe
-                .probe(marker)
-                .ok()
-                .and_then(|found| found.last().copied())
-                .is_some_and(|entry| entry.meta.kind == EntryKind::File)
-        });
+    let is_file = |marker: &Vec<u8>| {
+        probe
+            .probe(marker)
+            .ok()
+            .and_then(|found| found.last().copied())
+            .is_some_and(|entry| entry.meta.kind == EntryKind::File)
+    };
+
+    for group in markers {
+        let present = group
+            .alternatives
+            .iter()
+            .any(|alternative| alternative.iter().all(is_file));
         if !present {
-            let names: Vec<String> = choices
+            let names: Vec<String> = group
+                .alternatives
                 .iter()
-                .map(|marker| String::from_utf8_lossy(style.file_name(marker)).into_owned())
+                .map(|alternative| {
+                    let files: Vec<String> = alternative
+                        .iter()
+                        .map(|marker| String::from_utf8_lossy(style.file_name(marker)).into_owned())
+                        .collect();
+                    files.join(" and ")
+                })
                 .collect();
             return Err(format!(
-                "the project file next to it is gone ({})",
+                "the project file that made it a match is gone ({})",
                 names.join(" or ")
             ));
         }

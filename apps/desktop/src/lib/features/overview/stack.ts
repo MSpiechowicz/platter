@@ -67,15 +67,62 @@ function clipName(text: string): string {
   return kept === '' ? `…${text.slice(1 - MAX_NAME)}` : `…${kept}`;
 }
 
+/**
+ * The height of each slab. The sizes are measured against the disk, or against their own sum when that is bigger
+ * (on btrfs, shared blocks are charged to every folder that holds them). A slab too thin to show gets the minimum
+ * height, and the others give up the room for it, so the heights never add up to more than the budget.
+ */
+function slabHeights(sizes: number[], total: number, budget: number): number[] {
+  if (sizes.length === 0) {
+    return [];
+  }
+
+  const denominator = Math.max(
+    total,
+    sizes.reduce((sum, size) => sum + size, 0),
+  );
+  // With more slabs than the budget can hold at the minimum, they share it equally.
+  const floor = Math.min(MIN_HEIGHT, budget / sizes.length);
+  const floored = sizes.map(() => false);
+
+  let perByte = 0;
+
+  for (;;) {
+    const flooredCount = floored.filter(Boolean).length;
+    const flooredBytes = sizes.reduce((sum, size, index) => sum + (floored[index] ? size : 0), 0);
+    const room = budget - flooredCount * floor;
+    const bytes = denominator - flooredBytes;
+
+    perByte = bytes > 0 ? room / bytes : 0;
+
+    const thin = sizes.flatMap((size, index) => (!floored[index] && size * perByte < floor ? [index] : []));
+
+    if (thin.length === 0) {
+      break;
+    }
+
+    // A slab below the minimum stays below it as the others give up room, so all of them can be fixed at once.
+    for (const index of thin) {
+      floored[index] = true;
+    }
+  }
+
+  return sizes.map((size, index) => (floored[index] ? floor : size * perByte));
+}
+
 /** Stacks the slabs from the bottom up; the labels alternate between the right and the left side. */
 export function layoutStack(slabs: Slab[], total: number): StackLayout {
   const budget = Math.min(FULL_HEIGHT, TOP_ROOM - slabs.length * GAP);
-  const perByte = total > 0 ? budget / total : 0;
+  const heights = slabHeights(
+    slabs.map((slab) => slab.size),
+    total,
+    budget,
+  );
 
   let bottom = BASE;
 
   const placed = slabs.map((slab, index): PlacedSlab => {
-    const height = Math.max(MIN_HEIGHT, slab.size * perByte);
+    const height = heights[index] as number;
     const t = bottom - height;
     const rightSide = index % 2 === 0;
     const edge = rightSide ? CX + HALF_WIDTH : CX - HALF_WIDTH;

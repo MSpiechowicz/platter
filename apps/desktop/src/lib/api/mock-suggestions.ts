@@ -1,3 +1,4 @@
+import { formatSize, type SizeUnits } from '../format';
 import { isRootPath, isUnderPath, isWindowsPath, joinPath, rootOf, separatorOf } from '../paths';
 import { REAL_ROOT, SKEW_ROOT } from './mock-layouts';
 import { childrenOf, DAY, type MockNode, type MockTree } from './mock-tree';
@@ -59,6 +60,11 @@ interface Named {
   sibling?: string;
   /** The parent holds a regular file with one of these names. */
   siblingAny?: string[];
+  /**
+   * Also when a folder from the parent up to and including the scan root holds a regular file for every one of these
+   * names: the member of a workspace has no lockfile of its own. Only for a rule with `siblingAny`.
+   */
+  workspaceRoot?: string[];
   /** No folder on the way down to the directory has one of these names. */
   notInside?: string[];
   /** Not below one of these absolute paths. */
@@ -69,7 +75,9 @@ interface Named {
 /** Individual files below a folder of the home directory, selected by what they are. */
 interface FilesMatcher {
   /** Folder relative to the home directory; empty means the whole home directory. */
-  home: string;
+  home?: string;
+  /** Or a personal folder of this machine: what it is called there (`Pobrane` for `Downloads`) is looked up. */
+  userDir?: string;
   age?: Age;
   category?: Category;
   minBytes?: number;
@@ -125,6 +133,9 @@ const NODE_LOCKFILES = [
   'bun.lockb',
 ];
 
+/** A pnpm workspace has both files in its root, and its members have no lockfile of their own. */
+const PNPM_WORKSPACE = ['pnpm-workspace.yaml', 'pnpm-lock.yaml'];
+
 const NODE_TOOL_DIRS = [
   'node_modules',
   '.nvm',
@@ -145,6 +156,7 @@ const nodeModules = (age: Age): Matcher =>
     names: ['node_modules'],
     sibling: 'package.json',
     siblingAny: NODE_LOCKFILES,
+    workspaceRoot: PNPM_WORKSPACE,
     notInside: NODE_TOOL_DIRS,
     notBelow: ['/usr', '/opt'],
     age,
@@ -323,7 +335,7 @@ const BUILTIN_RULES: Rule[] = [
     'old-downloads',
     'Old downloads',
     'review',
-    files({ home: 'Downloads', age: { kind: 'idle', days: 365 } }),
+    files({ userDir: 'Downloads', age: { kind: 'idle', days: 365 } }),
     '{n:file} in Downloads not modified for {days} days or more. These are personal files, so only you can tell whether you still need them.',
   ),
   rule(
@@ -481,7 +493,11 @@ function regionPath(files: FilesMatcher, env: Environment): string | null {
     return null;
   }
 
-  return files.home === '' ? env.home : homeBelow(env, env.home, files.home);
+  if (files.userDir !== undefined) {
+    return joinPath(env.home, env.userDirs[files.userDir] ?? files.userDir);
+  }
+
+  return files.home === undefined || files.home === '' ? env.home : homeBelow(env, env.home, files.home);
 }
 
 function holds(age: Age | undefined, mtime: number, now: number): boolean {
@@ -577,6 +593,29 @@ function hasSiblingFile(tree: MockTree, node: MockNode, marker: string): boolean
   );
 }
 
+/** The folder `dir` holds a regular file called `marker`. */
+function holdsFile(tree: MockTree, dir: MockNode, marker: string): boolean {
+  return childrenOf(tree, dir).some((child) => child.name === marker && child.kind === 'file');
+}
+
+/**
+ * Whether a folder from the parent of `node` up to and including the scan root holds every one of `markers` as a
+ * regular file (not a folder or a link). A workspace above the scan root is not seen.
+ */
+function inWorkspace(tree: MockTree, node: MockNode, markers: readonly string[]): boolean {
+  if (markers.length === 0) {
+    return false;
+  }
+
+  for (let dir = tree.nodes[node.parent]; dir; dir = tree.nodes[dir.parent]) {
+    if (markers.every((marker) => holdsFile(tree, dir, marker))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /** A rule's verdict on this machine: a name rule is not trusted with `safe` when no home is known. */
 function effectiveVerdict(entry: Rule, env: Environment): Verdict {
   return entry.verdict === 'safe' && entry.matcher.type === 'named' && !env.home ? 'review' : entry.verdict;
@@ -592,7 +631,11 @@ function namedMatches(tree: MockTree, env: Environment, rule: Named, node: MockN
     return false;
   }
 
-  if (rule.siblingAny && !rule.siblingAny.some((marker) => hasSiblingFile(tree, node, marker))) {
+  if (
+    rule.siblingAny &&
+    !rule.siblingAny.some((marker) => hasSiblingFile(tree, node, marker)) &&
+    !inWorkspace(tree, node, rule.workspaceRoot ?? [])
+  ) {
     return false;
   }
 
@@ -703,16 +746,21 @@ class Evaluation {
 
   /**
    * The rule that claims this directory: a `keep` rule first, then the earliest of the path and name rules. The scan
-   * root has no parent in the tree, so a name rule cannot check its surroundings there.
+   * root is only ever claimed by a `keep` rule: the folder the user chose to look at is not a suggestion (see
+   * `rootClaimed`). It has no parent in the tree either, so a name rule cannot check its surroundings there.
    */
   private matchingRule(node: MockNode, path: string, isRoot: boolean): { rule: Rule; name?: string } | null {
     const claims = RULES.filter((entry) => claimedPaths(entry.matcher, this.env, this.user).includes(path));
     const kept = claims.find((entry) => entry.verdict === 'keep');
-    let best: Rule | undefined = kept ?? claims[0];
+    let best: Rule | undefined = claims[0];
     let name: string | undefined;
 
-    if (kept || isRoot) {
-      return best ? { rule: best } : null;
+    if (kept) {
+      return { rule: kept };
+    }
+
+    if (isRoot) {
+      return null;
     }
 
     for (const entry of RULES) {
@@ -848,22 +896,8 @@ function displayPath(rule: Rule, found: Found, env: Environment): string {
   }
 }
 
-/** `1073741824` becomes `1 GiB`, `1610612736` becomes `1.5 GiB`. */
-function sizeText(bytes: number): string {
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  let value = bytes;
-  let unit = 0;
-
-  while (value >= 1024 && unit + 1 < units.length) {
-    value /= 1024;
-    unit++;
-  }
-
-  return `${Number.isInteger(value) ? value : value.toFixed(1)} ${units[unit]}`;
-}
-
 /** Fills `{n:noun}`, `{n:one|many}`, `{days}` and `{size}`. Anything else in braces is kept as written. */
-function renderReason(rule: Rule, count: number): string {
+function renderReason(rule: Rule, count: number, units: SizeUnits): string {
   const { matcher } = rule;
   const age =
     matcher.type === 'named' ? matcher.named.age : matcher.type === 'files' ? matcher.files.age : undefined;
@@ -875,7 +909,7 @@ function renderReason(rule: Rule, count: number): string {
     }
 
     if (inner === 'size') {
-      return minBytes === undefined ? token : sizeText(minBytes);
+      return minBytes === undefined ? token : formatSize(minBytes, units);
     }
 
     if (!inner.startsWith('n:')) {
@@ -936,6 +970,8 @@ interface Analysis {
   env: Environment;
   /** The scan starts inside a kept folder: nothing is suggested. */
   insideKept: boolean;
+  /** A rule other than a keep would claim the scan root, were it not the scan root: the answer says why it is not listed. */
+  rootClaimed: boolean;
   found: Map<Rule, Found>;
   /** The rule that matched a node (every match, not only the 20 a suggestion lists). */
   matchedBy: Map<number, Rule>;
@@ -966,6 +1002,10 @@ function analyse(tree: MockTree, user: readonly UserRuleInput[]): Analysis {
       claimedPaths(entry.matcher, env, user).some((kept) => env.root !== kept && isUnderPath(env.root, kept)),
   );
 
+  // Not a match: the scan root is only ever claimed by a keep. A scan of `~/.cache` itself lists nothing of it.
+  const rootClaimed = RULES.some(
+    (entry) => entry.verdict !== 'keep' && claimedPaths(entry.matcher, env, user).includes(env.root),
+  );
   const evaluation = new Evaluation(tree, env, user);
 
   if (!insideKept) {
@@ -989,7 +1029,7 @@ function analyse(tree: MockTree, user: readonly UserRuleInput[]): Analysis {
     }
   }
 
-  const analysis: Analysis = { env, insideKept, found: evaluation.found, matchedBy, holding };
+  const analysis: Analysis = { env, insideKept, rootClaimed, found: evaluation.found, matchedBy, holding };
 
   analyses.set(tree, { key, analysis });
 
@@ -1014,6 +1054,8 @@ export interface RuleView {
   home: string | null;
   /** The scan starts inside a kept folder: the advisor labels and judges nothing. */
   insideKept: boolean;
+  /** A rule other than a keep would claim the folder that was scanned, were it not the scan root (never suggested). */
+  rootClaimed: boolean;
   /** Every node a rule matched. */
   matched: ReadonlySet<number>;
   /** Folders with a rule match somewhere below them. */
@@ -1026,7 +1068,12 @@ export interface RuleView {
   summary(): { folders: number; allocated: number; example?: { path: string; verdict: Verdict } };
 }
 
-export function ruleView(tree: MockTree, user: readonly UserRuleInput[] = NO_USER_RULES): RuleView {
+/** `units` is how the sizes in the reasons are written: binary by default, as the advisor's rules are in the backend. */
+export function ruleView(
+  tree: MockTree,
+  user: readonly UserRuleInput[] = NO_USER_RULES,
+  units: SizeUnits = 'GiB',
+): RuleView {
   const analysis = analyse(tree, user);
   const { env, found, matchedBy } = analysis;
 
@@ -1035,13 +1082,14 @@ export function ruleView(tree: MockTree, user: readonly UserRuleInput[] = NO_USE
     title: entry.title,
     at,
     verdict: effectiveVerdict(entry, env),
-    reason: renderReason(entry, (found.get(entry) as Found).nodes.length),
+    reason: renderReason(entry, (found.get(entry) as Found).nodes.length, units),
     source: sourceOf(entry),
   });
 
   return {
     home: env.home,
     insideKept: analysis.insideKept,
+    rootClaimed: analysis.rootClaimed,
     matched: new Set(matchedBy.keys()),
     holding: analysis.holding,
 
@@ -1187,11 +1235,15 @@ export function ruleMatches(tree: MockTree, user: readonly UserRuleInput[] = NO_
   });
 }
 
-/** The mock's stand-in for `get_suggestions`; `labels` are the mock advisor's labels of this scan. */
+/**
+ * The mock's stand-in for `get_suggestions`; `labels` are the mock advisor's labels of this scan. The sizes in the
+ * reasons are written in `units` (`1.1 GB` or `1.0 GiB`, as the backend's `format_size`).
+ */
 export function suggestionsOf(
   tree: MockTree,
   labels: readonly MockLabel[] = [],
   user: readonly UserRuleInput[] = NO_USER_RULES,
+  units: SizeUnits = 'GB',
 ): SuggestionsDto {
   const { env, found, insideKept } = analyse(tree, user);
   const empty: SuggestionsDto = { suggestions: [], totals: { safe: 0, review: 0, keep: 0 } };
@@ -1224,7 +1276,7 @@ export function suggestionsOf(
         title: entry.title,
         path: displayPath(entry, match, env),
         verdict,
-        reason: renderReason(entry, match.nodes.length),
+        reason: renderReason(entry, match.nodes.length, units),
         allocated: match.allocated,
         items: match.nodes.length,
         sharedFiles: match.sharedFiles,

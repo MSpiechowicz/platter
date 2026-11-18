@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AgeBucket, SummaryDto } from '../../api/types';
-  import { formatPercent } from '../../format';
+  import { percentText } from '../../format';
   import Card from '../../components/ui/Card.svelte';
   import { fmt } from '../../state/fmt.svelte';
 
@@ -56,7 +56,7 @@
     <b class="num">{fmt.size(stale)}</b>
     <div>
       Untouched for over a year
-      <small>{formatPercent(total > 0 ? stale / total : 0)} of scanned space</small>
+      <small>{percentText(total > 0 ? stale / total : 0)} of scanned space</small>
     </div>
   </div>
 </Card>

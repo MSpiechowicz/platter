@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.svelte';
+import { api } from './lib/api';
 import { scan } from './lib/state/scan.svelte';
 import { settings } from './lib/state/settings.svelte';
 import { ui } from './lib/state/ui.svelte';
@@ -237,10 +238,8 @@ describe('the app', () => {
     await screen.findByText('USED', undefined, { timeout: 3000 });
 
     expect(screen.getAllByText(/GB/).length).toBeGreaterThan(0);
-    // A rule's reason is the backend's own text and says "1 GiB" whatever the unit setting is.
-    expect(screen.queryAllByText(/GiB/).filter((element) => !element.classList.contains('why'))).toHaveLength(
-      0,
-    );
+    // The reasons of the rules write their sizes in the unit of the setting too.
+    expect(screen.queryAllByText(/GiB/)).toHaveLength(0);
 
     await fireEvent.click(nav('Settings'));
     await fireEvent.click(screen.getByRole('button', { name: 'GiB' }));
@@ -250,6 +249,20 @@ describe('the app', () => {
 
     await fireEvent.click(nav('Overview'));
     await waitFor(() => expect(screen.getAllByText(/GiB|TiB/).length).toBeGreaterThan(0));
+  });
+
+  it('fetches the suggestions again, in the new units, when the unit setting changes', async () => {
+    render(App);
+    await startScan();
+    await screen.findByText('USED', undefined, { timeout: 3000 });
+
+    const fetched = vi.spyOn(api, 'getSuggestions');
+
+    settings.set('units', 'GiB');
+
+    await waitFor(() => expect(fetched).toHaveBeenCalledTimes(1));
+    expect(fetched).toHaveBeenLastCalledWith(expect.any(Number), 'GiB');
+    fetched.mockRestore();
   });
 
   it('collapses the sidebar to the rail and keeps the labels for screen readers', async () => {

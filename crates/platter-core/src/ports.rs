@@ -405,9 +405,127 @@ pub enum ToolFailure {
 /// Runs cleanup tools. Elevated commands go through the system's authorization prompt.
 pub trait ToolRunner: Send + Sync {
     fn run(&self, command: &ToolCommand<'_>) -> Result<(), ToolFailure>;
+
+    /// Runs `commands` in order and answers for each, in the same order. A runner that can ask for the
+    /// administrator password once for all of them does so. The default runs them one by one and, after
+    /// the first [`ToolFailure::NotAuthorized`], does not ask again: every command left answers
+    /// `NotAuthorized` without running.
+    fn run_batch(&self, commands: &[ToolCommand<'_>]) -> Vec<Result<(), ToolFailure>> {
+        run_each(self, commands)
+    }
+}
+
+/// Runs `commands` one by one with `runner` and answers for each, in order. After the first
+/// [`ToolFailure::NotAuthorized`] it asks no more: every command left answers `NotAuthorized` unrun.
+pub fn run_each<R: ToolRunner + ?Sized>(
+    runner: &R,
+    commands: &[ToolCommand<'_>],
+) -> Vec<Result<(), ToolFailure>> {
+    let mut refused = false;
+
+    commands
+        .iter()
+        .map(|command| {
+            if refused {
+                return Err(ToolFailure::NotAuthorized);
+            }
+
+            let answer = runner.run(command);
+            refused = answer == Err(ToolFailure::NotAuthorized);
+
+            answer
+        })
+        .collect()
 }
 
 /// Lists the volumes the machine has mounted.
 pub trait VolumeProvider: Send + Sync {
     fn list(&self) -> Vec<Volume>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// Answers each program as told and records what it was asked to run.
+    struct Scripted {
+        answers: Vec<(&'static str, Result<(), ToolFailure>)>,
+        ran: Mutex<Vec<&'static str>>,
+    }
+
+    impl ToolRunner for Scripted {
+        fn run(&self, command: &ToolCommand<'_>) -> Result<(), ToolFailure> {
+            let (name, answer) = self
+                .answers
+                .iter()
+                .find(|(name, _)| *name == command.program)
+                .expect("a scripted program");
+            self.ran.lock().unwrap().push(name);
+
+            answer.clone()
+        }
+    }
+
+    fn command(program: &'static str) -> ToolCommand<'static> {
+        ToolCommand {
+            program,
+            args: &[],
+            elevated: true,
+        }
+    }
+
+    #[test]
+    fn a_batch_is_run_one_by_one_and_answers_each_in_order() {
+        let runner = Scripted {
+            answers: vec![
+                ("a", Ok(())),
+                ("b", Err(ToolFailure::NotInstalled)),
+                ("c", Ok(())),
+            ],
+            ran: Mutex::new(Vec::new()),
+        };
+
+        let answers = runner.run_batch(&[command("a"), command("b"), command("c")]);
+
+        assert_eq!(answers, [Ok(()), Err(ToolFailure::NotInstalled), Ok(())]);
+        assert_eq!(*runner.ran.lock().unwrap(), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_batch_asks_no_more_after_a_refusal() {
+        let runner = Scripted {
+            answers: vec![
+                ("a", Ok(())),
+                ("b", Err(ToolFailure::NotAuthorized)),
+                ("c", Ok(())),
+                ("d", Ok(())),
+            ],
+            ran: Mutex::new(Vec::new()),
+        };
+
+        let answers = runner.run_batch(&[command("a"), command("b"), command("c"), command("d")]);
+
+        assert_eq!(
+            answers,
+            [
+                Ok(()),
+                Err(ToolFailure::NotAuthorized),
+                Err(ToolFailure::NotAuthorized),
+                Err(ToolFailure::NotAuthorized)
+            ]
+        );
+        assert_eq!(*runner.ran.lock().unwrap(), ["a", "b"]);
+    }
+
+    #[test]
+    fn an_empty_batch_runs_nothing() {
+        let runner = Scripted {
+            answers: Vec::new(),
+            ran: Mutex::new(Vec::new()),
+        };
+
+        assert!(runner.run_batch(&[]).is_empty());
+    }
 }

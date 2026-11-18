@@ -1,9 +1,11 @@
 # platter-rules reads a finished `Tree` and an `Environment` and returns labels. It must never touch the
 # filesystem, start a process or read the system clock or environment itself. `tests/read_only.rs` checks
-# the sources for the same; these lists make clippy refuse the common ways in as well.
+# the sources for the same; these lists make clippy refuse the common ways in as well. The Windows paths do
+# not exist on other systems (and the unix-only ones not on Windows), so they are allowed to be invalid there.
 disallowed-types = [
   { path = "std::fs::File", reason = "platter-rules is read-only and does no I/O" },
   { path = "std::fs::OpenOptions", reason = "platter-rules is read-only and does no I/O" },
+  { path = "std::fs::DirBuilder", reason = "platter-rules never changes anything" },
   { path = "std::process::Command", reason = "platter-rules never executes anything" },
 ]
 disallowed-methods = [
@@ -11,8 +13,16 @@ disallowed-methods = [
   { path = "std::fs::read_dir", reason = "platter-rules does no I/O" },
   { path = "std::fs::read_to_string", reason = "platter-rules does no I/O" },
   { path = "std::fs::metadata", reason = "platter-rules does no I/O" },
+  { path = "std::fs::symlink_metadata", reason = "platter-rules does no I/O" },
+  { path = "std::fs::read_link", reason = "platter-rules does no I/O" },
+  { path = "std::fs::exists", reason = "platter-rules does no I/O" },
   { path = "std::fs::canonicalize", reason = "platter-rules does no I/O" },
   { path = "std::fs::write", reason = "platter-rules never changes anything" },
+  { path = "std::fs::hard_link", reason = "platter-rules never changes anything" },
+  { path = "std::fs::soft_link", reason = "platter-rules never changes anything" },
+  { path = "std::os::unix::fs::symlink", reason = "platter-rules never changes anything" },
+  { path = "std::os::windows::fs::symlink_file", reason = "platter-rules never changes anything", allow-invalid = true },
+  { path = "std::os::windows::fs::symlink_dir", reason = "platter-rules never changes anything", allow-invalid = true },
   { path = "std::fs::copy", reason = "platter-rules never changes anything" },
   { path = "std::fs::rename", reason = "platter-rules never moves anything" },
   { path = "std::fs::remove_file", reason = "platter-rules never deletes anything" },
@@ -21,6 +31,28 @@ disallowed-methods = [
   { path = "std::fs::create_dir", reason = "platter-rules never changes anything" },
   { path = "std::fs::create_dir_all", reason = "platter-rules never changes anything" },
   { path = "std::fs::set_permissions", reason = "platter-rules never changes anything" },
+  { path = "std::path::Path::exists", reason = "Path::exists asks the filesystem, platter-rules does no I/O" },
+  { path = "std::path::Path::try_exists", reason = "Path::try_exists asks the filesystem, platter-rules does no I/O" },
+  { path = "std::path::Path::metadata", reason = "Path::metadata asks the filesystem, platter-rules does no I/O" },
+  { path = "std::path::Path::symlink_metadata", reason = "Path::symlink_metadata asks the filesystem, platter-rules does no I/O" },
+  { path = "std::path::Path::read_dir", reason = "Path::read_dir asks the filesystem, platter-rules does no I/O" },
+  { path = "std::path::Path::canonicalize", reason = "Path::canonicalize asks the filesystem, platter-rules does no I/O" },
+  { path = "std::path::Path::read_link", reason = "Path::read_link asks the filesystem, platter-rules does no I/O" },
+  { path = "std::path::Path::is_dir", reason = "Path::is_dir asks the filesystem, platter-rules does no I/O" },
+  { path = "std::path::Path::is_file", reason = "Path::is_file asks the filesystem, platter-rules does no I/O" },
+  { path = "std::path::Path::is_symlink", reason = "Path::is_symlink asks the filesystem, platter-rules does no I/O" },
+  { path = "std::io::stdin", reason = "platter-rules reads no input" },
+  { path = "std::net::TcpStream::connect", reason = "platter-rules uses no network" },
+  { path = "std::net::UdpSocket::bind", reason = "platter-rules uses no network" },
+  { path = "std::net::TcpListener::bind", reason = "platter-rules uses no network" },
+  { path = "std::os::unix::fs::chown", reason = "platter-rules never changes anything", allow-invalid = true },
+  { path = "std::os::unix::fs::lchown", reason = "platter-rules never changes anything", allow-invalid = true },
+  { path = "std::os::unix::fs::fchown", reason = "platter-rules never changes anything", allow-invalid = true },
+  { path = "std::os::unix::fs::chroot", reason = "platter-rules never changes anything", allow-invalid = true },
+  { path = "std::env::current_dir", reason = "the caller supplies the Environment" },
+  { path = "std::env::set_current_dir", reason = "platter-rules never changes the process" },
+  { path = "std::process::exit", reason = "platter-rules never ends the process" },
+  { path = "std::process::abort", reason = "platter-rules never ends the process" },
   { path = "std::env::var", reason = "the caller supplies the Environment" },
   { path = "std::env::var_os", reason = "the caller supplies the Environment" },
   { path = "std::time::SystemTime::now", reason = "the caller supplies the time in the Environment" },

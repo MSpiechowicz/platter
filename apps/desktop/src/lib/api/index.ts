@@ -25,7 +25,7 @@ function lazyApi(load: () => Promise<Api>): Api {
     getLod: async (scan, node, maxNodes, maxDepth) => (await impl()).getLod(scan, node, maxNodes, maxDepth),
     getPath: async (scan, node) => (await impl()).getPath(scan, node),
     getSummary: async (scan, node) => (await impl()).getSummary(scan, node),
-    getSuggestions: async (scan) => (await impl()).getSuggestions(scan),
+    getSuggestions: async (scan, units) => (await impl()).getSuggestions(scan, units),
     planCleanup: async (scan, suggestionIds, options) =>
       (await impl()).planCleanup(scan, suggestionIds, options),
     planMarkedCleanup: async (scan, nodes, options) => (await impl()).planMarkedCleanup(scan, nodes, options),

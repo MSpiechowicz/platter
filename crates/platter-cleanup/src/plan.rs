@@ -2,10 +2,10 @@
 
 use platter_core::dto::Verdict;
 use platter_core::{EntryProbe, Environment, ModelLabel, ModelVerdict, NodeId, Os, Tree};
-use platter_rules::{RuleSet, matches, scan_is_kept};
+use platter_rules::{Named, RuleSet, matches, scan_is_kept, workspace_root};
 
 use crate::action::{CleanupAction, CleanupOptions, action_for};
-use crate::guard::{Guard, Refusal, VerifiedTarget};
+use crate::guard::{Guard, MarkerGroup, Refusal, VerifiedTarget};
 use crate::kept::KeptFolders;
 use crate::path::{PathStyle, display};
 
@@ -298,7 +298,7 @@ pub fn plan_cleanup_with(
             continue;
         }
 
-        // The files next to a folder that made a name rule match it, to be checked again.
+        // The files that made a name rule match a folder, to be checked again for each one.
         let named = rules
             .rules()
             .iter()
@@ -307,16 +307,6 @@ pub fn plan_cleanup_with(
                 platter_rules::Matcher::Named(named) => Some(*named),
                 _ => None,
             });
-        let single: Vec<&str> = named.and_then(|named| named.sibling).into_iter().collect();
-        let mut markers: Vec<&[&str]> = Vec::new();
-        if !single.is_empty() {
-            markers.push(&single);
-        }
-        if let Some(named) = named
-            && !named.sibling_any.is_empty()
-        {
-            markers.push(named.sibling_any);
-        }
 
         let mut group = PlanGroup {
             rule_id: rule.id,
@@ -326,6 +316,8 @@ pub fn plan_cleanup_with(
             allocated: 0,
         };
         for &node in &rule.nodes {
+            let markers = named.map_or_else(Vec::new, |named| markers_of(tree, style, node, &named));
+
             match guard.verify(
                 node,
                 rule.verdict,
@@ -351,6 +343,40 @@ pub fn plan_cleanup_with(
 
     plan.finish();
     plan
+}
+
+/// The files that made the name rule `named` match `node`, as complete paths: the one next to it, the
+/// lockfile next to it (or the pnpm workspace files of the folder above it that stand in for one). They
+/// are the exact files the rule saw, so the guard and the executor look at the same ones again.
+fn markers_of(tree: &Tree, style: PathStyle, node: NodeId, named: &Named) -> Vec<MarkerGroup> {
+    let path = tree.path_bytes(node);
+    let parent = style.parent(&path);
+    let beside = |name: &str| style.child(parent, name.as_bytes());
+    let mut groups = Vec::new();
+
+    if let Some(sibling) = named.sibling {
+        groups.push(MarkerGroup::file(beside(sibling)));
+    }
+
+    if !named.sibling_any.is_empty() {
+        let mut alternatives: Vec<Vec<Vec<u8>>> =
+            named.sibling_any.iter().map(|name| vec![beside(name)]).collect();
+
+        if let Some(folder) = workspace_root(tree, node, named.workspace_root) {
+            let folder = tree.path_bytes(folder);
+            alternatives.push(
+                named
+                    .workspace_root
+                    .iter()
+                    .map(|name| style.child(&folder, name.as_bytes()))
+                    .collect(),
+            );
+        }
+
+        groups.push(MarkerGroup::one_of(alternatives));
+    }
+
+    groups
 }
 
 /// The rule id of folders the user marked by hand in the Explorer.

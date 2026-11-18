@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { COLLAPSED_NODE_ID, type Api } from './api/client';
 import { createMockApi } from './api/mock';
 import type { NodeDto, ScanEvent, ScanId } from './api/types';
-import { childColors, COLOR_CHILDREN, COLOR_DEPTH, createFolderColorResolver } from './folderColor';
+import { childColors, COLOR_CHILDREN, createFolderColorResolver } from './folderColor';
 import { PALETTE, SLATE } from './palette';
 
 const kids = (...sizes: number[]) => sizes.map((allocated, index) => ({ id: index + 1, allocated }));
@@ -241,13 +241,17 @@ describe('createFolderColorResolver', () => {
   });
 });
 
-/** A chain of folders, each the only child of the one above. */
+/**
+ * A chain of folders. Every folder has two children: the next folder of the chain, and a bigger sibling, so the chain
+ * never takes the colour of its parent and its colour changes at every level.
+ */
 function chainApi(depth: number): Api {
-  const node = (id: number): NodeDto => ({
+  const SIBLING = 1000;
+  const node = (id: number, allocated: number): NodeDto => ({
     id,
     name: `d${id}`,
     kind: 'dir',
-    allocated: 100,
+    allocated,
     apparent: 0,
     files: 0,
     hasChildren: id < depth,
@@ -262,28 +266,37 @@ function chainApi(depth: number): Api {
     }),
     getChildren: async (_scan: ScanId, id: number) => ({
       parentId: id,
-      total: 1,
-      items: id < depth ? [node(id + 1)] : [],
+      total: 2,
+      items: id < depth ? [node(SIBLING + id + 1, 200), node(id + 1, 100)] : [],
     }),
   } as unknown as Api;
 }
 
-describe('the depth limit', () => {
-  it('gives a folder deeper than the limit the colour of the folder at the limit', async () => {
-    const resolver = createFolderColorResolver(chainApi(30), 1);
+describe('folders deep in the tree', () => {
+  const DEPTH = 20;
 
-    // Below the root the only child of each folder is its largest, so it inherits: the whole chain is cyan.
-    expect(await resolver.colorOf(COLOR_DEPTH)).toBe(PALETTE[0]);
-    expect(await resolver.colorOf(COLOR_DEPTH + 10)).toBe(PALETTE[0]);
-  });
+  it('have the same colour from a deep link as from walking down one folder at a time', async () => {
+    const api = chainApi(DEPTH);
+    const walking = createFolderColorResolver(api, 1);
+    const walked: string[] = [];
+    let color: string | null = null;
 
-  it('does not look further down than the limit', async () => {
-    const api = chainApi(30);
-    const getChildren = vi.spyOn(api, 'getChildren');
-    const resolver = createFolderColorResolver(api, 1);
+    for (let id = 0; id < DEPTH; id++) {
+      const page = await api.getChildren(1, id, 0, COLOR_CHILDREN, 'sizeDesc');
+      const colors = walking.childrenOf(id, color, page.items);
 
-    await resolver.colorOf(25);
+      color = colors.get(id + 1) as string;
+      walked.push(color);
+    }
 
-    expect(getChildren).toHaveBeenCalledTimes(COLOR_DEPTH);
+    // Each deep link comes from a resolver of its own, so nothing is shared with the walk.
+    for (const level of [5, 12, 13, 14, DEPTH]) {
+      const linked = await createFolderColorResolver(api, 1).colorOf(level);
+
+      expect(linked, `level ${level}`).toBe(walked[level - 1]);
+    }
+
+    // The colour keeps changing past level 12, so this is not a cap that happens to agree.
+    expect(new Set(walked.slice(12)).size).toBeGreaterThan(1);
   });
 });

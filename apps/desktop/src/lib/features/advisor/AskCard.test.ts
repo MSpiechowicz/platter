@@ -5,6 +5,7 @@ import type { AdvisorAnswerDto, EntryMatchDto, ScanAnswerDto } from '../../api/t
 import { AdvisorStore, FIND_LIMIT } from '../../state/advisor.svelte';
 import { LOADING_DELAY_MS } from '../../state/delayed.svelte';
 import { SettingsStore } from '../../state/settings.svelte';
+import { scan } from '../../state/scan.svelte';
 import { ui } from '../../state/ui.svelte';
 import AskCard from './AskCard.svelte';
 import { SEARCH_DELAY_MS } from './FolderPicker.svelte';
@@ -216,15 +217,33 @@ describe('AskCard: asking a free question', () => {
   });
 
   it('opens a row’s folder in the Explorer when its path is clicked', async () => {
-    setup(vi.fn().mockResolvedValue(scanAnswer()));
-    await ask('largest');
+    // The answer is about the finished scan: the Explorer keeps the folder for that scan.
+    const before = scan.state;
+    scan.state = {
+      status: 'ready',
+      options: { root: '/', oneFileSystem: true },
+      scanId: 1,
+      rootId: 0,
+      totals: { allocated: 1, apparent: 1, files: 1, dirs: 1, errors: 0 },
+      elapsedMs: 10,
+      warnings: [],
+      outdated: false,
+    };
 
-    await fireEvent.click(
-      await screen.findByRole('button', { name: 'Open /home/demo/.cache in the Explorer' }),
-    );
+    try {
+      setup(vi.fn().mockResolvedValue(scanAnswer()));
+      await ask('largest');
 
-    expect(ui.page).toBe('explorer');
-    expect(ui.explorerFocus).toBe(12);
+      await fireEvent.click(
+        await screen.findByRole('button', { name: 'Open /home/demo/.cache in the Explorer' }),
+      );
+
+      expect(ui.page).toBe('explorer');
+      expect(ui.explorerFocus).toBe(12);
+      expect(ui.explorerScan).toBe(1);
+    } finally {
+      scan.state = before;
+    }
   });
 
   it('runs the folder question from the "Ask" of a row with the units of the settings, and the verdict joins the log', async () => {

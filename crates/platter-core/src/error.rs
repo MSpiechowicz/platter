@@ -20,7 +20,8 @@ pub enum ScanError {
     NotADirectory(PathBuf),
 
     /// The folder is bigger than the scan may hold: more entries than the entry cap or the `u32` arena
-    /// allows, or more memory than the scan's budget. `limit` is the one that was hit.
+    /// allows, more name bytes than the name arena allows, or more memory than the scan's budget.
+    /// `limit` is the one that was hit.
     #[error("{limit}")]
     TooLarge { limit: ScanLimit },
 
@@ -34,13 +35,16 @@ pub enum ScanError {
 pub enum ScanLimit {
     /// The most entries (files and directories) a scan may collect.
     Entries(u64),
-    /// The most memory, in bytes, a scan may use (by the estimate of [`crate::budget`]; names count
-    /// towards it).
+    /// The most bytes of file and directory names a scan may collect (the name arena is indexed by
+    /// `u32`, and a configured cap may be lower).
+    Names(u64),
+    /// The most memory, in bytes, the scans may use (by the estimate of [`crate::budget`]; names count
+    /// towards it). It is the memory Platter may use for scans, which others may share.
     Memory(u64),
 }
 
-/// A memory limit below this (half of about 256 MiB of free memory) gets the "little free memory"
-/// wording: the machine, not the folder, is what is small.
+/// A memory limit below this gets the "little free memory" wording: the machine, not the folder, is what
+/// is small.
 const LOW_MEMORY_LIMIT_BYTES: u64 = 128 << 20;
 
 impl std::fmt::Display for ScanLimit {
@@ -51,16 +55,22 @@ impl std::fmt::Display for ScanLimit {
                 "This folder has more entries than Platter can hold in memory (limit {limit} entries). \
                  Scan a smaller folder."
             ),
+            ScanLimit::Names(limit) => write!(
+                f,
+                "The names in this folder take more memory than Platter can hold (limit {} of names). \
+                 Scan a smaller folder.",
+                size_text(limit)
+            ),
             ScanLimit::Memory(limit) if limit < LOW_MEMORY_LIMIT_BYTES => write!(
                 f,
-                "There is very little free memory right now, so Platter may use only {} for a scan, \
-                 which fits only a small folder. Close other programs or scan a smaller folder.",
+                "There is very little free memory right now, so the memory Platter may use for scans is \
+                 only {}, which fits only a small folder. Close other programs or scan a smaller folder.",
                 size_text(limit)
             ),
             ScanLimit::Memory(limit) => write!(
                 f,
-                "This folder needs more memory than Platter may use for a scan (limit {}, half of the \
-                 memory that is free). Scan a smaller folder.",
+                "This folder needs more than the memory Platter may use for scans (limit {}). \
+                 Scan a smaller folder.",
                 size_text(limit)
             ),
         }

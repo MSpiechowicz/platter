@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Platter</vendor>
+  <vendor_url>https://github.com/MSpiechowicz/platter</vendor_url>
+
+  <!-- Runs only the root helper, which does nothing but the fixed cleanup commands of Platter: it takes the
+       ids of up to seven of them and no path or argument. Platter asks for all the commands of a run in one
+       call, so one password prompt covers the run, and the system remembers nothing: the next run asks again. -->
+  <action id="io.github.mspiechowicz.platter.clean-system-caches">
+    <description>Clean system caches</description>
+    <message>Authentication is required to clean system caches with Platter</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/platter/platter-elevate</annotate>
+  </action>
+</policyconfig>

@@ -16,6 +16,7 @@ import {
   MAX_LIMIT,
   OFFTOPIC_TEXT,
   OUTDATED_NOTE,
+  percent,
   type ScanQuery,
   type ScanQuestionContext,
 } from './mock-scan-question';
@@ -131,6 +132,28 @@ async function expectSoundRows(api: Api, scan: ScanId, answer: ScanAnswerDto): P
     }
   }
 }
+
+describe('percent', () => {
+  it('rounds a share to whole per cent', () => {
+    expect(percent(1, 4)).toBe(25);
+    expect(percent(2, 3)).toBe(67);
+  });
+
+  it('is 0 for nothing and for a share too small to round up', () => {
+    expect(percent(0, 100)).toBe(0);
+    expect(percent(1, 1000)).toBe(0);
+    expect(percent(5, 0)).toBe(0);
+  });
+
+  it('never reads 100 for a share under the whole', () => {
+    expect(percent(996, 1000)).toBe(99);
+    expect(percent(999_999, 1_000_000)).toBe(99);
+  });
+
+  it('reads 100 for the whole', () => {
+    expect(percent(1000, 1000)).toBe(100);
+  });
+});
 
 describe('askScan: errors, in order', () => {
   it('rejects a blank question before it looks at the scan', async () => {
@@ -930,16 +953,21 @@ describe('askScan: the text, as the backend template writes it', () => {
     const all = await ask(api, timers, await scan, 'what media takes the most space?');
 
     expect(all.answer).toMatch(
-      /^The biggest media folder in this scan is .* Video: [\d.]+ [KMGT]?B in \d+ items?\. Images: [\d.]+ [KMGT]?B in \d+ items?\./,
+      /^The biggest media folder in this scan is .* Video: [\d.]+ [KMGT]?B in \d+ items?\. Images: [\d.]+ [KMGT]?B in \d+ items?\. Audio: [\d.]+ [KMGT]?B in \d+ items?\./,
     );
-    expect(new Set(all.rows.map((row) => row.note))).toEqual(new Set(['Video', 'Images']));
+    // Categories follow the backend's table, and the home folder no longer counts as one video folder as a whole. So the
+    // walk goes down to Videos, Downloads, Pictures, Music and the trash: three categories, with Music the audio one.
+    expect(new Set(all.rows.map((row) => row.note))).toEqual(new Set(['Video', 'Images', 'Audio']));
 
     // One category named: its total comes first, and only its folders are listed.
     const videos = await ask(api, timers, await scan, 'how much do my videos take?');
 
     expect(videos.answer).toMatch(
-      /^Video folders in this scan take [\d.]+ [KMGT]?B in total \(\d+ folders?\)\. The biggest video folder in this scan is “[^”]+” \([\d.]+ [KMGT]?B\)\.$/,
+      /^Video folders in this scan take [\d.]+ [KMGT]?B in total \(\d+ folders?\)\. The biggest video folder in this scan is “[^”]+” \([\d.]+ [KMGT]?B\)(?:, then “[^”]+” \([\d.]+ [KMGT]?B\))*\.$/,
     );
+    // The home folder used to be the one video folder, so the answer named a single one. Now `~/Videos` and
+    // `~/Downloads` are both video folders, and the answer lists them after the first.
+    expect(videos.answer).toContain(' (2 folders)');
     expect(new Set(videos.rows.map((row) => row.note))).toEqual(new Set(['Video']));
   });
 

@@ -518,3 +518,15 @@ describe('the sentences', () => {
     expect(answer.answer).toBe('No file or folder called “node_modules” is in this scan.');
   });
 });
+
+describe('a scan of a folder that a rule would claim', () => {
+  it('lists nothing of it and says the folder that was scanned is never suggested', () => {
+    const sketch: Sketch = { files: { '/var/cache/pacman/pkg/a.pkg': GIB }, root: '/var/cache/pacman/pkg' };
+    const answer = askSketch(sketch, 'what can I clean up?');
+
+    expect(answer.rows).toEqual([]);
+    expect(answer.notes).toEqual([
+      'This is the folder that was scanned, so Platter never suggests cleaning it.',
+    ]);
+  });
+});

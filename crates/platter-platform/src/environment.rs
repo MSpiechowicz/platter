@@ -1,6 +1,6 @@
 //! Facts about the machine, for code that interprets a finished scan (see `platter_core::Environment`).
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use platter_core::{Environment, Os, UserDir};
@@ -17,28 +17,37 @@ const USER_DIRS_MAX_BYTES: u64 = 64 * 1024;
 pub fn current_environment() -> Environment {
     let home = home_directory();
     let user_dirs = home.as_deref().map(user_directories).unwrap_or_default();
-
-    Environment {
+    let mut env = Environment {
         home,
         user_dirs,
         now: unix_now(),
         os: current_os(),
         system_root: system_root(),
-    }
+    };
+
+    settle_downloads(&mut env);
+
+    env
 }
 
 /// `env` as seen from a scan of `scan_root`: when the scan root, or a folder above it, is a second path
 /// to the home or to a personal folder (a bind mount, a btrfs top level mounted elsewhere), that path
 /// stands for it, so rules about the home and the personal folders apply inside the scan as well.
-/// Folders are compared by identity (device and inode); `env` is returned unchanged when nothing
-/// matches or nothing can be read.
+/// Folders are compared by identity (device and inode); `env` is returned as it is when nothing
+/// matches or nothing can be read. Downloads is judged again ([`settle_downloads`]) against the folders
+/// as the scan sees them, so a Downloads that is a second path to another personal folder never stands
+/// in for it.
 pub fn environment_for_scan(env: &Environment, scan_root: &Path) -> Environment {
     let mut env = env.clone();
     let Some(home) = env.home.clone() else {
         return env;
     };
 
-    let personal: Vec<(UserDir, PathBuf)> = UserDir::ALL
+    settle_downloads(&mut env);
+
+    // Every personal folder moves along with the home, `Downloads` included: it is not protected, but the
+    // old-downloads rule looks for it where the scan sees it.
+    let personal: Vec<(UserDir, PathBuf)> = UserDir::EVERY
         .iter()
         .filter_map(|dir| env.user_dir(*dir).map(|path| (*dir, path)))
         .collect();
@@ -61,9 +70,12 @@ pub fn environment_for_scan(env: &Environment, scan_root: &Path) -> Environment 
                 })
                 .collect();
             env.home = Some(folder.to_path_buf());
+            settle_downloads(&mut env);
+
             return env;
         }
 
+        // A Downloads that is not valid is not in `personal`: it can never be mapped onto a folder.
         if let Some((dir, _)) = personal
             .iter()
             .find(|(_, path)| path != folder && identity(path) == Some(here))
@@ -149,7 +161,7 @@ fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
 fn user_directories(home: &Path) -> Vec<(UserDir, PathBuf)> {
     use known_folders::{KnownFolder, get_known_folder_path};
 
-    UserDir::ALL
+    UserDir::EVERY
         .iter()
         .filter_map(|&dir| {
             let known = match dir {
@@ -158,6 +170,7 @@ fn user_directories(home: &Path) -> Vec<(UserDir, PathBuf)> {
                 UserDir::Music => KnownFolder::Music,
                 UserDir::Pictures => KnownFolder::Pictures,
                 UserDir::Videos => KnownFolder::Videos,
+                UserDir::Downloads => KnownFolder::Downloads,
             };
             let path = get_known_folder_path(known)?;
 
@@ -171,7 +184,7 @@ fn user_directories(home: &Path) -> Vec<(UserDir, PathBuf)> {
 /// is no `user-dirs.dirs` here, and a folder that is missing is left out (the default name is assumed).
 #[cfg(target_os = "macos")]
 fn user_directories(home: &Path) -> Vec<(UserDir, PathBuf)> {
-    UserDir::ALL
+    UserDir::EVERY
         .iter()
         .filter_map(|&dir| {
             let path = home.join(dir.default_name(Os::MacOs));
@@ -205,6 +218,119 @@ fn user_directories(home: &Path) -> Vec<(UserDir, PathBuf)> {
         .collect()
 }
 
+/// Decides where Downloads is, for every way the environment is built. The place comes from a file the
+/// user (or a program running as the user) can write, or is `~/Downloads`, and the old-downloads rule
+/// offers what is in it for cleaning, so it must be a folder that holds nothing else. A candidate is
+/// refused when it is not inside the home folder, lies in a hidden folder of the home (`~/.local/share`),
+/// or is, holds or lies inside a personal folder (the listed ones, and `home/<default name>` for each
+/// that is not listed). Folders are compared by canonical path and by identity (device and inode), so a
+/// symlink, a bind mount or a case-folding filesystem does not hide an overlap.
+///
+/// The listed Downloads is tried first, then `~/Downloads`. When neither will do, the environment says
+/// Downloads does not exist, and the old-downloads rule matches nothing. Does nothing without a home.
+fn settle_downloads(env: &mut Environment) {
+    let Some(home) = env.home.clone() else {
+        return;
+    };
+
+    // An entry with an empty path is a "missing" mark of an earlier decision, not a place to try.
+    let listed = env
+        .user_dirs
+        .iter()
+        .find(|(dir, _)| *dir == UserDir::Downloads)
+        .map(|(_, path)| path.clone())
+        .filter(|path| !path.as_os_str().is_empty());
+    env.user_dirs.retain(|(dir, _)| *dir != UserDir::Downloads);
+
+    let personal: Vec<PathBuf> = UserDir::ALL.iter().filter_map(|dir| env.user_dir(*dir)).collect();
+    let real_home = resolved(&home);
+
+    if let Some(path) = listed
+        && can_be_downloads(&path, &real_home, &personal)
+    {
+        env.user_dirs.push((UserDir::Downloads, path));
+
+        return;
+    }
+
+    // Not listed, or listed and refused: Downloads is `~/Downloads`, which is judged the same way.
+    if can_be_downloads(
+        &home.join(UserDir::Downloads.default_name(env.os)),
+        &real_home,
+        &personal,
+    ) {
+        return;
+    }
+
+    env.set_downloads_missing();
+}
+
+/// Whether `candidate` may be the Downloads folder (see [`settle_downloads`]). `real_home` and `personal`
+/// are resolved here, `candidate` too, so that every comparison is between canonical paths.
+fn can_be_downloads(candidate: &Path, real_home: &Path, personal: &[PathBuf]) -> bool {
+    let candidate = resolved(candidate);
+
+    let Ok(inside) = candidate.strip_prefix(real_home) else {
+        return false;
+    };
+    // Only plain names: a `..` (or anything else that is not a name) can lead out of the place it is
+    // written under, so the test for a hidden folder below could not be trusted with it.
+    let plain = inside
+        .components()
+        .all(|part| matches!(part, Component::Normal(_)));
+    if inside.as_os_str().is_empty() || !plain {
+        return false;
+    }
+
+    let hidden = inside
+        .components()
+        .any(|part| part.as_os_str().to_string_lossy().starts_with('.'));
+    if hidden {
+        return false;
+    }
+
+    let personal: Vec<PathBuf> = personal.iter().map(|path| resolved(path)).collect();
+    let overlaps = personal
+        .iter()
+        .any(|other| candidate.starts_with(other) || other.starts_with(&candidate));
+    if overlaps {
+        return false;
+    }
+
+    // The same folders by identity: a path that differs only in case, or a second way to the same folder,
+    // is not the same path, but it is the same folder.
+    let personal_identities: Vec<(u64, u64)> = personal.iter().filter_map(|path| identity(path)).collect();
+    let is_or_lies_inside_one = candidate
+        .ancestors()
+        .filter_map(identity)
+        .any(|here| personal_identities.contains(&here));
+    if is_or_lies_inside_one {
+        return false;
+    }
+
+    let Some(own) = identity(&candidate) else {
+        return true;
+    };
+
+    !personal
+        .iter()
+        .any(|other| other.ancestors().filter_map(identity).any(|above| above == own))
+}
+
+/// `path` with every symlink resolved in the part that exists: the canonical path of its deepest existing
+/// ancestor, followed by the rest of the name. The path itself when nothing of it can be read.
+fn resolved(path: &Path) -> PathBuf {
+    for ancestor in path.ancestors() {
+        if let Ok(real) = canonicalize(ancestor) {
+            let rest = path.strip_prefix(ancestor).unwrap_or(Path::new(""));
+
+            return real.join(rest);
+        }
+    }
+
+    path.to_path_buf()
+}
+
 /// A personal folder is a real folder of its own: `xdg-user-dirs` points a disabled one at the home
 /// directory itself, and neither that nor `/` (a drive's root on Windows) may be treated as one.
 fn is_a_personal_folder(path: &Path, home: &Path) -> bool {
@@ -227,6 +353,7 @@ fn parse_user_dirs(text: &str, home: &Path) -> Vec<(UserDir, PathBuf)> {
             "XDG_MUSIC_DIR" => UserDir::Music,
             "XDG_PICTURES_DIR" => UserDir::Pictures,
             "XDG_VIDEOS_DIR" => UserDir::Videos,
+            "XDG_DOWNLOAD_DIR" => UserDir::Downloads,
             _ => continue,
         };
         let Some(value) = value
@@ -337,6 +464,7 @@ mod tests {
             [
                 (UserDir::Desktop, PathBuf::from("/home/u/Pulpit")),
                 (UserDir::Documents, PathBuf::from("/home/u/Dokumenty")),
+                (UserDir::Downloads, PathBuf::from("/home/u/Pobrane")),
                 (UserDir::Pictures, PathBuf::from("/data/Obrazy")),
                 (UserDir::Music, PathBuf::from("/home/u/Moja \"muzyka\"")),
             ]
@@ -355,6 +483,287 @@ mod tests {
             XDG_VIDEOS_DIR=unquoted\n";
 
         assert_eq!(parse_user_dirs(text, home), []);
+    }
+
+    fn linux_environment(home: &Path, user_dirs: Vec<(UserDir, PathBuf)>) -> Environment {
+        Environment {
+            home: Some(home.to_path_buf()),
+            user_dirs,
+            now: 0,
+            os: Os::Linux,
+            system_root: None,
+        }
+    }
+
+    fn with_downloads(downloads: &str) -> Environment {
+        linux_environment(
+            Path::new("/home/u"),
+            vec![
+                (UserDir::Documents, PathBuf::from("/home/u/Documents")),
+                (UserDir::Music, PathBuf::from("/home/u/Music")),
+                (UserDir::Downloads, PathBuf::from(downloads)),
+            ],
+        )
+    }
+
+    fn settled(mut env: Environment) -> Environment {
+        settle_downloads(&mut env);
+
+        env
+    }
+
+    /// The Downloads entry the environment lists, when it lists one.
+    fn listed_downloads(env: &Environment) -> Option<&Path> {
+        env.user_dirs
+            .iter()
+            .find(|(dir, _)| *dir == UserDir::Downloads)
+            .map(|(_, path)| path.as_path())
+            .filter(|path| !path.as_os_str().is_empty())
+    }
+
+    #[test]
+    fn a_downloads_folder_of_its_own_in_the_home_is_kept_wherever_it_is_named() {
+        for place in ["/home/u/Pobrane", "/home/u/Downloads", "/home/u/files/Downloads"] {
+            let env = settled(with_downloads(place));
+
+            assert_eq!(listed_downloads(&env), Some(Path::new(place)), "{place}");
+            assert_eq!(
+                env.user_dir(UserDir::Downloads),
+                Some(PathBuf::from(place)),
+                "{place}"
+            );
+            assert_eq!(env.user_dirs.len(), 3, "{place}");
+        }
+    }
+
+    #[test]
+    fn a_downloads_folder_that_holds_or_lies_in_other_things_falls_back_to_the_default_one() {
+        for place in [
+            // Holds Documents and Music.
+            "/home/u",
+            // Is, or lies inside, another personal folder.
+            "/home/u/Documents",
+            "/home/u/Music/old",
+            // A hidden folder of the home.
+            "/home/u/.local/share",
+            "/home/u/.cache",
+            // Not in the home.
+            "/mnt/data",
+            "/home",
+            "/",
+        ] {
+            let env = settled(with_downloads(place));
+
+            assert_eq!(listed_downloads(&env), None, "{place}");
+            assert_eq!(
+                env.user_dir(UserDir::Downloads),
+                Some(PathBuf::from("/home/u/Downloads")),
+                "{place}"
+            );
+            assert_eq!(env.user_dirs.len(), 2, "the other folders stay: {place}");
+        }
+    }
+
+    #[test]
+    fn a_downloads_folder_that_holds_another_personal_folder_is_ignored() {
+        let env = settled(linux_environment(
+            Path::new("/home/u"),
+            vec![
+                (UserDir::Documents, PathBuf::from("/home/u/projects/Documents")),
+                (UserDir::Downloads, PathBuf::from("/home/u/projects")),
+            ],
+        ));
+
+        assert_eq!(listed_downloads(&env), None);
+    }
+
+    #[test]
+    fn a_downloads_folder_that_is_a_default_personal_folder_nobody_listed_is_ignored() {
+        // No Documents line: Documents is `~/Documents` all the same.
+        for place in ["/home/u/Documents", "/home/u/Videos/old", "/home/u/Desktop"] {
+            let env = settled(linux_environment(
+                Path::new("/home/u"),
+                vec![(UserDir::Downloads, PathBuf::from(place))],
+            ));
+
+            assert_eq!(listed_downloads(&env), None, "{place}");
+            assert_eq!(
+                env.user_dir(UserDir::Downloads),
+                Some(PathBuf::from("/home/u/Downloads")),
+                "{place}"
+            );
+        }
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn a_downloads_line_of_the_xdg_file_is_judged_like_any_other_source() {
+        let home = Path::new("/home/u");
+        let read = |downloads: &str| {
+            let text = format!("XDG_DOCUMENTS_DIR=\"$HOME/Documents\"\nXDG_DOWNLOAD_DIR=\"{downloads}\"\n");
+
+            settled(linux_environment(home, parse_user_dirs(&text, home)))
+        };
+
+        assert_eq!(
+            listed_downloads(&read("$HOME/Pobrane")),
+            Some(Path::new("/home/u/Pobrane"))
+        );
+        for hostile in ["$HOME/.local/share", "/mnt/data", "$HOME/Documents/old"] {
+            assert_eq!(listed_downloads(&read(hostile)), None, "{hostile}");
+        }
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn a_lone_download_line_that_names_documents_is_ignored_although_documents_is_not_listed() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path().canonicalize().unwrap();
+        std::fs::create_dir(home.join("Documents")).unwrap();
+        let text = "XDG_DOWNLOAD_DIR=\"$HOME/Documents\"\n";
+
+        let env = settled(linux_environment(&home, parse_user_dirs(text, &home)));
+
+        assert_eq!(env.user_dir(UserDir::Downloads), Some(home.join("Downloads")));
+        assert_eq!(listed_downloads(&env), None);
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn a_translated_downloads_folder_of_its_own_is_accepted() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path().canonicalize().unwrap();
+        std::fs::create_dir(home.join("Pobrane")).unwrap();
+        let text = "XDG_DOWNLOAD_DIR=\"$HOME/Pobrane\"\n";
+
+        let env = settled(linux_environment(&home, parse_user_dirs(text, &home)));
+
+        assert_eq!(env.user_dir(UserDir::Downloads), Some(home.join("Pobrane")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_default_downloads_that_is_a_link_to_another_personal_folder_is_no_downloads_at_all() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path().canonicalize().unwrap();
+        std::fs::create_dir(home.join("Documents")).unwrap();
+        std::os::unix::fs::symlink(home.join("Documents"), home.join("Downloads")).unwrap();
+
+        let env = settled(linux_environment(&home, Vec::new()));
+
+        assert_eq!(env.user_dir(UserDir::Downloads), None);
+        assert_eq!(env.user_dir(UserDir::Documents), Some(home.join("Documents")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_default_downloads_that_is_a_link_into_a_hidden_folder_is_no_downloads_at_all() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path().canonicalize().unwrap();
+        std::fs::create_dir_all(home.join(".cache/dl")).unwrap();
+        std::os::unix::fs::symlink(home.join(".cache/dl"), home.join("Downloads")).unwrap();
+
+        let env = settled(linux_environment(&home, Vec::new()));
+
+        assert_eq!(env.user_dir(UserDir::Downloads), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_listed_downloads_that_is_a_link_to_another_personal_folder_falls_back_and_is_judged_again() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path().canonicalize().unwrap();
+        std::fs::create_dir(home.join("Documents")).unwrap();
+        std::os::unix::fs::symlink(home.join("Documents"), home.join("Pobrane")).unwrap();
+        let listed = vec![(UserDir::Downloads, home.join("Pobrane"))];
+
+        let env = settled(linux_environment(&home, listed));
+
+        // `~/Downloads` does not exist and is a folder of its own to be.
+        assert_eq!(env.user_dir(UserDir::Downloads), Some(home.join("Downloads")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_scan_inside_documents_never_maps_a_downloads_that_links_to_documents_onto_it() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path().canonicalize().unwrap();
+        std::fs::create_dir_all(home.join("Documents/x")).unwrap();
+        std::os::unix::fs::symlink(home.join("Documents"), home.join("Downloads")).unwrap();
+        let scan_root = home.join("Documents/x");
+
+        // Whether the environment was settled before or not, Downloads is not Documents.
+        for env in [
+            linux_environment(&home, Vec::new()),
+            settled(linux_environment(&home, Vec::new())),
+        ] {
+            let seen = environment_for_scan(&env, &scan_root);
+
+            assert_eq!(seen.user_dir(UserDir::Downloads), None);
+            assert_eq!(seen.user_dir(UserDir::Documents), Some(home.join("Documents")));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_scan_through_a_second_path_to_the_home_moves_a_valid_downloads_along_and_judges_it_again() {
+        let real = tempfile::tempdir().unwrap();
+        let real = real.path().canonicalize().unwrap();
+        std::fs::create_dir_all(real.join("home/Pobrane")).unwrap();
+        std::fs::create_dir(real.join("home/other")).unwrap();
+        let alias = real.join("alias");
+        std::os::unix::fs::symlink(real.join("home"), &alias).unwrap();
+        let env = settled(linux_environment(
+            &real.join("home"),
+            vec![(UserDir::Downloads, real.join("home/Pobrane"))],
+        ));
+
+        let seen = environment_for_scan(&env, &alias.join("other"));
+
+        assert_eq!(seen.home, Some(alias.clone()));
+        assert_eq!(seen.user_dir(UserDir::Downloads), Some(alias.join("Pobrane")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_scan_through_a_second_path_to_the_home_keeps_a_missing_downloads_missing() {
+        let real = tempfile::tempdir().unwrap();
+        let real = real.path().canonicalize().unwrap();
+        std::fs::create_dir_all(real.join("home/Documents")).unwrap();
+        std::fs::create_dir(real.join("home/other")).unwrap();
+        std::os::unix::fs::symlink(real.join("home/Documents"), real.join("home/Downloads")).unwrap();
+        let alias = real.join("alias");
+        std::os::unix::fs::symlink(real.join("home"), &alias).unwrap();
+        let env = settled(linux_environment(&real.join("home"), Vec::new()));
+        assert_eq!(env.user_dir(UserDir::Downloads), None);
+
+        for scan_root in [alias.join("other"), alias.clone()] {
+            let seen = environment_for_scan(&env, &scan_root);
+
+            assert_eq!(seen.home, Some(alias.clone()), "{scan_root:?}");
+            assert_eq!(seen.user_dir(UserDir::Downloads), None, "{scan_root:?}");
+            assert_eq!(
+                seen.user_dir(UserDir::Documents),
+                Some(alias.join("Documents")),
+                "{scan_root:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_downloads_that_climbs_out_with_a_parent_component_is_refused() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path().canonicalize().unwrap();
+        let climbing = home.join("nonexist/..");
+
+        let env = settled(linux_environment(
+            &home,
+            vec![(UserDir::Downloads, climbing.clone())],
+        ));
+
+        assert!(!can_be_downloads(&climbing, &home, &[]));
+        assert_eq!(listed_downloads(&env), None);
+        assert_eq!(env.user_dir(UserDir::Downloads), Some(home.join("Downloads")));
     }
 
     #[cfg(not(any(windows, target_os = "macos")))]

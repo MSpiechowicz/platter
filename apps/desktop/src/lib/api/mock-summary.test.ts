@@ -19,9 +19,60 @@ describe('largestDirs', () => {
     ).toEqual(['user', 'other']);
   });
 
-  it('keeps a directory when no child reaches the share, and does not swap it for a smaller one', () => {
-    // 790 of 1000 is 79%, just under the threshold; one child directory would only swap `home` for a smaller folder.
-    expect(names({ files: { '/h/home/user/data.bin': 790, '/h/home/readme': 210 } }, '/h')).toEqual(['home']);
+  it('keeps a directory when no child reaches the share and it is not most of the node', () => {
+    // 790 of home's 1000 is 79%, just under the threshold, and home is 1000 of the folder's 1500: only 67%.
+    expect(
+      names({ files: { '/h/home/user/data.bin': 790, '/h/home/readme': 210, '/h/other/x.bin': 500 } }, '/h'),
+    ).toEqual(['home', 'other']);
+  });
+
+  it('replaces a directory holding at least 80% of the node by its child directories, even without a dominant child', () => {
+    // `a` is 800 of 1000 (exactly 80%) and its children hold 50% and 37.5% of it, so no child dominates it. Seven small
+    // folders make eight candidates, so nothing is expanded afterwards: without the rule `a` would stay in the list.
+    const files: Record<string, number> = { '/r/a/a1/x.bin': 400, '/r/a/a2/x.bin': 300, '/r/a/note': 100 };
+
+    for (let i = 0; i < 8; i++) {
+      files[`/r/s${i}/x.bin`] = 25;
+    }
+
+    expect(names({ files }, '/r')).toEqual(['a1', 'a2', 's0', 's1', 's2', 's3', 's4', 's5']);
+  });
+
+  it('keeps a directory holding just under 80% of the node when no child dominates it', () => {
+    const files: Record<string, number> = { '/r/a/a1/x.bin': 400, '/r/a/a2/x.bin': 300, '/r/a/note': 90 };
+
+    for (let i = 0; i < 7; i++) {
+      files[`/r/s${i}/x.bin`] = 30;
+    }
+
+    expect(names({ files }, '/r')).toEqual(['a', 's0', 's1', 's2', 's3', 's4', 's5', 's6']);
+  });
+
+  it('replaces a directory holding most of the node by its only child directory', () => {
+    // home is all of `/h` and has one child directory, `user`, which is only 79% of it.
+    expect(names({ files: { '/h/home/user/data.bin': 790, '/h/home/readme': 210 } }, '/h')).toEqual(['user']);
+  });
+
+  it('keeps a big folder of only files, however much of the node it holds', () => {
+    expect(names({ files: { '/r/big/a.bin': 500, '/r/big/b.bin': 400, '/r/s/x.bin': 100 } }, '/r')).toEqual([
+      'big',
+      's',
+    ]);
+  });
+
+  it('keeps a folder of loose files with one tiny subfolder, at 85% of the node', () => {
+    // `a` is 100 of 117 (about 85%), but its only subfolder holds 5% of it: the bytes are in the files, so `a` stays.
+    expect(names({ files: { '/r/a/x.bin': 95, '/r/a/sub/y.bin': 5, '/r/s/z.bin': 17 } }, '/r')).toEqual([
+      'a',
+      's',
+    ]);
+  });
+
+  it('replaces a folder at 85% of the node when its subfolders hold 60% of it', () => {
+    // The two subfolders hold 30 + 30 of the folder's 100, and neither dominates it.
+    expect(
+      names({ files: { '/r/a/x.bin': 40, '/r/a/b/y.bin': 30, '/r/a/c/y.bin': 30, '/r/s/z.bin': 17 } }, '/r'),
+    ).toEqual(['b', 'c', 's']);
   });
 
   it('drops a directory whose child holds exactly 80%', () => {
@@ -133,8 +184,8 @@ describe('largestDirs', () => {
       '/etc/x.bin': 1_000,
     };
 
-    // `home` is dominated by `sam`, which is dominated by nothing; there are fewer than eight candidates, so `sam`
-    // (largest, with four child folders) is expanded too, and its children are not dominated either.
+    // `home` is dominated by `sam`. `sam` holds 97% of the disk and has child folders, so it is replaced by them too,
+    // and none of those is dominated or holds 80% of the disk.
     expect(names({ files }, '/')).toEqual(['.local', '.docker', 'misc', 'Projekty', 'var', 'usr', 'etc']);
   });
 });

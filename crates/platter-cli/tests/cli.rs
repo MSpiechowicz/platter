@@ -78,6 +78,29 @@ fn scan_text_prints_totals_top_and_stats() {
 }
 
 #[test]
+fn scan_text_writes_the_share_like_the_app_does() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("huge.bin"), vec![0u8; 4_000_000]).unwrap();
+    fs::write(dir.path().join("tiny.txt"), b"x").unwrap();
+
+    let output = cli(&["scan", path_arg(&dir)]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+
+    let share_of = |name: &str| {
+        let line = text
+            .lines()
+            .find(|line| line.ends_with(name))
+            .unwrap_or_else(|| panic!("a row for {name}: {text}"));
+        line.split_whitespace().nth(2).unwrap().to_owned()
+    };
+
+    // The big one holds almost everything but never reads 100%, the tiny one is not nothing.
+    assert_eq!(share_of("huge.bin"), "99%", "{text}");
+    assert_eq!(share_of("tiny.txt"), "<1%", "{text}");
+}
+
+#[test]
 fn scanning_a_missing_path_fails_with_a_message() {
     let dir = fixture();
     let missing = dir.path().join("not-here");

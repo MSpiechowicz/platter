@@ -276,9 +276,19 @@ const notInScan = (text: string, absent?: Absent): string => {
 
 const clip = (note: string): string => Array.from(note).slice(0, NOTE_CHARS).join('');
 
-/** A share in whole per cent, rounded. */
-export const percent = (part: number, whole: number): number =>
-  whole === 0 ? 0 : Math.floor((part * 100 + Math.floor(whole / 2)) / whole);
+/**
+ * A share in whole per cent, rounded, and never 100 unless the part is the whole or more: 99.6% reads 99. A share
+ * under one half of one per cent reads 0, which the sentences say as "Less than 1%" when the part is not nothing.
+ */
+export const percent = (part: number, whole: number): number => {
+  if (whole === 0) {
+    return 0;
+  }
+
+  const rounded = Math.floor((part * 100 + Math.floor(whole / 2)) / whole);
+
+  return part < whole ? Math.min(99, rounded) : rounded;
+};
 
 /** The last part of a path. */
 const baseName = (path: string): string => path.replace(/\/+$/, '').split('/').pop() ?? path;
@@ -1200,6 +1210,18 @@ function answerReading(
         }
 
         found.rows.push(row);
+      }
+
+      return found;
+    }
+
+    // The folder that was scanned is never a suggestion, also when a rule would claim it: say so, as the guard does,
+    // rather than answer with nothing.
+    if (node.parent < 0 && view.rootClaimed) {
+      const detail = context.guard(node);
+
+      if (detail !== null) {
+        found.notes.push(detail);
       }
 
       return found;

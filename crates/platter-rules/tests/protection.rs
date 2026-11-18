@@ -187,3 +187,179 @@ fn caches_that_can_hold_what_cannot_be_rebuilt_are_review() {
         assert_eq!(get(&found, id).unwrap().verdict, Verdict::Review, "{id}");
     }
 }
+
+#[test]
+fn the_scan_root_is_never_a_suggestion_whatever_rule_claims_it() {
+    let cases = [
+        ("/var/cache/pacman/pkg", "pacman-cache"),
+        ("/home/u/.cache", "app-cache"),
+        ("/var/lib/docker", "docker-data"),
+        ("/home/u/.npm", "npm-cache"),
+    ];
+
+    for (root, id) in cases {
+        let mut fs = FakeFs::new();
+        fs.file(&format!("{root}/a/blob"), 300);
+        let tree = scan_at(&fs, root, false);
+
+        let found = builtin(&tree, &env());
+
+        assert!(get(&found, id).is_none(), "{root}: {found:?}");
+        assert!(found.suggestions.is_empty(), "{root}: {found:?}");
+        assert_eq!(found.totals, platter_rules::VerdictTotals::default(), "{root}");
+    }
+}
+
+#[test]
+fn a_name_rule_still_matches_inside_a_scan_of_a_claimed_folder() {
+    let mut fs = FakeFs::new();
+    fs.file("/home/u/.cache/p/Cargo.toml", 1);
+    aged_file(&mut fs, "/home/u/.cache/p/target/x", 100, 400);
+    let tree = scan_at(&fs, "/home/u/.cache", false);
+
+    let found = builtin(&tree, &env());
+
+    assert_eq!(ids(&found), ["rust-target"]);
+}
+
+#[test]
+fn a_kept_scan_root_is_still_kept_by_its_keep_claim() {
+    let mut fs = FakeFs::new();
+    old_projects(&mut fs, "/home/u/Dokumenty");
+    let tree = scan_at(&fs, "/home/u/Dokumenty", false);
+    let env = Environment {
+        user_dirs: vec![(UserDir::Documents, PathBuf::from("/home/u/Dokumenty"))],
+        ..env()
+    };
+
+    let found = builtin(&tree, &env);
+
+    assert_eq!(ids(&found), ["documents"]);
+    assert_eq!(get(&found, "documents").unwrap().verdict, Verdict::Keep);
+}
+
+/// A pnpm workspace at `ws`: the two files at its root and one member below `packages`, idle for a year.
+fn pnpm_workspace(fs: &mut FakeFs, ws: &str) {
+    aged_file(fs, &format!("{ws}/package.json"), 1, 400);
+    aged_file(fs, &format!("{ws}/pnpm-workspace.yaml"), 1, 400);
+    aged_file(fs, &format!("{ws}/pnpm-lock.yaml"), 1, 400);
+    aged_file(fs, &format!("{ws}/packages/a/package.json"), 1, 400);
+    aged_file(fs, &format!("{ws}/packages/a/node_modules/dep/i.js"), 100, 400);
+}
+
+#[test]
+fn the_node_modules_of_a_pnpm_workspace_member_is_suggested() {
+    let mut fs = FakeFs::new();
+    pnpm_workspace(&mut fs, "/home/u/code/ws");
+    let tree = scan_at(&fs, "/", false);
+
+    let found = builtin(&tree, &env());
+
+    assert_eq!(safe_ids(&found), ["node-modules"], "{found:?}");
+    assert_eq!(
+        get(&found, "node-modules").unwrap().path,
+        "~/code/ws/packages/a/node_modules"
+    );
+}
+
+#[test]
+fn the_workspace_root_may_be_the_scan_root_but_not_a_folder_above_it() {
+    let mut fs = FakeFs::new();
+    pnpm_workspace(&mut fs, "/home/u/code/ws");
+
+    let at_root = builtin(&scan_at(&fs, "/home/u/code/ws", false), &env());
+    let below_root = builtin(&scan_at(&fs, "/home/u/code/ws/packages", false), &env());
+
+    assert_eq!(safe_ids(&at_root), ["node-modules"], "{at_root:?}");
+    assert!(below_root.suggestions.is_empty(), "{below_root:?}");
+}
+
+#[test]
+fn a_workspace_needs_both_files_as_regular_files() {
+    // A tree with one of the two files, a link or a folder in place of one, or neither lockfile name.
+    let cases: [(&str, &[(&str, Kind)]); 6] = [
+        ("only the lockfile", &[("pnpm-lock.yaml", Kind::File)]),
+        ("only the workspace file", &[("pnpm-workspace.yaml", Kind::File)]),
+        (
+            "a linked workspace file",
+            &[
+                ("pnpm-workspace.yaml", Kind::Link),
+                ("pnpm-lock.yaml", Kind::File),
+            ],
+        ),
+        (
+            "a linked lockfile",
+            &[
+                ("pnpm-workspace.yaml", Kind::File),
+                ("pnpm-lock.yaml", Kind::Link),
+            ],
+        ),
+        (
+            "a folder as the lockfile",
+            &[("pnpm-workspace.yaml", Kind::File), ("pnpm-lock.yaml", Kind::Dir)],
+        ),
+        (
+            "another lockfile",
+            &[("pnpm-workspace.yaml", Kind::File), ("yarn.lock", Kind::File)],
+        ),
+    ];
+
+    for (what, markers) in cases {
+        let mut fs = FakeFs::new();
+        aged_file(&mut fs, "/home/u/code/ws/packages/a/package.json", 1, 400);
+        aged_file(
+            &mut fs,
+            "/home/u/code/ws/packages/a/node_modules/dep/i.js",
+            100,
+            400,
+        );
+        for (name, kind) in markers {
+            let path = format!("/home/u/code/ws/{name}");
+            match kind {
+                Kind::File => aged_file(&mut fs, &path, 1, 400),
+                Kind::Link => {
+                    fs.symlink(&path, 1);
+                }
+                Kind::Dir => {
+                    fs.dir(&path);
+                }
+            }
+        }
+        let tree = scan_at(&fs, "/", false);
+
+        let found = builtin(&tree, &env());
+
+        assert!(found.suggestions.is_empty(), "{what}: {found:?}");
+    }
+}
+
+enum Kind {
+    File,
+    Link,
+    Dir,
+}
+
+#[test]
+fn a_member_without_a_package_file_is_not_a_project_even_in_a_workspace() {
+    let mut fs = FakeFs::new();
+    pnpm_workspace(&mut fs, "/home/u/code/ws");
+    fs.remove("/home/u/code/ws/packages/a/package.json");
+    let tree = scan_at(&fs, "/", false);
+
+    let found = builtin(&tree, &env());
+
+    assert!(found.suggestions.is_empty(), "{found:?}");
+}
+
+#[test]
+fn a_workspace_does_not_make_the_node_modules_of_a_tool_a_project() {
+    for dir in ["/home/u/.nvm/ws", "/home/u/.vscode/ws", "/usr/lib/ws", "/opt/ws"] {
+        let mut fs = FakeFs::new();
+        pnpm_workspace(&mut fs, dir);
+        let tree = scan_at(&fs, "/", false);
+
+        let found = builtin(&tree, &env());
+
+        assert!(found.suggestions.is_empty(), "{dir}: {found:?}");
+    }
+}

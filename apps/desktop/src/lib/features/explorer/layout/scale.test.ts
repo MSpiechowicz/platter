@@ -135,5 +135,7 @@ describe('formatShare', () => {
     expect(formatShare(0.013)).toBe('1.3%');
     expect(formatShare(0.0004)).toBe('<0.1%');
     expect(formatShare(0.002)).toBe('0.2%');
+    expect(formatShare(0)).toBe('0%');
+    expect(formatShare(0.99996)).toBe('99.9%');
   });
 });

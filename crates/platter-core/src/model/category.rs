@@ -50,6 +50,17 @@ impl Category {
         self as usize
     }
 
+    /// The category holding the most bytes in `sums` (indexed by [`Category::index`]). Ties go to the lower
+    /// index. `None` when every sum is zero, so a caller decides what a group without bytes is.
+    pub fn heaviest(sums: &[u64; Category::COUNT]) -> Option<Category> {
+        let (index, &bytes) = sums
+            .iter()
+            .enumerate()
+            .max_by_key(|&(index, &bytes)| (bytes, std::cmp::Reverse(index)))?;
+
+        (bytes > 0).then(|| Category::ALL[index])
+    }
+
     /// Category of a file with the given `size` in bytes (its apparent size), judged by its name's
     /// extension. Names without a usable extension are `Other`. The size only matters for the few
     /// extensions in `SIZE_RULES`, such as `.raw`.

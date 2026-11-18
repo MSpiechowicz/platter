@@ -27,7 +27,7 @@ use platter_ai::{
 use platter_core::dto::{AgeBucket, ScanId, Verdict, VerdictTotals};
 use platter_core::query::{MAX_ENTRY_MATCHES, find_entries, find_folders, summary};
 use platter_core::{Category, ModelLabel, ModelVerdict, NodeId, NodeKind, Os, Tree};
-use platter_rules::{Matcher, Rule, RuleMatches, RuleSet, matches, scan_is_kept};
+use platter_rules::{Matcher, Rule, RuleMatches, RuleSet, matches, scan_is_kept, scan_root_is_claimed};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -373,9 +373,9 @@ pub async fn answer_scan_picking(
         let query = reading.query.clone();
 
         let totals = match query.intent {
-            Intent::General => {
-                Some(suggestions::suggestions(&scans, &platform, scan, enabled, &user)?.totals)
-            }
+            Intent::General => Some(
+                suggestions::suggestions(&scans, &platform, scan, enabled, &user, Units::Decimal)?.totals,
+            ),
             _ => None,
         };
 
@@ -1500,6 +1500,17 @@ impl<'a> Lens<'a> {
             return found;
         }
 
+        // The folder that was scanned is never a suggestion, also when a rule would claim it: say so, as the
+        // guard does, rather than answer with nothing.
+        if node == self.tree.root() && scan_root_is_claimed(self.tree, self.review.env(), self.review.rules())
+        {
+            if let Some(detail) = self.review.guard(node) {
+                found.notes.push(detail);
+            }
+
+            return found;
+        }
+
         // A scope that Platter could not read is not covered by any rule, but the answer is about it.
         if Self::is_given(scope) && self.tree.is_unreadable(node) {
             found.subject = true;
@@ -2248,13 +2259,15 @@ fn verdict_of(verdict: ModelVerdict) -> Verdict {
     }
 }
 
-/// A share in whole per cent, rounded.
+/// `part` of `whole` in whole percent, rounded, but never 100 for less than the whole: 99.6% reads 99. A share
+/// under half a percent is 0, which the sentences write as "Less than 1%" when the bytes are not zero.
 pub(super) fn percent(part: u64, whole: u64) -> u64 {
     if whole == 0 {
         return 0;
     }
 
-    ((u128::from(part) * 100 + u128::from(whole) / 2) / u128::from(whole)) as u64
+    let rounded = ((u128::from(part) * 100 + u128::from(whole) / 2) / u128::from(whole)) as u64;
+    if part < whole { rounded.min(99) } else { rounded }
 }
 
 fn category_name(category: Category) -> &'static str {

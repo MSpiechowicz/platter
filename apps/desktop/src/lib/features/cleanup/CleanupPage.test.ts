@@ -48,6 +48,7 @@ describe('the Cleanup view', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     settings.reduceMotion = false;
     restore();
   });
@@ -131,6 +132,28 @@ describe('the Cleanup view', () => {
 
     cleanup.phase = { kind: 'idle' };
     await waitFor(() => expect(fetched).toHaveBeenCalledTimes(2));
+  });
+
+  it('fetches the suggestions again when the units change, but not while a cleanup is planned or runs', async () => {
+    render(App);
+    await openCleanup();
+    await screen.findAllByText('Pacman package cache', undefined, { timeout: 3000 });
+
+    const fetched = vi.spyOn(api, 'getSuggestions');
+
+    settings.set('units', 'GiB');
+    await waitFor(() => expect(fetched).toHaveBeenCalledTimes(1));
+    expect(fetched).toHaveBeenLastCalledWith(expect.any(Number), 'GiB');
+
+    cleanup.phase = { kind: 'planning' };
+    settings.set('units', 'GB');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(fetched).toHaveBeenCalledTimes(1);
+
+    cleanup.phase = { kind: 'idle' };
+    await waitFor(() => expect(fetched).toHaveBeenCalledTimes(2));
+    expect(fetched).toHaveBeenLastCalledWith(expect.any(Number), 'GB');
   });
 
   it('shares its selection with the list: "All" in the list ticks every group of the chart', async () => {

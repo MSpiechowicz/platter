@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { COLLAPSED_NODE_ID } from '../../api/client';
   import type { NodeDto, NodeId } from '../../api/types';
@@ -142,8 +142,16 @@
     }
   }
 
+  // A new layout replaces the columns. A late colour must not: it only repaints them (below), so the picture is
+  // neither cleared nor refitted and the columns do not grow again.
   $effect(() => {
-    scene?.setLayout(layout, colors);
+    const current = untrack(() => colors);
+
+    scene?.setLayout(layout, current);
+  });
+
+  $effect(() => {
+    scene?.setColors(colors);
   });
 
   $effect(() => {

@@ -96,10 +96,6 @@ impl Picker<'_> {
 
     fn run(&mut self) {
         while let Some((_, Reverse(raw), parent)) = self.heap.pop() {
-            if self.used >= self.budget {
-                break;
-            }
-
             let id = NodeId(raw);
             let cost = self.cost_of_admitting(parent);
             if self.used + cost > self.budget {
@@ -192,12 +188,7 @@ impl Picker<'_> {
             *slot = slot.saturating_add(tree.allocated(id));
         }
 
-        let (best, _) = by_category
-            .iter()
-            .enumerate()
-            .max_by_key(|&(index, &bytes)| (bytes, Reverse(index)))
-            .unwrap_or((Category::Other.index(), &0));
-        dto.category = Category::ALL[best];
+        dto.category = Category::heaviest(&by_category).unwrap_or(Category::Other);
         dto.mtime = wire_mtime(dto.mtime);
         dto.name = if count == 1 {
             "1 smaller item".to_owned()

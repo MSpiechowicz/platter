@@ -21,7 +21,7 @@ export function toDto(node: MockNode): NodeDto {
 
 /**
  * The category holding the most bytes of `nodes`; on a tie the one that comes first in the category list. Like the
- * backend, items without any size at all give the first category, `video`.
+ * backend, items without any size at all give `other`.
  */
 function heaviestCategory(nodes: MockNode[]): Category {
   const bytes = new Map<Category, number>();
@@ -31,7 +31,7 @@ function heaviestCategory(nodes: MockNode[]): Category {
   }
 
   let best: Category = 'other';
-  let most = -1;
+  let most = 0;
 
   for (const category of CATEGORIES) {
     const value = bytes.get(category) ?? 0;

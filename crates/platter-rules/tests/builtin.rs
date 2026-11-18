@@ -7,7 +7,8 @@ use std::collections::HashSet;
 use common::*;
 use platter_core::dto::Verdict;
 use platter_core::testing::FakeFs;
-use platter_rules::RuleSet;
+use platter_core::units::{Units, format_size};
+use platter_rules::{Explainer, RuleSet, evaluate_with_units};
 
 #[test]
 fn rule_ids_and_titles_are_unique_and_reasons_leave_no_placeholder_behind() {
@@ -124,7 +125,7 @@ fn the_texts_name_what_was_found_and_never_the_real_home() {
 
     let images = get(&found, "disk-images").unwrap();
     assert!(
-        images.reason.starts_with("1 image of 1 GiB or more"),
+        images.reason.starts_with("1 image of 1.0 GiB or more"),
         "{}",
         images.reason
     );
@@ -134,6 +135,63 @@ fn the_texts_name_what_was_found_and_never_the_real_home() {
         assert!(!suggestion.path.contains(HOME), "{suggestion:?}");
         assert!(!suggestion.reason.contains(['{', '}']), "{suggestion:?}");
     }
+}
+
+#[test]
+fn the_size_in_a_reason_is_written_in_the_units_asked_for() {
+    let tree = scan_at(&laptop(), "/", false);
+    let rules = RuleSet::builtin();
+    let threshold = 1u64 << 30;
+
+    for units in [Units::Decimal, Units::Binary] {
+        let found = evaluate_with_units(&tree, &env(), &rules, &[], units);
+        let reason = get(&found, "disk-images").unwrap().reason.clone();
+
+        assert_eq!(
+            reason,
+            format!(
+                "1 image of {} or more in your home folder. Often a whole virtual machine, so check before removing one.",
+                format_size(threshold, units)
+            )
+        );
+    }
+
+    let decimal = evaluate_with_units(&tree, &env(), &rules, &[], Units::Decimal);
+    let binary = evaluate_with_units(&tree, &env(), &rules, &[], Units::Binary);
+    assert!(
+        get(&decimal, "disk-images")
+            .unwrap()
+            .reason
+            .contains("1.1 GB or more")
+    );
+    assert!(
+        get(&binary, "disk-images")
+            .unwrap()
+            .reason
+            .contains("1.0 GiB or more")
+    );
+
+    // Only the wording of the reason differs.
+    let strip = |found: &platter_rules::Suggestions| {
+        found
+            .suggestions
+            .iter()
+            .map(|s| (s.id.clone(), s.allocated, s.items))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(strip(&decimal), strip(&binary));
+}
+
+#[test]
+fn the_explainer_writes_the_size_in_the_units_asked_for() {
+    let tree = scan_at(&laptop(), "/", false);
+    let node = find(&tree, "home/u/VMs/win11.qcow2");
+
+    let decimal = Explainer::with_units(&tree, &env(), &RuleSet::builtin(), Units::Decimal);
+    let binary = Explainer::new(&tree, &env(), &RuleSet::builtin());
+
+    assert!(decimal.covering(node).unwrap().reason.contains("1.1 GB or more"));
+    assert!(binary.covering(node).unwrap().reason.contains("1.0 GiB or more"));
 }
 
 #[test]

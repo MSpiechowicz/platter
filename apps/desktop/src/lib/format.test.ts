@@ -6,9 +6,8 @@ import {
   formatDate,
   formatDateTime,
   formatDuration,
-  formatPercent,
-  formatShare,
   formatSize,
+  percentText,
 } from './format';
 
 const GB = 1_000_000_000;
@@ -111,13 +110,6 @@ describe('formatDateTime', () => {
   });
 });
 
-describe('formatPercent', () => {
-  it('rounds a fraction to a whole percent', () => {
-    expect(formatPercent(0.7421)).toBe('74%');
-    expect(formatPercent(1)).toBe('100%');
-  });
-});
-
 describe('baseName', () => {
   it('returns the last segment', () => {
     expect(baseName('/dev/nvme0n1p2')).toBe('nvme0n1p2');
@@ -126,11 +118,57 @@ describe('baseName', () => {
   });
 });
 
-describe('formatShare', () => {
-  it('is a plain percentage, but "<1%" for a share that is not nothing', () => {
-    expect(formatShare(0.46)).toBe('46%');
-    expect(formatShare(0.0099)).toBe('<1%');
-    expect(formatShare(0.01)).toBe('1%');
-    expect(formatShare(0)).toBe('0%');
+describe('percentText', () => {
+  it('rounds to a whole percent', () => {
+    expect(percentText(0.7421)).toBe('74%');
+    expect(percentText(0.46)).toBe('46%');
+    expect(percentText(0.01)).toBe('1%');
+  });
+
+  it('reads 0% only for nothing, and for what is not a number', () => {
+    expect(percentText(0)).toBe('0%');
+    expect(percentText(-0.2)).toBe('0%');
+    expect(percentText(Number.NaN)).toBe('0%');
+  });
+
+  it('reads "<1%" for a share that is not nothing but is under one per cent', () => {
+    expect(percentText(1e-9)).toBe('<1%');
+    expect(percentText(0.0049)).toBe('<1%');
+    expect(percentText(0.0099)).toBe('<1%');
+  });
+
+  it('reads 100% only when the share is exactly all of it', () => {
+    expect(percentText(1)).toBe('100%');
+    expect(percentText(0.9999)).toBe('99%');
+    expect(percentText(0.995)).toBe('99%');
+    expect(percentText(0.99996)).toBe('99%');
+    // More than the whole (shared blocks on btrfs) is not capped.
+    expect(percentText(1.2)).toBe('120%');
+  });
+
+  describe('fine', () => {
+    const fine = { fine: true };
+
+    it('keeps one decimal under 10% and rounds from there', () => {
+      expect(percentText(0.013, fine)).toBe('1.3%');
+      expect(percentText(0.002, fine)).toBe('0.2%');
+      expect(percentText(0.0996, fine)).toBe('10%');
+      expect(percentText(0.97, fine)).toBe('97%');
+      expect(percentText(0.46, fine)).toBe('46%');
+    });
+
+    it('reads "<0.1%" under a tenth of a per cent, and 0% for nothing', () => {
+      expect(percentText(0.0004, fine)).toBe('<0.1%');
+      expect(percentText(0.00099, fine)).toBe('<0.1%');
+      expect(percentText(0.001, fine)).toBe('0.1%');
+      expect(percentText(0, fine)).toBe('0%');
+    });
+
+    it('never reads 100% unless exact, and stops at 99.9%', () => {
+      expect(percentText(1, fine)).toBe('100%');
+      expect(percentText(0.99996, fine)).toBe('99.9%');
+      expect(percentText(0.9951, fine)).toBe('99.5%');
+      expect(percentText(0.994, fine)).toBe('99%');
+    });
   });
 });

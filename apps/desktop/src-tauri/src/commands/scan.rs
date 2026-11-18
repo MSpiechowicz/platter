@@ -103,13 +103,17 @@ pub async fn start_pinned(
         move || excluded_identities(&platform, &root, &excluded)
     })
     .await?;
+
+    // The scans share one budget of memory: this one gets what the running scans and the kept tree leave.
+    let (id, cancel, grant) = state
+        .scans
+        .begin_within(platter_platform::available_memory_bytes())?;
     let config = ScanConfig {
         excluded,
         excluded_unresolved,
+        max_memory_bytes: Some(grant),
         ..scan_config(options.one_file_system, resolved.identity)
     };
-
-    let (id, cancel) = state.scans.begin()?;
 
     let platform = Arc::clone(&state.platform);
     let registry = Arc::clone(&state.scans);
@@ -150,8 +154,9 @@ fn recording(history: Arc<HistoryService>, root: PathBuf, emit: EmitFn) -> EmitF
 ///
 /// `identity` makes the scan refuse to run if the folder was swapped for another one since it was
 /// resolved. The memory budget is half of what is free right now, so a huge folder ends in a clear
-/// message ("needs more memory than Platter may use for a scan") instead of an out-of-memory kill; the
-/// entry cap is only the hard limit of the node ids.
+/// message ("needs more than the memory Platter may use for scans") instead of an out-of-memory kill; the
+/// entry cap is only the hard limit of the node ids. The app replaces the budget with the scan's share of
+/// the one budget all scans use (`ScanRegistry::begin_within`).
 pub fn scan_config(one_file_system: bool, identity: Option<(u64, u64)>) -> ScanConfig {
     ScanConfig {
         one_file_system,

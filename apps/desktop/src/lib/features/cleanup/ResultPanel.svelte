@@ -2,6 +2,7 @@
   import Bar from '../../components/ui/Bar.svelte';
   import Button from '../../components/ui/Button.svelte';
   import Card from '../../components/ui/Card.svelte';
+  import { percentText } from '../../format';
   import type { CleanupStore } from '../../state/cleanup.svelte';
   import { fmt } from '../../state/fmt.svelte';
   import { footerStatus } from '../overview/cleanupText';
@@ -20,7 +21,6 @@
   const status = $derived(footerStatus(store));
   const canUndo = $derived(store.actions.includes('undo'));
 
-  const percent = (share: number): string => `${Math.round(share * 100)}%`;
   // A bar's share of the whole volume, or of what the scan counted for a folder.
   const unit = $derived(basis.capacity === undefined ? 'scanned' : 'used');
 </script>
@@ -42,7 +42,7 @@
       <div>
         <div class="row">
           <span>Before</span>
-          <span class="num">{fmt.size(bars.before.used)} {unit} · {percent(bars.before.share)}</span>
+          <span class="num">{fmt.size(bars.before.used)} {unit} · {percentText(bars.before.share)}</span>
         </div>
         <Bar size="thick" value={bars.before.share} color="var(--slate)" label="Before the cleanup" />
       </div>
@@ -51,7 +51,7 @@
         <div class="row">
           <span>After</span>
           {#if bars.after}
-            <span class="num">{fmt.size(bars.after.used)} {unit} · {percent(bars.after.share)}</span>
+            <span class="num">{fmt.size(bars.after.used)} {unit} · {percentText(bars.after.share)}</span>
           {:else}
             <span>Not measured</span>
           {/if}

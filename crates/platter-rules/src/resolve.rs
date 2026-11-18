@@ -94,3 +94,29 @@ pub(crate) fn has_sibling_file(tree: &Tree, node: NodeId, marker: &str) -> bool 
 
     child_named(tree, parent, marker.as_bytes()).is_some_and(|sibling| tree.kind(sibling) == NodeKind::File)
 }
+
+/// The nearest folder, from the parent of `node` up to and including the scan root, that holds every one
+/// of `markers` as a regular file (not a folder, link or mount). `None` when there is none, and for no
+/// markers. Only folders inside the scan are looked at: a workspace above the scan root is not seen.
+///
+/// This is the one place that decides the workspace alternative of a name rule. The cleanup plan asks it
+/// for the folder it has to check again before it acts.
+pub fn workspace_root(tree: &Tree, node: NodeId, markers: &[&str]) -> Option<NodeId> {
+    if markers.is_empty() {
+        return None;
+    }
+
+    let mut folder = tree.parent(node);
+    while let Some(dir) = folder {
+        let holds_all = markers.iter().all(|marker| {
+            child_named(tree, dir, marker.as_bytes()).is_some_and(|file| tree.kind(file) == NodeKind::File)
+        });
+        if holds_all {
+            return Some(dir);
+        }
+
+        folder = tree.parent(dir);
+    }
+
+    None
+}

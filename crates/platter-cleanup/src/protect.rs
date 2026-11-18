@@ -533,14 +533,21 @@ fn below(base: &[Vec<u8>], names: &str, separator: char) -> Vec<Vec<u8>> {
 }
 
 /// Where the personal folder `dir` is: as the environment says, else under its default name below the
-/// home folder. Joined by parts, so a Windows environment is read right on any OS.
+/// home folder. An entry with an empty path is the "missing" mark of Downloads and says nothing about
+/// where a protected folder is, so it counts as no entry. Joined by parts, so a Windows environment is
+/// read right on any OS.
 fn user_dir_parts(
     env: &Environment,
     style: PathStyle,
     home_parts: &[Vec<u8>],
     dir: UserDir,
 ) -> Option<Vec<Vec<u8>>> {
-    if let Some((_, path)) = env.user_dirs.iter().find(|(kind, _)| *kind == dir) {
+    let listed = env
+        .user_dirs
+        .iter()
+        .find(|(kind, path)| *kind == dir && !path.as_os_str().is_empty());
+
+    if let Some((_, path)) = listed {
         return style.owned(path.as_os_str().as_encoded_bytes());
     }
 
@@ -593,6 +600,18 @@ mod tests {
             "C:\\Program Files",
         ] {
             assert!(protected.hit_for(&parts(other), true).is_some(), "{other}");
+        }
+    }
+
+    #[test]
+    fn an_empty_path_listed_for_a_personal_folder_does_not_unprotect_it() {
+        let mut env = environment();
+        env.user_dirs.push((UserDir::Documents, PathBuf::new()));
+
+        let protected = Protected::for_environment(&env).unwrap();
+
+        for target in ["C:\\Users\\Me\\Documents", "C:\\Users\\Me\\Documents\\work"] {
+            assert!(protected.hit(&parts(target)).is_some(), "{target}");
         }
     }
 

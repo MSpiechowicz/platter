@@ -10,6 +10,11 @@ description = "Platter OS adapters: directory readers and volume listing impleme
 [lints]
 workspace = true
 
+# The root helper that `pkexec` runs for the deb and rpm packages (Linux). On other systems it only exits.
+[[bin]]
+name = "platter-elevate"
+path = "src/bin/platter-elevate.rs"
+
 [features]
 # Exposes `platter_platform::testing`, OS-specific helpers for other crates' tests.
 testing = []

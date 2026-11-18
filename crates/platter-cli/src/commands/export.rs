@@ -11,7 +11,7 @@ use super::{CliResult, scan_path};
 use crate::args::ExportArgs;
 use crate::format;
 
-/// The file the frontend mock loads: `{ volume?, totals, root, summary }`.
+/// The snapshot file: `{ volume?, totals, root, summary }`. The web view does not load it (its mock builds its own tree).
 #[derive(Serialize)]
 struct Fixture {
     #[serde(skip_serializing_if = "Option::is_none")]

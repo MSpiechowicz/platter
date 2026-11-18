@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use platter_core::dto::{SuggestionDto, SuggestionSource, SuggestionsDto, Verdict, VerdictTotals};
+use platter_core::units::Units;
 use platter_core::{Environment, ModelLabel, ModelVerdict, NodeId, NodeKind, Os, Tree};
 
 use crate::display::{join, shorten_home};
@@ -11,7 +12,7 @@ use crate::explain::Explainer;
 use crate::found::Found;
 use crate::plan::{Plan, Role, kept_root, named_of};
 use crate::reason::{Facts, render};
-use crate::resolve::{has_sibling_file, same_os_str};
+use crate::resolve::{has_sibling_file, same_os_str, workspace_root};
 use crate::rule::{Files, Matcher, Named, Rule, RuleSet};
 
 /// The result of [`evaluate`]: what could be cleaned, labelled by verdict.
@@ -49,6 +50,18 @@ const ADVISOR_REASON: &str = "The local model thinks these folders hold data tha
 /// scan root, unreadable and empty folders are not listed. A scan that starts inside a kept folder gets no
 /// suggestions at all. With no labels this is exactly [`evaluate`].
 pub fn evaluate_with(tree: &Tree, env: &Environment, rules: &RuleSet, labels: &[ModelLabel]) -> Suggestions {
+    evaluate_with_units(tree, env, rules, labels, Units::Binary)
+}
+
+/// [`evaluate_with`], with the sizes in the reasons written in `units` (`1.1 GB` or `1.0 GiB`). The other
+/// functions write them in binary units.
+pub fn evaluate_with_units(
+    tree: &Tree,
+    env: &Environment,
+    rules: &RuleSet,
+    labels: &[ModelLabel],
+    units: Units,
+) -> Suggestions {
     let Some((verdicts, found)) = run(tree, env, rules) else {
         return Suggestions {
             suggestions: Vec::new(),
@@ -57,7 +70,7 @@ pub fn evaluate_with(tree: &Tree, env: &Environment, rules: &RuleSet, labels: &[
     };
 
     let advisor = advisor_found(tree, rules.rules(), &verdicts, &found, labels);
-    assemble(tree, env, rules.rules(), &verdicts, found, advisor)
+    assemble(tree, env, rules.rules(), &verdicts, found, advisor, units)
 }
 
 /// What the model's `review` labels cover, after the folders the rules have an opinion on are left out.
@@ -73,7 +86,8 @@ fn advisor_found(
         return advisor;
     }
 
-    let explainer = Explainer::from_found(tree, rules, verdicts, found);
+    // Only the places are asked of it, never a reason, so the units do not matter.
+    let explainer = Explainer::from_found(tree, rules, verdicts, found, Units::Binary);
     let mut nodes: Vec<NodeId> = labels
         .iter()
         .filter(|label| label.verdict == ModelVerdict::Review)
@@ -143,6 +157,20 @@ pub fn matches(tree: &Tree, env: &Environment, rules: &RuleSet) -> Vec<RuleMatch
 /// Whether the scan starts inside a folder a `keep` rule protects: then nothing in it may be cleaned.
 pub fn scan_is_kept(tree: &Tree, env: &Environment, rules: &RuleSet) -> bool {
     kept_root(tree, env, rules).is_some()
+}
+
+/// Whether a rule other than a keep would claim the folder that was scanned, were it not the scan root.
+/// The scan root itself is never a suggestion (only a keep claims it), so an answer about a scan of, say,
+/// `~/.cache` says why nothing of it is listed.
+pub fn scan_root_is_claimed(tree: &Tree, env: &Environment, rules: &RuleSet) -> bool {
+    let plan = Plan::new(tree, env, rules);
+    let root = tree.root();
+
+    plan.is_anchor(root)
+        && plan
+            .anchors_at(root)
+            .iter()
+            .any(|anchor| anchor.role == Role::Claim && rules.rules()[anchor.rule].verdict != Verdict::Keep)
 }
 
 /// The single pass. `None` when the scan starts inside a kept folder, so nothing may be suggested.
@@ -293,7 +321,12 @@ impl Walker<'_> {
     }
 
     /// The first rule, in table order, that matches this directory, with the index of the matched name.
+    ///
+    /// The scan root is only ever matched by a `keep` claim. Whatever else claims it (a scan of
+    /// `~/.cache` itself) is not offered: the folder the user chose to look at is not a suggestion.
     fn matching_rule(&self, node: NodeId) -> Option<(usize, Option<usize>)> {
+        // The scan root has no parent in the tree, so a name rule cannot check its surroundings.
+        let is_root = self.tree.parent(node).is_none();
         let mut best: Option<(usize, Option<usize>)> = None;
 
         if self.plan.is_anchor(node) {
@@ -308,12 +341,13 @@ impl Walker<'_> {
                 return Some((anchor.rule, None));
             }
 
-            best = claims().next().map(|anchor| (anchor.rule, None));
+            if !is_root {
+                best = claims().next().map(|anchor| (anchor.rule, None));
+            }
         }
 
-        // The scan root has no parent in the tree, so a name rule cannot check its surroundings.
-        if self.tree.parent(node).is_none() {
-            return best;
+        if is_root {
+            return None;
         }
 
         for &index in &self.plan.named {
@@ -355,6 +389,7 @@ impl Walker<'_> {
                 .sibling_any
                 .iter()
                 .any(|marker| has_sibling_file(self.tree, node, marker))
+            && workspace_root(self.tree, node, rule.workspace_root).is_none()
         {
             return None;
         }
@@ -461,6 +496,7 @@ fn assemble(
     verdicts: &[Verdict],
     found: Vec<Found>,
     advisor: Found,
+    units: Units,
 ) -> Suggestions {
     let mut totals = VerdictTotals::default();
     let mut ranked: Vec<(usize, SuggestionDto)> = Vec::new();
@@ -474,6 +510,7 @@ fn assemble(
             count: found.items,
             days: rule.matcher.age_days(),
             min_bytes: rule.matcher.min_bytes(),
+            units,
         };
         let verdict = verdicts[index];
         let total = match verdict {

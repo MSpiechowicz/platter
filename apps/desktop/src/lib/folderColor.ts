@@ -40,9 +40,6 @@ export function childColors(
 /** How many of a folder's biggest children are looked at to find a child's colour. */
 export const COLOR_CHILDREN = 16;
 
-/** How many levels below the scan root get a colour of their own; deeper folders keep the colour of that level. */
-export const COLOR_DEPTH = 12;
-
 export interface FolderColorResolver {
   /** The colour of a folder, found from the tree (and remembered). The scan root has none: it answers slate. */
   colorOf(node: NodeId): Promise<string>;
@@ -96,35 +93,29 @@ export function createFolderColorResolver(api: Api, scan: ScanId): FolderColorRe
   const resolve = async (node: NodeId): Promise<string> => {
     const path = await api.getPath(scan, node);
     const ids = path.segments.map((segment) => segment.id);
-    const levels = ids.slice(0, COLOR_DEPTH + 1);
 
     // The scan root has no colour; slate stands in for it where a colour is needed, and is not remembered
     // (the children of the root take the palette from its first colour).
-    if (levels.length === 1) {
+    if (ids.length === 1) {
       return known.get(node) ?? SLATE;
     }
 
     // The deepest known colour wins; the walk starts below it.
-    let start = levels.length - 1;
+    let start = ids.length - 1;
 
-    while (start > 0 && !known.has(levels[start] as NodeId)) {
+    while (start > 0 && !known.has(ids[start] as NodeId)) {
       start--;
     }
 
-    let color: string | null = known.get(levels[start] as NodeId) ?? null;
+    let color: string | null = known.get(ids[start] as NodeId) ?? null;
 
-    for (let depth = start; depth < levels.length - 1; depth++) {
-      const parent = levels[depth] as NodeId;
-      const child = levels[depth + 1] as NodeId;
+    for (let depth = start; depth < ids.length - 1; depth++) {
+      const parent = ids[depth] as NodeId;
+      const child = ids[depth + 1] as NodeId;
 
       remember(childColors(color, await biggestChildren(parent)));
       color = known.get(child) ?? SLATE;
       known.set(child, color);
-    }
-
-    // A folder deeper than the limit has the colour of the folder at the limit.
-    if (!known.has(node)) {
-      known.set(node, color ?? SLATE);
     }
 
     return known.get(node) as string;

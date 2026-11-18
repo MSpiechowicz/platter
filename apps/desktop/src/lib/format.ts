@@ -131,14 +131,46 @@ export function formatDateTime(unixSeconds: number): string {
   return Number.isNaN(date.getTime()) ? UNKNOWN : DATE_TIME_FORMAT.format(date);
 }
 
-/** "74%" from a fraction. */
-export function formatPercent(fraction: number): string {
-  return `${Math.round(fraction * 100)}%`;
+export interface PercentOptions {
+  /** One decimal under 10%, and the smallest step is 0.1%. For a share that is often small. */
+  fine?: boolean;
 }
 
-/** "74%", or "<1%" for a share that is not nothing but rounds down to it. */
-export function formatShare(fraction: number): string {
-  return fraction > 0 && fraction < 0.01 ? '<1%' : formatPercent(fraction);
+/**
+ * Every percentage the app shows. It never reads "100%" unless the share is exactly 1 or more, so "99.6%" reads
+ * "99%", and never "0%" for a share that is not nothing: it reads "<1%" (fine: "<0.1%") under the smallest step.
+ * Nothing, or a value that is not a number, reads "0%". Fine reads "99.5%" and up as one decimal, at most "99.9%".
+ */
+export function percentText(fraction: number, { fine = false }: PercentOptions = {}): string {
+  if (!(fraction > 0)) {
+    return '0%';
+  }
+
+  if (fraction >= 1) {
+    return `${Math.round(fraction * 100)}%`;
+  }
+
+  const percent = fraction * 100;
+  const step = fine ? 0.1 : 1;
+
+  if (percent < step) {
+    return `<${step}%`;
+  }
+
+  if (fine) {
+    if (percent < 10) {
+      const tenths = Math.round(percent * 10) / 10;
+
+      // 9.96 rounds to 10.0 and reads "10%".
+      return tenths < 10 ? `${tenths.toFixed(1)}%` : '10%';
+    }
+
+    if (percent >= 99.5) {
+      return `${Math.min(99.9, Math.round(percent * 10) / 10).toFixed(1)}%`;
+    }
+  }
+
+  return `${Math.min(99, Math.round(percent))}%`;
 }
 
 /** The last path segment: "/dev/nvme0n1p2" gives "nvme0n1p2", "C:\\Users\\me" gives "me". */

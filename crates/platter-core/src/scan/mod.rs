@@ -195,7 +195,7 @@ pub fn scan<S: DirSource>(
     if let Some(hit) = budget.limit_hit() {
         let limit = match hit {
             LimitHit::Entries => ScanLimit::Entries(max_entries),
-            LimitHit::NameBytes => ScanLimit::Memory(max_name_bytes),
+            LimitHit::NameBytes => ScanLimit::Names(max_name_bytes),
             LimitHit::Memory => ScanLimit::Memory(max_memory_bytes),
         };
         return Err(ScanError::TooLarge { limit });
@@ -214,6 +214,7 @@ pub fn scan<S: DirSource>(
             expected_dirs: reporter.dirs(),
             expected_name_bytes: name_bytes,
             entry_limit: max_entries,
+            name_limit,
             warnings,
         },
     )

@@ -45,4 +45,35 @@ describe('Look', () => {
 
     expect(material.color.getHex()).toBe((fresh.fills[0] as Look['fills'][number]).color.getHex());
   });
+
+  it('takes another colour in place, so the boxes that share its materials change without being made again', () => {
+    const look = new Look('#808080', DARK, COLUMN_MIX);
+    const fill = look.fills[2] as Look['fills'][number];
+    const edge = look.edges[2] as Look['edges'][number];
+    const fresh = new Look('#d6739f', DARK, COLUMN_MIX);
+
+    expect(look.recolor('#d6739f', DARK, COLUMN_MIX)).toBe(true);
+    look.paint(false, false);
+    fresh.paint(false, false);
+
+    expect(look.fills[2]).toBe(fill);
+    expect(look.edges[2]).toBe(edge);
+    expect(fill.color.getHex()).toBe((fresh.fills[2] as Look['fills'][number]).color.getHex());
+    expect(edge.color.getHex()).toBe((fresh.edges[2] as Look['edges'][number]).color.getHex());
+    expect((look.quietFills[0] as Look['fills'][number]).color.getHex()).toBe(
+      (fresh.quietFills[0] as Look['fills'][number]).color.getHex(),
+    );
+  });
+
+  it('says the colour did not change when it is asked for again, and leaves the materials as they are', () => {
+    const look = new Look('#3ec5d8', DARK, COLUMN_MIX);
+    const fill = look.fills[1] as Look['fills'][number];
+
+    look.paint(true, false);
+
+    const dimmed = fill.color.getHex();
+
+    expect(look.recolor('#3ec5d8', DARK, COLUMN_MIX)).toBe(false);
+    expect(fill.color.getHex()).toBe(dimmed);
+  });
 });

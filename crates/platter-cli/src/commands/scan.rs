@@ -89,7 +89,7 @@ fn render_text(report: &Report) -> String {
             .map(|child| {
                 vec![
                     format::bytes(child.allocated),
-                    format!("{:.1}%", format::percent(child.allocated, totals.allocated)),
+                    format::percent_text(format::fraction(child.allocated, totals.allocated)),
                     format!("{:?}", child.kind).to_lowercase(),
                     format::display(&child.name),
                 ]

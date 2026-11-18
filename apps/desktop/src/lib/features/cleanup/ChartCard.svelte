@@ -1,5 +1,6 @@
 <script lang="ts">
   import Card from '../../components/ui/Card.svelte';
+  import { percentText } from '../../format';
   import { countUp } from '../../motion/countUp.svelte';
   import type { CleanupStore } from '../../state/cleanup.svelte';
   import { fmt } from '../../state/fmt.svelte';
@@ -72,7 +73,7 @@
 
     const used = fmt.size(after.used);
 
-    return after.share === undefined ? `${used} scanned` : `${used} used · ${Math.round(after.share * 100)}%`;
+    return after.share === undefined ? `${used} scanned` : `${used} used · ${percentText(after.share)}`;
   });
 
   const freed = $derived.by(() => {

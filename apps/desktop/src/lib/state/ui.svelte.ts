@@ -37,11 +37,19 @@ export class UiStore {
     this.page = page;
   }
 
-  /** `color` is the folder's colour (see `folderColor.ts`), when the caller already has it. */
+  /**
+   * `color` is the folder's colour (see `folderColor.ts`), when the caller already has it. While no scan is ready
+   * the id belongs to no scan, so nothing is kept (and an older place goes too) and only the page changes.
+   */
   openInExplorer(nodeId: NodeId, color?: string): void {
-    this.explorerFocus = nodeId;
-    this.explorerFocusColor = color;
-    this.explorerScan = scan.state.status === 'ready' ? scan.state.scanId : undefined;
+    if (scan.state.status === 'ready') {
+      this.explorerFocus = nodeId;
+      this.explorerFocusColor = color;
+      this.explorerScan = scan.state.scanId;
+    } else {
+      this.forgetExplorer();
+    }
+
     this.page = 'explorer';
   }
 

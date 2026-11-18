@@ -287,7 +287,16 @@ fn too_large_tells_the_user_what_happened_in_plain_words_and_names_the_limit_tha
     .to_string();
     assert_eq!(
         memory,
-        "This folder needs more memory than Platter may use for a scan (limit 6 GiB, half of the memory that is free). Scan a smaller folder."
+        "This folder needs more than the memory Platter may use for scans (limit 6 GiB). Scan a smaller folder."
+    );
+
+    let names = ScanError::TooLarge {
+        limit: ScanLimit::Names(4 << 30),
+    }
+    .to_string();
+    assert_eq!(
+        names,
+        "The names in this folder take more memory than Platter can hold (limit 4 GiB of names). Scan a smaller folder."
     );
 
     // A machine with little free memory is told so: the folder is not necessarily big.
@@ -297,7 +306,7 @@ fn too_large_tells_the_user_what_happened_in_plain_words_and_names_the_limit_tha
     .to_string();
     assert_eq!(
         little,
-        "There is very little free memory right now, so Platter may use only 100 MiB for a scan, which fits only a small folder. Close other programs or scan a smaller folder."
+        "There is very little free memory right now, so the memory Platter may use for scans is only 100 MiB, which fits only a small folder. Close other programs or scan a smaller folder."
     );
 }
 
@@ -389,13 +398,23 @@ fn the_walk_aborts_as_soon_as_the_name_bytes_would_pass_the_limit() {
         )
     };
 
-    assert!(matches!(run(Some(total / 4)), Err(ScanError::TooLarge { .. })));
+    assert!(matches!(
+        run(Some(total / 4)),
+        Err(ScanError::TooLarge {
+            limit: ScanLimit::Names(limit)
+        }) if limit == total / 4
+    ));
     assert!(
         fs.read_dirs().len() < 10,
         "the scan stopped long before reading every directory: {}",
         fs.read_dirs().len()
     );
-    assert!(matches!(run(Some(total - 1)), Err(ScanError::TooLarge { .. })));
+    assert!(matches!(
+        run(Some(total - 1)),
+        Err(ScanError::TooLarge {
+            limit: ScanLimit::Names(limit)
+        }) if limit == total - 1
+    ));
     assert!(run(Some(total)).is_ok(), "exactly at the limit is fine");
     assert!(run(None).is_ok());
 }

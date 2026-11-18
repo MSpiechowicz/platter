@@ -1,3 +1,5 @@
+import { percentText } from '../../../format';
+
 /**
  * The readable-minimum scale. Pure proportional areas make a 1% folder on a 1 TB disk an unreadable sliver, so the
  * biggest few small folders get the area they need to show a name and a size, and everything else shares what is
@@ -113,15 +115,5 @@ export function splitReadable(
 
 /** `0.013` reads "1.3%", `0.97` "97%", something under a tenth of a per cent "<0.1%". */
 export function formatShare(share: number): string {
-  const percent = share * 100;
-
-  if (percent < 0.1) {
-    return '<0.1%';
-  }
-
-  if (percent < 10) {
-    return `${percent.toFixed(1)}%`;
-  }
-
-  return `${Math.round(percent)}%`;
+  return percentText(share, { fine: true });
 }

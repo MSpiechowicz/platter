@@ -18,10 +18,11 @@ function shade(background: Color, color: Color, percent: number): Color {
  * How one column is painted: a fill material and an edge material for each of its three levels.
  * Boxes of the same column and level share them, so a column is lit or dimmed by changing three materials.
  * The colours are mixed towards the page background, so a new background (the theme changed) repaints the materials
- * in place with `retheme`, and `paint` applies the highlight again.
+ * in place with `retheme`, and `paint` applies the highlight again. A new colour for the column does the same with
+ * `recolor`.
  */
 export class Look {
-  readonly #color: Color;
+  #color: Color;
   #base: Color[] = [];
   #dark: Color[] = [];
   #quietBase: Color[] = [];
@@ -36,6 +37,23 @@ export class Look {
   constructor(color: string, background: Color, mixes: readonly number[]) {
     this.#color = new Color(color);
     this.retheme(background, mixes);
+  }
+
+  /**
+   * Gives the column another colour, in place. Answers whether the colour changed: when it did, `paint` must be
+   * called to apply the highlight again.
+   */
+  recolor(color: string, background: Color, mixes: readonly number[]): boolean {
+    const next = new Color(color);
+
+    if (next.equals(this.#color)) {
+      return false;
+    }
+
+    this.#color = next;
+    this.retheme(background, mixes);
+
+    return true;
   }
 
   /** Mixes every colour of the column towards `background`. */

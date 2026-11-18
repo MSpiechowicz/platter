@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use platter_core::dto::{ApiErrorCode, ScanEvent, ScanOptions, SuggestionDto, SuggestionSource, Verdict};
 use platter_core::testing::{FakeFs, scan_fake};
-use platter_core::{MAX_USER_RULES, ModelLabel, ModelVerdict};
+use platter_core::{MAX_USER_RULES, ModelLabel, ModelVerdict, Units};
 use serde_json::json;
 
 use super::*;
@@ -80,7 +80,7 @@ fn code_of<T: std::fmt::Debug>(result: CommandResult<T>) -> ApiErrorCode {
 fn suggestions_of(state: &AppState, scan: ScanId) -> Vec<SuggestionDto> {
     let view = state.user_rules.view();
 
-    suggestions::suggestions(&state.scans, &state.platform, scan, false, &view)
+    suggestions::suggestions(&state.scans, &state.platform, scan, false, &view, Units::Decimal)
         .unwrap()
         .suggestions
 }
@@ -392,12 +392,20 @@ fn a_suggestion_is_not_listed_inside_a_folder_kept_through_a_link() {
         // A scan of its own each time: the suggestions are kept with the scan.
         let scan = register(state, fs);
 
-        suggestions::suggestions_with(&state.scans, &state.platform, probe, scan, false, view)
-            .unwrap()
-            .suggestions
-            .into_iter()
-            .map(|suggestion| suggestion.id)
-            .collect()
+        suggestions::suggestions_with(
+            &state.scans,
+            &state.platform,
+            probe,
+            scan,
+            false,
+            view,
+            Units::Decimal,
+        )
+        .unwrap()
+        .suggestions
+        .into_iter()
+        .map(|suggestion| suggestion.id)
+        .collect()
     }
 
     // Where the link leads is not known (the disk cannot say): kept by its own path alone, as before.

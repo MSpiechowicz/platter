@@ -3,7 +3,7 @@
   import Bar from '../../components/ui/Bar.svelte';
   import Card from '../../components/ui/Card.svelte';
   import { tooltip } from '../../components/ui/tooltip.svelte';
-  import { formatShare } from '../../format';
+  import { percentText } from '../../format';
   import { fmt } from '../../state/fmt.svelte';
   import { typeRows, type TypeRow } from './fileTypes';
 
@@ -33,7 +33,7 @@
           {@render cells(row)}
         </div>
       {:else}
-        <div class="type" title="{formatShare(row.share)} of the scanned space">
+        <div class="type" title="{percentText(row.share)} of the scanned space">
           {@render cells(row)}
         </div>
       {/if}

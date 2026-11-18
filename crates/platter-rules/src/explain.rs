@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use platter_core::dto::{SuggestionSource, Verdict};
+use platter_core::units::Units;
 use platter_core::{Environment, NodeId, Tree};
 
 use crate::evaluate::{run, source_of};
@@ -51,16 +52,27 @@ pub struct Explainer<'a> {
 }
 
 impl<'a> Explainer<'a> {
-    /// Runs the rules over `tree` once.
+    /// Runs the rules over `tree` once. The sizes in the reasons are written in binary units.
     pub fn new(tree: &'a Tree, env: &Environment, rules: &RuleSet) -> Self {
+        Self::with_units(tree, env, rules, Units::Binary)
+    }
+
+    /// [`Explainer::new`], with the sizes in the reasons written in `units`.
+    pub fn with_units(tree: &'a Tree, env: &Environment, rules: &RuleSet, units: Units) -> Self {
         match run(tree, env, rules) {
-            Some((verdicts, found)) => Self::from_found(tree, rules.rules(), &verdicts, &found),
-            None => Self::from_found(tree, &[], &[], &[]),
+            Some((verdicts, found)) => Self::from_found(tree, rules.rules(), &verdicts, &found, units),
+            None => Self::from_found(tree, &[], &[], &[], units),
         }
     }
 
     /// From the result of a pass: `verdicts` and `found` hold one item per rule.
-    pub(crate) fn from_found(tree: &'a Tree, rules: &[Rule], verdicts: &[Verdict], found: &[Found]) -> Self {
+    pub(crate) fn from_found(
+        tree: &'a Tree,
+        rules: &[Rule],
+        verdicts: &[Verdict],
+        found: &[Found],
+        units: Units,
+    ) -> Self {
         let mut explainer = Self {
             tree,
             entries: Vec::new(),
@@ -78,6 +90,7 @@ impl<'a> Explainer<'a> {
                 count: found.all.len() as u64,
                 days: rule.matcher.age_days(),
                 min_bytes: rule.matcher.min_bytes(),
+                units,
             };
             explainer.entries.push(Entry {
                 id: rule.id,

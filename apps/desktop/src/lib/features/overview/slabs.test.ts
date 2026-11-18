@@ -2,7 +2,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { NodeDto } from '../../api/types';
 import { PALETTE, SLATE } from '../../palette';
 import { platform } from '../../state/platform.svelte';
-import { buildSlabs, dominantChild, joinNames, levelColors, MAX_SLABS, type SlabLevel } from './slabs';
+import {
+  buildSlabs,
+  dominantChild,
+  joinNames,
+  levelColors,
+  MAX_SLABS,
+  type Slab,
+  type SlabLevel,
+} from './slabs';
 import { layoutStack, STACK_VIEWBOX } from './stack';
 
 const GB = 1_000_000_000;
@@ -45,6 +53,21 @@ describe('buildSlabs', () => {
     expect(other?.nodeId).toBeUndefined();
 
     expect(slabs.at(-1)).toMatchObject({ free: true, size: 500 * GB });
+  });
+
+  it('never gives a slab more than the whole when the folders add up to more than the disk (btrfs)', () => {
+    // 1,193 GB of folders and 500 GB free on a 1,000 GB disk.
+    const slabs = buildSlabs({ levels: root(children), insideOf: none, total: 1000 * GB, free: 500 * GB });
+    const shares = slabs.map((slab) => slab.share);
+
+    expect(Math.max(...shares)).toBeLessThan(1);
+    expect(shares.reduce((sum, share) => sum + share, 0)).toBeCloseTo(1, 10);
+  });
+
+  it('keeps shares of the disk when the folders fit on it', () => {
+    const slabs = buildSlabs({ levels: root(children), insideOf: none, total: 1900 * GB, free: 500 * GB });
+
+    expect(slabs[0]?.share).toBeCloseTo(800 / 1900, 10);
   });
 
   it('adds no free slab without volume info', () => {
@@ -326,5 +349,84 @@ describe('a Windows scan', () => {
 
     expect(placed?.name).toBe('…\\demo\\Photos-2019');
     expect(placed?.name.length).toBeLessThanOrEqual(20);
+  });
+});
+
+describe('layoutStack height budget', () => {
+  const plain = (size: number, free = false): Slab => ({
+    key: `s${size}`,
+    name: 'x',
+    size,
+    share: 0,
+    color: SLATE,
+    inside: '',
+    ...(free ? { free } : {}),
+  });
+
+  // The vertical extent of a slab's side face is its height.
+  const heightsOf = (layout: ReturnType<typeof layoutStack>): number[] =>
+    layout.slabs.map((placed) => {
+      const ys = placed.left.split(' ').map((pair) => Number(pair.split(',')[1]));
+
+      return (ys[3] as number) - (ys[0] as number);
+    });
+  const sum = (values: number[]): number => values.reduce((total, value) => total + value, 0);
+
+  const GAP_TOTAL = (count: number): number => count * 10;
+
+  it('leaves the heights proportional to the disk when every slab is thick enough', () => {
+    const slabs = [plain(500 * GB), plain(300 * GB), plain(200 * GB)];
+    const heights = heightsOf(layoutStack(slabs, 1000 * GB));
+
+    // The disk is full: 304 units for all of it.
+    expect(heights[0]).toBeCloseTo(152, 6);
+    expect(heights[1]).toBeCloseTo(91.2, 6);
+    expect(heights[2]).toBeCloseTo(60.8, 6);
+  });
+
+  it('keeps a half-empty disk shorter than a full one', () => {
+    const heights = heightsOf(layoutStack([plain(250 * GB), plain(250 * GB)], 1000 * GB));
+
+    expect(sum(heights)).toBeCloseTo(152, 6);
+  });
+
+  it('never grows taller than the budget when the folders add up to more than the disk (btrfs)', () => {
+    const slabs = [plain(900 * GB), plain(800 * GB), plain(700 * GB), plain(300 * GB, true)];
+    const heights = heightsOf(layoutStack(slabs, 1000 * GB));
+
+    expect(sum(heights)).toBeLessThanOrEqual(304 + 1e-6);
+    // They keep their proportions to each other.
+    expect((heights[0] as number) / (heights[1] as number)).toBeCloseTo(900 / 800, 6);
+  });
+
+  it('never grows taller than the budget with many slabs at the minimum height', () => {
+    const slabs = [plain(900 * GB), ...Array.from({ length: 7 }, () => plain(GB))];
+    const layout = layoutStack(slabs, 1000 * GB);
+    const heights = heightsOf(layout);
+    const budget = Math.min(304, 350 - GAP_TOTAL(slabs.length));
+
+    expect(sum(heights)).toBeLessThanOrEqual(budget + 1e-6);
+    expect(heights.slice(1).every((height) => height >= 14 - 1e-6)).toBe(true);
+    expect(heights[0]).toBeGreaterThan(14);
+  });
+
+  it('holds the budget when thin slabs and an overcounted disk come together', () => {
+    const slabs = [plain(100 * GB), ...Array.from({ length: 7 }, () => plain(GB))];
+    const heights = heightsOf(layoutStack(slabs, 50 * GB));
+
+    expect(sum(heights)).toBeLessThanOrEqual(Math.min(304, 350 - GAP_TOTAL(8)) + 1e-6);
+  });
+
+  it('shares a budget too small for the minimum height equally', () => {
+    const slabs = Array.from({ length: 30 }, () => plain(GB));
+    const heights = heightsOf(layoutStack(slabs, 30 * GB));
+
+    expect(sum(heights)).toBeLessThanOrEqual(Math.max(0, Math.min(304, 350 - GAP_TOTAL(30))) + 1e-6);
+  });
+
+  it('gives every slab the minimum when the disk size is unknown', () => {
+    const heights = heightsOf(layoutStack([plain(GB), plain(GB)], 0));
+
+    expect(heights.every((height) => height >= 14 - 1e-6)).toBe(true);
   });
 });

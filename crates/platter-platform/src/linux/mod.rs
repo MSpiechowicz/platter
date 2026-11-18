@@ -26,6 +26,7 @@
 //! very device at that very path. On such kernels a btrfs subvolume (a device of its own, not a mount)
 //! counts as a boundary and is left out.
 
+pub mod elevate;
 pub mod exclusions;
 pub mod labels;
 pub mod mountinfo;

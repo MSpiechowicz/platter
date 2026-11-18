@@ -1,10 +1,13 @@
 //! Renders a rule's reason template with the facts of the matches.
 
-/// The numbers a reason may mention.
+use platter_core::units::{Units, format_size};
+
+/// The numbers a reason may mention, and the units a size is written in.
 pub(crate) struct Facts {
     pub count: u64,
     pub days: Option<u32>,
     pub min_bytes: Option<u64>,
+    pub units: Units,
 }
 
 /// Fills `{n:noun}`, `{n:one|many}`, `{days}` and `{size}`. Anything else in braces is kept as written.
@@ -37,7 +40,7 @@ fn expand(token: &str, facts: &Facts) -> Option<String> {
         return facts.days.map(|days| days.to_string());
     }
     if token == "size" {
-        return facts.min_bytes.map(size);
+        return facts.min_bytes.map(|bytes| format_size(bytes, facts.units));
     }
 
     let nouns = token.strip_prefix("n:")?;
@@ -50,24 +53,6 @@ fn expand(token: &str, facts: &Facts) -> Option<String> {
     Some(format!("{} {noun}", facts.count))
 }
 
-/// `1073741824` becomes `1 GiB`, `1610612736` becomes `1.5 GiB`.
-fn size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-
-    if value.fract() == 0.0 {
-        format!("{value:.0} {}", UNITS[unit])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,6 +62,7 @@ mod tests {
             count,
             days: Some(30),
             min_bytes: Some(1 << 30),
+            units: Units::Binary,
         }
     }
 
@@ -91,10 +77,15 @@ mod tests {
     }
 
     #[test]
-    fn sizes_are_written_in_binary_units() {
-        assert_eq!(render("over {size}", &facts(1)), "over 1 GiB");
-        assert_eq!(size(1_610_612_736), "1.5 GiB");
-        assert_eq!(size(512), "512 B");
+    fn sizes_are_written_in_the_units_asked_for() {
+        let binary = facts(1);
+        let decimal = Facts {
+            units: Units::Decimal,
+            ..facts(1)
+        };
+
+        assert_eq!(render("over {size}", &binary), "over 1.0 GiB");
+        assert_eq!(render("over {size}", &decimal), "over 1.1 GB");
     }
 
     #[test]
@@ -103,6 +94,7 @@ mod tests {
             count: 3,
             days: None,
             min_bytes: None,
+            units: Units::Binary,
         };
 
         assert_eq!(

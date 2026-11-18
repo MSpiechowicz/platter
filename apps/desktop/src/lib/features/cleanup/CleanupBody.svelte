@@ -6,6 +6,7 @@
   import { cleanup } from '../../state/cleanup.svelte';
   import { resource } from '../../state/resource.svelte';
   import { scan, type ReadyScan } from '../../state/scan.svelte';
+  import { settings } from '../../state/settings.svelte';
   import { ui } from '../../state/ui.svelte';
   import AdvisorList from '../overview/AdvisorList.svelte';
   import ChartCard from './ChartCard.svelte';
@@ -22,15 +23,16 @@
   // either view is on screen in both.
   let attempt = $state(0);
 
-  // The labels of the local model, or switching it on or off, change the suggestions: they are fetched again, but
-  // not while a cleanup runs.
+  // The labels of the local model, or switching it on or off, change the suggestions, and so do the size units of the
+  // settings (the reasons write sizes in them): they are fetched again, but not while a cleanup runs.
   const stamp = $derived(cleanup.stampFor(advisor.suggestionsVersion));
+  const units = $derived(cleanup.unitsFor(settings.units));
 
   const suggestions = resource(() => {
     void attempt;
     void stamp;
 
-    return api.getSuggestions(ready.scanId);
+    return api.getSuggestions(ready.scanId, units);
   });
 
   // The store learns of a new scan here too, not only from the list: after "Scan again" the list is not on screen

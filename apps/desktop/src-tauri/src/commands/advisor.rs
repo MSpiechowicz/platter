@@ -44,7 +44,7 @@ use platter_core::dto::{
     ApiErrorCode, OsDto, ScanId, SuggestionDto, SuggestionSource, SuggestionsDto, Verdict,
 };
 use platter_core::{
-    EntryProbe, Environment, ModelLabel, ModelVerdict, NodeId, NodeKind, Tree, UserRule, UserVerdict,
+    EntryProbe, Environment, ModelLabel, ModelVerdict, NodeId, NodeKind, Tree, Units, UserRule, UserVerdict,
 };
 use platter_core::{find_entries_until as search_entries_until, find_folders_until as search_folders_until};
 use platter_platform::Platform;
@@ -1695,7 +1695,7 @@ pub async fn advisor_labels(state: &AppState, scan: ScanId) -> CommandResult<Adv
     let user = user_rules::current(&state.user_rules).await?;
 
     tauri::async_runtime::spawn_blocking(move || {
-        let suggestions = suggestions::suggestions(&scans, &platform, scan, enabled, &user)?;
+        let suggestions = suggestions::suggestions(&scans, &platform, scan, enabled, &user, Units::Decimal)?;
         let review = Review::new(&tree, &platform, user.rules);
 
         Ok(labels_dto(scan, &review, &suggestions, set.as_deref()))

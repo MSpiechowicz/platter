@@ -33,7 +33,7 @@ pub use execute::{
     CleanupEvent, CleanupReport, Disk, MAX_TRASHED_CHILDREN, TargetOutcome, TargetResult, execute,
     restore_one, undo,
 };
-pub use guard::{Refusal, VerifiedTarget};
+pub use guard::{MarkerGroup, Refusal, VerifiedTarget};
 pub use kept::{KEPT_LEARNING_BUDGET, KeptFolders, with_real_keeps, with_real_keeps_for};
 pub use path::PathStyle;
 pub use plan::{

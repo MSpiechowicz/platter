@@ -13,6 +13,7 @@
   import { cleanup } from '../../state/cleanup.svelte';
   import { resource } from '../../state/resource.svelte';
   import { scan, type ReadyScan } from '../../state/scan.svelte';
+  import { settings } from '../../state/settings.svelte';
   import { ui } from '../../state/ui.svelte';
   import AdvisorCard from './AdvisorCard.svelte';
   import AgeCard from './AgeCard.svelte';
@@ -45,15 +46,16 @@
   // Suggestions arrive on their own, so a slow or failed answer never holds back the rest of the page.
   let attempt = $state(0);
 
-  // The labels of the local model, or switching it on or off, change the suggestions: they are fetched again, but
-  // not while a cleanup runs.
+  // The labels of the local model, or switching it on or off, change the suggestions, and so do the size units of the
+  // settings (the reasons write sizes in them): they are fetched again, but not while a cleanup runs.
   const stamp = $derived(cleanup.stampFor(advisor.suggestionsVersion));
+  const units = $derived(cleanup.unitsFor(settings.units));
 
   const suggestions = resource(() => {
     void attempt;
     void stamp;
 
-    return api.getSuggestions(ready.scanId);
+    return api.getSuggestions(ready.scanId, units);
   });
 
   const retrySuggestions = (): void => {

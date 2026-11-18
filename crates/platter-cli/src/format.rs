@@ -80,13 +80,33 @@ fn is_bidi_control(ch: char) -> bool {
     )
 }
 
-/// Percentage of `part` in `whole`, `0.0` when `whole` is zero.
-pub fn percent(part: u64, whole: u64) -> f64 {
+/// The share of `part` in `whole` as a fraction, `0.0` when `whole` is zero.
+pub fn fraction(part: u64, whole: u64) -> f64 {
     if whole == 0 {
         0.0
     } else {
-        part as f64 * 100.0 / whole as f64
+        part as f64 / whole as f64
     }
+}
+
+/// A share as the app writes it (`percentText` in `apps/desktop/src/lib/format.ts`, without its fine mode).
+/// It never reads `100%` unless the share is exactly 1 or more, so `0.996` reads `99%`, and never `0%` for
+/// a share that is not nothing: it reads `<1%`. Nothing, or a value that is not a number, reads `0%`.
+pub fn percent_text(fraction: f64) -> String {
+    if fraction.is_nan() || fraction <= 0.0 {
+        return "0%".to_owned();
+    }
+
+    if fraction >= 1.0 {
+        return format!("{}%", (fraction * 100.0).round());
+    }
+
+    let percent = fraction * 100.0;
+    if percent < 1.0 {
+        return "<1%".to_owned();
+    }
+
+    format!("{}%", percent.round().min(99.0))
 }
 
 /// Left-aligned text table with a header row.
@@ -196,9 +216,33 @@ mod tests {
     }
 
     #[test]
-    fn percent_handles_empty_totals() {
-        assert_eq!(percent(1, 0), 0.0);
-        assert_eq!(percent(1, 4), 25.0);
+    fn a_share_of_nothing_reads_zero() {
+        assert_eq!(percent_text(0.0), "0%");
+        assert_eq!(percent_text(-0.5), "0%");
+        assert_eq!(percent_text(f64::NAN), "0%");
+        assert_eq!(percent_text(fraction(5, 0)), "0%");
+    }
+
+    #[test]
+    fn a_share_under_the_smallest_step_reads_less_than_one() {
+        assert_eq!(percent_text(fraction(1, 10_000)), "<1%");
+        assert_eq!(percent_text(0.0099), "<1%");
+    }
+
+    #[test]
+    fn a_share_reads_its_rounded_value() {
+        assert_eq!(percent_text(0.01), "1%");
+        assert_eq!(percent_text(fraction(1, 4)), "25%");
+        assert_eq!(percent_text(0.495), "50%");
+        assert_eq!(percent_text(0.984), "98%");
+    }
+
+    #[test]
+    fn a_share_just_under_the_whole_never_reads_a_hundred() {
+        assert_eq!(percent_text(fraction(9996, 10_000)), "99%");
+        assert_eq!(percent_text(0.9951), "99%");
+        assert_eq!(percent_text(fraction(1, 1)), "100%");
+        assert_eq!(percent_text(1.004), "100%");
     }
 
     #[test]

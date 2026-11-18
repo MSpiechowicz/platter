@@ -81,9 +81,10 @@ export interface Api {
   getSummary(scan: ScanId, node: NodeId): Promise<SummaryDto>;
   /**
    * What the cleanup rules would label in a finished scan. Read-only: nothing is changed. The `advisor` suggestion
-   * (made from the local model's labels) is listed only while the advisor is switched on.
+   * (made from the local model's labels) is listed only while the advisor is switched on. `units` is how the sizes in
+   * the reasons are written (`1.1 GB` or `1.0 GiB`): `GB` when absent.
    */
-  getSuggestions(scan: ScanId): Promise<SuggestionsDto>;
+  getSuggestions(scan: ScanId, units?: SizeUnits): Promise<SuggestionsDto>;
 
   /**
    * Plans the cleanup of the given suggestions (rule ids from `getSuggestions`) of a finished scan. Nothing is

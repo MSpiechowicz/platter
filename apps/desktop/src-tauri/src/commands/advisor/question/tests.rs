@@ -156,7 +156,14 @@ impl Setup {
         pick: Option<u8>,
         dirs: Vec<(WellKnown, PathBuf)>,
     ) -> CommandResult<Collected> {
-        let review = self.review(Vec::new());
+        // The downloads folder is found through the environment's personal folders, like the others.
+        let mut env = home_env();
+        env.user_dirs.extend(
+            dirs.iter()
+                .filter(|(role, _)| *role == WellKnown::Downloads)
+                .map(|(_, path)| (platter_core::UserDir::Downloads, path.clone())),
+        );
+        let review = Review::for_environment(&self.tree, env, &self.fs, Vec::new());
         let reading = read(question, model, review.rules(), Os::Linux);
         let asked = Asked {
             query: &reading.query,
@@ -823,8 +830,8 @@ fn total_of<'a>(collected: &'a Collected, label: &str) -> Option<&'a FactTotal> 
 
 #[test]
 fn a_scan_that_is_itself_a_cache_folder_counts_nothing_of_it_in_the_totals() {
-    // The rules cover the folder that was scanned (apt's archives are safe to clean), and the guard never
-    // lets the scan root be cleaned: the row would say keep, so the total may not say safe.
+    // No rule matches the folder that was scanned (apt's archives are safe to clean, but only below the
+    // scan root), and the guard never lets the scan root be cleaned: neither a row nor a total.
     let mut fs = FakeFs::new();
     fs.file("/var/cache/apt/archives/p.deb", 200 * MIB)
         .file("/var/cache/apt/archives/partial/q.deb", 50 * MIB);
@@ -833,26 +840,18 @@ fn a_scan_that_is_itself_a_cache_folder_counts_nothing_of_it_in_the_totals() {
     for scope in ["", "/var/cache/apt/archives"] {
         let collected = cleanable_of(&tree, &fs, scope);
 
-        // Asked about the scan root by its path, the guard's row is the answer; it is never a total.
-        assert_eq!(
-            paths(&collected),
-            if scope.is_empty() {
-                &[][..]
-            } else {
-                &["/var/cache/apt/archives"][..]
-            },
-            "{scope:?}"
-        );
+        assert!(collected.rows.is_empty(), "{scope:?}: {:?}", paths(&collected));
         assert!(
             collected.sheet.totals.is_empty(),
             "{scope:?}: {:?}",
             collected.sheet.totals
         );
+        // The answer says why: the folder that was scanned is never suggested.
         assert!(
             collected
                 .notes
                 .iter()
-                .any(|note| note.contains("folder that was scanned")),
+                .any(|note| note.contains("This is the folder that was scanned")),
             "{scope:?}: {:?}",
             collected.notes
         );
@@ -1225,6 +1224,11 @@ fn the_share_is_a_rounded_whole_per_cent() {
     assert_eq!(percent(1, 3), 33);
     assert_eq!(percent(2, 3), 67);
     assert_eq!(percent(0, 0), 0);
+    // Never 100 for less than the whole, and 0 (written "Less than 1%") for a tiny share.
+    assert_eq!(percent(996, 1000), 99);
+    assert_eq!(percent(999_999, 1_000_000), 99);
+    assert_eq!(percent(1000, 1000), 100);
+    assert_eq!(percent(1, 1000), 0);
     assert_eq!(percent(u64::MAX, u64::MAX), 100);
     assert_eq!(percent(5, 10), 50);
 }

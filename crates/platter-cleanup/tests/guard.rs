@@ -189,10 +189,10 @@ fn the_scan_root_itself_is_never_a_target() {
         &CleanupOptions::default(),
     );
 
-    assert_eq!(
-        reasons(&plan),
-        [("app-cache", "/home/u/.cache", &Refusal::ScanRoot)]
-    );
+    // No rule matches the scan root, so there is nothing for the guard to refuse and nothing planned.
+    assert!(plan.groups().is_empty());
+    assert!(plan.refused.is_empty(), "{:?}", plan.refused);
+    assert_eq!(plan.not_found, ["app-cache"]);
 }
 
 #[test]
@@ -610,4 +610,144 @@ mod marked {
         );
         assert_eq!(plan.refused.len(), 2);
     }
+}
+
+/// An idle pnpm workspace at `/home/u/code/ws` with one member that has no lockfile of its own.
+fn pnpm_workspace() -> FakeFs {
+    let mut fs = FakeFs::new();
+    aged(&mut fs, "/home/u/code/ws/package.json", 1, 90);
+    aged(&mut fs, "/home/u/code/ws/pnpm-workspace.yaml", 1, 90);
+    aged(&mut fs, "/home/u/code/ws/pnpm-lock.yaml", 1, 90);
+    aged(&mut fs, "/home/u/code/ws/packages/a/package.json", 1, 90);
+    aged(
+        &mut fs,
+        "/home/u/code/ws/packages/a/node_modules/dep/i.js",
+        500,
+        90,
+    );
+    fs
+}
+
+fn plan_node_modules(fs: &FakeFs, tree: &Tree) -> CleanupPlan {
+    plan_cleanup(
+        tree,
+        &env(),
+        &RuleSet::builtin(),
+        &["node-modules"],
+        fs,
+        &CleanupOptions::default(),
+    )
+}
+
+#[test]
+fn the_node_modules_of_a_workspace_member_is_planned_with_the_workspace_files_as_its_markers() {
+    let fs = pnpm_workspace();
+    let tree = scan_at(&fs, "/");
+
+    let plan = plan_node_modules(&fs, &tree);
+
+    assert_eq!(paths(&plan), ["/home/u/code/ws/packages/a/node_modules"]);
+    assert!(plan.refused.is_empty(), "{:?}", plan.refused);
+    let target = plan.targets().next().unwrap();
+    let workspace_files: Vec<&[u8]> = vec![
+        b"/home/u/code/ws/pnpm-workspace.yaml",
+        b"/home/u/code/ws/pnpm-lock.yaml",
+    ];
+    assert!(
+        target
+            .markers()
+            .iter()
+            .flat_map(|group| group.alternatives())
+            .any(|alternative| alternative
+                .iter()
+                .map(Vec::as_slice)
+                .eq(workspace_files.iter().copied())),
+        "{:?}",
+        target.markers()
+    );
+}
+
+#[test]
+fn a_workspace_file_removed_before_planning_refuses_the_member() {
+    for gone in ["pnpm-lock.yaml", "pnpm-workspace.yaml"] {
+        let mut fs = pnpm_workspace();
+        let tree = scan_at(&fs, "/");
+        fs.remove(&format!("/home/u/code/ws/{gone}"));
+
+        let plan = plan_node_modules(&fs, &tree);
+
+        assert!(plan.groups().is_empty(), "{gone}");
+        let refused = reasons(&plan);
+        assert_eq!(refused.len(), 1, "{gone}: {refused:?}");
+        assert!(
+            matches!(refused[0].2, Refusal::Changed(why) if why.contains(gone)),
+            "{gone}: {refused:?}"
+        );
+    }
+}
+
+#[test]
+fn a_member_with_a_lockfile_of_its_own_does_not_depend_on_the_workspace_files() {
+    let mut fs = pnpm_workspace();
+    aged(&mut fs, "/home/u/code/ws/packages/a/pnpm-lock.yaml", 1, 90);
+    let tree = scan_at(&fs, "/");
+    fs.remove("/home/u/code/ws/pnpm-lock.yaml");
+
+    let plan = plan_node_modules(&fs, &tree);
+
+    assert_eq!(paths(&plan), ["/home/u/code/ws/packages/a/node_modules"]);
+}
+
+#[test]
+fn the_old_downloads_rule_is_planned_in_the_configured_downloads_folder_and_not_in_a_namesake() {
+    let mut fs = FakeFs::new();
+    aged(&mut fs, "/home/u/Pobrane/old.iso", 200, 800);
+    aged(&mut fs, "/home/u/Downloads/namesake.iso", 300, 800);
+    let tree = scan_at(&fs, "/");
+    let env = Environment {
+        user_dirs: vec![(UserDir::Downloads, PathBuf::from("/home/u/Pobrane"))],
+        ..env()
+    };
+
+    let plan = plan_cleanup(
+        &tree,
+        &env,
+        &RuleSet::builtin(),
+        &["old-downloads"],
+        &fs,
+        &CleanupOptions::default(),
+    );
+
+    assert_eq!(paths(&plan), ["/home/u/Pobrane/old.iso"]);
+    assert!(plan.refused.is_empty(), "{:?}", plan.refused);
+}
+
+#[test]
+fn downloads_is_not_a_protected_personal_folder() {
+    let mut fs = FakeFs::new();
+    aged(&mut fs, "/home/u/Pobrane/old.iso", 200, 800);
+    let tree = scan_at(&fs, "/");
+    let env = Environment {
+        user_dirs: vec![(UserDir::Downloads, PathBuf::from("/home/u/Pobrane"))],
+        ..env()
+    };
+
+    let plan = plan_cleanup(
+        &tree,
+        &env,
+        &RuleSet::builtin(),
+        &["old-downloads"],
+        &fs,
+        &CleanupOptions::default(),
+    );
+
+    assert!(
+        !plan
+            .refused
+            .iter()
+            .any(|r| matches!(r.reason, Refusal::Protected(_))),
+        "{:?}",
+        plan.refused
+    );
+    assert_eq!(plan.groups().len(), 1);
 }

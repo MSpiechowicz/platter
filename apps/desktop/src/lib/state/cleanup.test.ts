@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ApiRequestError, type Api } from '../api/client';
 import { createMockApi } from '../api/mock';
-import type { CleanupEvent, SuggestionsDto } from '../api/types';
-import { CleanupStore, NOT_CLEANED } from './cleanup.svelte';
+import type { CleanupEvent, PlanGroupDto, SuggestionsDto } from '../api/types';
+import { CleanupStore, NOT_CLEANED, progressTitle } from './cleanup.svelte';
 import { ScanStore } from './scan.svelte';
+import { settings } from './settings.svelte';
 
 const ROOT = { root: '/', oneFileSystem: true };
 
@@ -190,6 +191,32 @@ describe('suggestions fetched again for the same scan', () => {
 
     store.phase = { kind: 'idle' };
     expect(store.stampFor(2)).toBe(2);
+  });
+});
+
+describe('the units the suggestions are fetched in', () => {
+  it('holds the units while a cleanup runs, and lets them go afterwards', async () => {
+    const { store } = await setup();
+
+    expect(store.unitsFor('GiB')).toBe('GiB');
+
+    store.phase = { kind: 'planning' };
+    expect(store.unitsFor('GB')).toBe('GiB');
+
+    store.phase = { kind: 'idle' };
+    expect(store.unitsFor('GB')).toBe('GB');
+  });
+
+  it('asks for the suggestions in the units of the settings when it has to fetch them', async () => {
+    const { api, scan, scanId } = await setup();
+    const getSuggestions = vi.spyOn(api, 'getSuggestions');
+    const store = new CleanupStore(api, scan);
+
+    settings.set('units', 'GiB');
+    await store.ensureSuggestions(scanId);
+    settings.set('units', 'GB');
+
+    expect(getSuggestions).toHaveBeenCalledExactlyOnceWith(scanId, 'GiB');
   });
 });
 
@@ -908,5 +935,34 @@ describe('events', () => {
       expect(store.selected.has(REVIEW_RULE)).toBe(true);
       expect(store.phase.kind).toBe('running');
     });
+  });
+});
+
+describe('progressTitle', () => {
+  const group = (ruleId: string, title: string, elevated: boolean) =>
+    ({
+      ruleId,
+      title,
+      verdict: 'safe',
+      action: elevated ? 'runTool' : 'delete',
+      items: 1,
+      allocated: 1,
+      needsElevation: elevated,
+      samplePaths: [],
+    }) as PlanGroupDto;
+  const groups = [
+    group('node-modules', 'node_modules', false),
+    group('journal', 'System journal', true),
+    group('pacman-cache', 'Pacman cache', true),
+  ];
+
+  it('names every administrator tool on the first of them, which runs them all', () => {
+    expect(progressTitle(groups, 'journal')).toBe('System journal, Pacman cache');
+    expect(progressTitle(groups, 'pacman-cache')).toBe('Pacman cache');
+    expect(progressTitle(groups, 'node-modules')).toBe('node_modules');
+  });
+
+  it('names a lone administrator tool by itself', () => {
+    expect(progressTitle(groups.slice(0, 2), 'journal')).toBe('System journal');
   });
 });

@@ -1,6 +1,6 @@
 //! How the matches of each rule are cleaned.
 
-use platter_core::Os;
+use platter_core::{ElevatedTool, Os};
 
 /// A program that cleans what it owns, with fixed arguments. The UI never supplies arguments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,8 +11,18 @@ pub struct Tool {
     pub(crate) needs_elevation: bool,
 }
 
-/// Only [`action_for`] makes a `Tool`, so what runs is always one of the fixed commands of this file.
+/// Only [`action_for`] makes a `Tool`, so what runs is always one of the fixed commands of this file. The
+/// ones that run as the administrator on Linux are the closed list of [`ElevatedTool`].
 impl Tool {
+    /// The tool for a command of the closed list, which always runs as the administrator.
+    fn elevated(tool: ElevatedTool) -> Self {
+        Self {
+            program: tool.program(),
+            args: tool.args(),
+            needs_elevation: true,
+        }
+    }
+
     pub fn program(&self) -> &'static str {
         self.program
     }
@@ -53,12 +63,12 @@ impl KeepVersions {
         }
     }
 
-    /// The fixed arguments of the pacman cache tool for this count.
-    fn paccache_args(self) -> &'static [&'static str] {
+    /// The pacman cache command that keeps this many versions.
+    fn paccache(self) -> ElevatedTool {
         match self {
-            Self::One => &["-rk1"],
-            Self::Two => &["-rk2"],
-            Self::Three => &["-rk3"],
+            Self::One => ElevatedTool::Paccache1,
+            Self::Two => ElevatedTool::Paccache2,
+            Self::Three => ElevatedTool::Paccache3,
         }
     }
 }
@@ -202,34 +212,14 @@ fn unix_action_for(rule_id: &str, options: &CleanupOptions) -> Option<CleanupAct
         "trash" => EmptyTrash,
         // Owned by root and with no tool of their own: a fixed `find` that deletes what is inside the
         // folder, stays on its filesystem and follows no link.
-        "coredumps" => RunTool(Tool {
-            program: "find",
-            args: &["/var/lib/systemd/coredump", "-xdev", "-mindepth", "1", "-delete"],
-            needs_elevation: true,
-        }),
+        "coredumps" => RunTool(Tool::elevated(ElevatedTool::Coredumps)),
         "old-downloads" | "disk-images" | "docker-desktop-vm" => Trash,
         // A folder the user called safe is still the user's own: it goes to the trash, never straight away.
         "user-safe" => Trash,
-        "pacman-cache" => RunTool(Tool {
-            program: "paccache",
-            args: options.keep_package_versions.paccache_args(),
-            needs_elevation: true,
-        }),
-        "apt-cache" => RunTool(Tool {
-            program: "apt-get",
-            args: &["clean"],
-            needs_elevation: true,
-        }),
-        "dnf-cache" => RunTool(Tool {
-            program: "dnf",
-            args: &["clean", "packages"],
-            needs_elevation: true,
-        }),
-        "journal" => RunTool(Tool {
-            program: "journalctl",
-            args: &["--vacuum-time=2weeks"],
-            needs_elevation: true,
-        }),
+        "pacman-cache" => RunTool(Tool::elevated(options.keep_package_versions.paccache())),
+        "apt-cache" => RunTool(Tool::elevated(ElevatedTool::AptClean)),
+        "dnf-cache" => RunTool(Tool::elevated(ElevatedTool::DnfClean)),
+        "journal" => RunTool(Tool::elevated(ElevatedTool::JournalVacuum)),
         // Always the local daemon: a context in `~/.docker/config.json` could point at a remote one,
         // while the size shown came from the local `/var/lib/docker`.
         "docker-data" => RunTool(Tool {

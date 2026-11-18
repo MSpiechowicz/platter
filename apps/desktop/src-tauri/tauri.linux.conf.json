@@ -1,0 +1,31 @@
+{
+  "build": {
+    "beforeBundleCommand": "cargo build --release --locked -p platter-platform --bin platter-elevate"
+  },
+  "bundle": {
+    "linux": {
+      "deb": {
+        "depends": [
+          "libvulkan1",
+          "pkexec | policykit-1"
+        ],
+        "desktopTemplate": "platter.desktop",
+        "files": {
+          "/usr/lib/platter/platter-elevate": "../../../target/release/platter-elevate",
+          "/usr/share/polkit-1/actions/io.github.mspiechowicz.platter.policy": "linux/io.github.mspiechowicz.platter.policy"
+        }
+      },
+      "rpm": {
+        "depends": [
+          "vulkan-loader",
+          "polkit"
+        ],
+        "desktopTemplate": "platter.desktop",
+        "files": {
+          "/usr/lib/platter/platter-elevate": "../../../target/release/platter-elevate",
+          "/usr/share/polkit-1/actions/io.github.mspiechowicz.platter.policy": "linux/io.github.mspiechowicz.platter.policy"
+        }
+      }
+    }
+  }
+}

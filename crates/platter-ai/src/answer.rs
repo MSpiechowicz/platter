@@ -12,6 +12,8 @@
 //! points at none: it is text, in quotes.
 
 use platter_core::dto::Verdict;
+// The size writer lives in the core (the rule reasons use it too); these paths stay for the crate's users.
+pub use platter_core::units::{Units, format_size};
 
 use crate::facts::is_invisible;
 use crate::question::{Intent, Kind};
@@ -32,64 +34,6 @@ pub const OFFTOPIC_TEXT: &str = "I can only answer questions about this scan: wh
 
 /// The note of a scan that is from before a cleanup. The sheet says it with [`FactSheet::outdated`].
 pub const OUTDATED_NOTE: &str = "This scan is from before a cleanup. Rescan for current figures.";
-
-/// The unit family sizes are written in: `GB` counts in thousands, `GiB` in 1024s.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Units {
-    Decimal,
-    Binary,
-}
-
-const DECIMAL_UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-const BINARY_UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-
-/// `1.41 TB`, `492 GB`, `3.4 GB`, `512 B`: a port of `formatSize` of the web view
-/// (`apps/desktop/src/lib/format.ts`), so a size reads the same in the rows and in the answer. Two
-/// decimals from TB up, one below 10, none from 10 on.
-pub fn format_size(bytes: u64, units: Units) -> String {
-    let (base, names) = match units {
-        Units::Decimal => (1000.0, DECIMAL_UNITS),
-        Units::Binary => (1024.0, BINARY_UNITS),
-    };
-
-    let mut index = 0;
-    let mut value = bytes as f64;
-    while value >= base && index < names.len() - 1 {
-        value /= base;
-        index += 1;
-    }
-
-    if index == 0 {
-        return format!("{} B", bytes);
-    }
-
-    let mut decimals = if value < 10.0 { 1 } else { 0 };
-    if index >= 4 {
-        decimals = 2;
-    }
-
-    // 999.7 GB must read "1.00 TB", not "1000 GB".
-    let rounded: f64 = to_fixed(value, decimals).parse().unwrap_or(value);
-    if rounded >= base && index < names.len() - 1 {
-        value /= base;
-        index += 1;
-        decimals = if index >= 4 { 2 } else { 1 };
-    }
-
-    format!("{} {}", to_fixed(value, decimals), names[index])
-}
-
-/// JavaScript's `Number.prototype.toFixed`: an exact tie rounds up (Rust's formatting rounds it to even).
-fn to_fixed(value: f64, decimals: usize) -> String {
-    let scale = 10f64.powi(decimals as i32);
-    let scaled = value * scale;
-
-    if scaled.fract() == 0.5 && scaled / scale == value {
-        return format!("{:.*}", decimals, (scaled.floor() + 1.0) / scale);
-    }
-
-    format!("{:.*}", decimals, value)
-}
 
 /// A count with a comma between the thousands: `120,345`.
 fn grouped(count: u64) -> String {

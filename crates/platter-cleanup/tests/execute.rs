@@ -447,6 +447,203 @@ fn a_refused_password_is_asked_for_only_once_per_run() {
     assert_eq!(refused, 2);
 }
 
+/// Answers elevated commands only as one batch, and records every batch and every single run.
+struct BatchTools {
+    batch_answers: Vec<Result<(), ToolFailure>>,
+    batches: Mutex<Vec<Vec<String>>>,
+    singles: Mutex<Vec<String>>,
+}
+
+impl BatchTools {
+    fn new(batch_answers: Vec<Result<(), ToolFailure>>) -> Self {
+        Self {
+            batch_answers,
+            batches: Mutex::new(Vec::new()),
+            singles: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl ToolRunner for BatchTools {
+    fn run(&self, command: &ToolCommand<'_>) -> Result<(), ToolFailure> {
+        assert!(!command.elevated, "an elevated command goes through the batch");
+        self.singles.lock().unwrap().push(command.program.to_owned());
+
+        Ok(())
+    }
+
+    fn run_batch(&self, commands: &[ToolCommand<'_>]) -> Vec<Result<(), ToolFailure>> {
+        assert!(commands.iter().all(|command| command.elevated));
+        self.batches.lock().unwrap().push(
+            commands
+                .iter()
+                .map(|command| command.program.to_owned())
+                .collect(),
+        );
+
+        self.batch_answers.clone()
+    }
+}
+
+fn run_with_batch(
+    fs: &FakeFs,
+    selected: &[&str],
+    options: &CleanupOptions,
+    tools: &BatchTools,
+    cancel: &CancelToken,
+) -> (platter_cleanup::CleanupReport, Vec<String>) {
+    let plan = plan_cleanup(&scan_root(fs), &env(), &RuleSet::builtin(), selected, fs, options);
+    let recorder = Recorder::default();
+    let disk = Disk {
+        probe: fs,
+        remover: &recorder,
+        trash_dir: None,
+        tools: Some(tools),
+    };
+
+    let mut events = Vec::new();
+    let report = execute(&plan, &disk, cancel, &mut |event| {
+        events.push(match event {
+            CleanupEvent::GroupStarted { rule_id, .. } => format!("start {rule_id}"),
+            CleanupEvent::TargetDone(result) => format!("done {}", result.rule_id),
+            CleanupEvent::GroupFinished { rule_id } => format!("finish {rule_id}"),
+        });
+    });
+
+    (report, events)
+}
+
+fn outcome_of(report: &platter_cleanup::CleanupReport, id: &str) -> TargetOutcome {
+    report
+        .results
+        .iter()
+        .find(|r| r.rule_id == id)
+        .unwrap()
+        .outcome
+        .clone()
+}
+
+#[test]
+fn elevated_groups_go_through_one_batch_and_each_reports_its_own_answer_in_place() {
+    let fs = system();
+    let tools = BatchTools::new(vec![
+        Ok(()),
+        Err(ToolFailure::Failed {
+            code: Some(2),
+            message: "no details".to_owned(),
+        }),
+    ]);
+
+    let (report, events) = run_with_batch(
+        &fs,
+        &["pacman-cache", "docker-data", "journal"],
+        &CleanupOptions::default(),
+        &tools,
+        &CancelToken::new(),
+    );
+
+    assert_eq!(*tools.batches.lock().unwrap(), [["paccache", "journalctl"]]);
+    assert_eq!(*tools.singles.lock().unwrap(), ["docker"]);
+    assert!(matches!(
+        outcome_of(&report, "pacman-cache"),
+        TargetOutcome::ByTool(_)
+    ));
+    assert!(matches!(
+        outcome_of(&report, "docker-data"),
+        TargetOutcome::ByTool(_)
+    ));
+    assert!(
+        matches!(outcome_of(&report, "journal"), TargetOutcome::Failed(why) if why.contains("code 2: no details"))
+    );
+    assert_eq!(
+        events,
+        [
+            "start pacman-cache",
+            "done pacman-cache",
+            "finish pacman-cache",
+            "start journal",
+            "done journal",
+            "finish journal",
+            "start docker-data",
+            "done docker-data",
+            "finish docker-data",
+        ]
+    );
+}
+
+#[test]
+fn a_refusal_of_the_batch_stops_every_elevated_group_after_one_prompt() {
+    let fs = system();
+    let tools = BatchTools::new(vec![
+        Err(ToolFailure::NotAuthorized),
+        Err(ToolFailure::NotAuthorized),
+    ]);
+
+    let (report, _) = run_with_batch(
+        &fs,
+        &["pacman-cache", "docker-data", "journal"],
+        &CleanupOptions::default(),
+        &tools,
+        &CancelToken::new(),
+    );
+
+    assert_eq!(tools.batches.lock().unwrap().len(), 1);
+    for id in ["pacman-cache", "journal"] {
+        assert!(
+            matches!(outcome_of(&report, id), TargetOutcome::Skipped(why) if why.contains("password")),
+            "{id}"
+        );
+    }
+    assert!(
+        matches!(outcome_of(&report, "docker-data"), TargetOutcome::ByTool(_)),
+        "a tool that needs no password still runs"
+    );
+}
+
+#[test]
+fn no_batch_is_asked_for_when_no_group_needs_the_password_or_the_run_is_cancelled_first() {
+    let fs = system();
+
+    let tools = BatchTools::new(Vec::new());
+    run_with_batch(
+        &fs,
+        &["docker-data"],
+        &CleanupOptions::default(),
+        &tools,
+        &CancelToken::new(),
+    );
+    assert!(tools.batches.lock().unwrap().is_empty());
+
+    let tools = BatchTools::new(Vec::new());
+    run_with_batch(
+        &fs,
+        &["pacman-cache", "journal"],
+        &CleanupOptions {
+            ask_for_admin: false,
+            ..CleanupOptions::default()
+        },
+        &tools,
+        &CancelToken::new(),
+    );
+    assert!(
+        tools.batches.lock().unwrap().is_empty(),
+        "rules left out by the options are not asked for"
+    );
+
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let tools = BatchTools::new(Vec::new());
+    let (report, _) = run_with_batch(
+        &fs,
+        &["pacman-cache", "journal"],
+        &CleanupOptions::default(),
+        &tools,
+        &cancel,
+    );
+    assert!(report.cancelled);
+    assert!(tools.batches.lock().unwrap().is_empty());
+}
+
 #[test]
 fn a_missing_or_failing_tool_is_reported() {
     let fs = system();
@@ -533,4 +730,55 @@ fn a_file_modified_or_a_marker_removed_after_the_plan_is_left_alone() {
         .map(|r| r.path.as_str())
         .collect();
     assert_eq!(skipped.len(), 2, "{report:#?}");
+}
+
+#[test]
+fn a_workspace_file_removed_after_the_plan_leaves_the_member_alone() {
+    let mut fs = FakeFs::new();
+    aged(&mut fs, "/home/u/code/ws/package.json", 1, 90);
+    aged(&mut fs, "/home/u/code/ws/pnpm-workspace.yaml", 1, 90);
+    aged(&mut fs, "/home/u/code/ws/pnpm-lock.yaml", 1, 90);
+    aged(&mut fs, "/home/u/code/ws/packages/a/package.json", 1, 90);
+    aged(
+        &mut fs,
+        "/home/u/code/ws/packages/a/node_modules/dep/i.js",
+        500,
+        90,
+    );
+    let plan = plan_cleanup(
+        &scan_root(&fs),
+        &env(),
+        &RuleSet::builtin(),
+        &["node-modules"],
+        &fs,
+        &CleanupOptions::default(),
+    );
+    assert_eq!(plan.targets().count(), 1, "{:?}", plan.refused);
+
+    let run = |fs: &FakeFs| {
+        let recorder = Recorder::default();
+        let disk = Disk {
+            probe: fs,
+            remover: &recorder,
+            trash_dir: Some(Path::new("/t")),
+            tools: None,
+        };
+        let report = execute(&plan, &disk, &CancelToken::new(), &mut |_| {});
+
+        (recorder.calls(), report)
+    };
+
+    let (calls, _) = run(&fs);
+    assert_eq!(calls.len(), 1, "the unchanged workspace is acted on");
+
+    fs.remove("/home/u/code/ws/pnpm-lock.yaml");
+    let (calls, report) = run(&fs);
+    assert!(calls.is_empty(), "{calls:?}");
+    assert!(
+        report.results.iter().any(|r| matches!(
+            &r.outcome,
+            TargetOutcome::Skipped(why) if why.contains("changed since the plan") && why.contains("pnpm-lock.yaml")
+        )),
+        "{report:#?}"
+    );
 }

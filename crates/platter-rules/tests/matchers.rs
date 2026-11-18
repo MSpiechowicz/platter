@@ -3,9 +3,9 @@
 mod common;
 
 use common::*;
-use platter_core::Category;
 use platter_core::dto::Verdict::{Review, Safe};
 use platter_core::testing::{FakeFs, NOW};
+use platter_core::{Category, UserDir};
 use platter_rules::{Age, Files, Matcher, Named, Rule};
 
 fn named_rule(id: &'static str, named: Named) -> Rule {
@@ -303,7 +303,7 @@ fn a_file_rule_can_select_by_category_and_size() {
 
     let suggestion = get(&found, "img").expect("matched");
     assert_eq!((suggestion.allocated, suggestion.items), (3 << 30, 1));
-    assert_eq!(suggestion.reason, "1 image of 1 GiB or more.");
+    assert_eq!(suggestion.reason, "1 image of 1.0 GiB or more.");
 }
 
 #[test]
@@ -340,4 +340,81 @@ fn files_inside_a_folder_another_rule_matched_are_left_to_that_rule() {
         (101, 2),
         "the old zip and package.json; not node_modules files"
     );
+}
+
+#[test]
+fn a_file_rule_in_a_user_folder_looks_where_the_desktop_put_it() {
+    let mut fs = FakeFs::new();
+    aged_file(&mut fs, "/home/u/Pobrane/old.iso", 1000, 400);
+    aged_file(&mut fs, "/home/u/Pobrane/new.zip", 7000, 10);
+    aged_file(&mut fs, "/home/u/Downloads/elsewhere.iso", 500, 400);
+    let tree = scan_at(&fs, "/", false);
+    let env = platter_rules::Environment {
+        user_dirs: vec![(UserDir::Downloads, std::path::PathBuf::from("/home/u/Pobrane"))],
+        ..env()
+    };
+    let rules = platter_rules::RuleSet::new(vec![Rule::new(
+        "dl",
+        "Old downloads",
+        Review,
+        Matcher::Files(Files::in_user_dir(UserDir::Downloads).idle(365)),
+        "r",
+    )]);
+
+    let found = platter_rules::evaluate(&tree, &env, &rules);
+
+    let suggestion = get(&found, "dl").expect("matched");
+    assert_eq!((suggestion.allocated, suggestion.items), (1000, 1));
+    assert_eq!(suggestion.path, "~/Pobrane/old.iso");
+}
+
+#[test]
+fn a_file_rule_in_a_user_folder_uses_the_default_name_when_none_is_configured() {
+    let mut fs = FakeFs::new();
+    aged_file(&mut fs, "/home/u/Downloads/old.iso", 1000, 400);
+    let tree = scan_at(&fs, "/", false);
+
+    let found = run(
+        &tree,
+        vec![Rule::new(
+            "dl",
+            "Old downloads",
+            Review,
+            Matcher::Files(Files::in_user_dir(UserDir::Downloads).idle(365)),
+            "r",
+        )],
+    );
+
+    assert_eq!(get(&found, "dl").unwrap().path, "~/Downloads/old.iso");
+}
+
+#[test]
+fn the_old_downloads_rule_matches_nothing_when_the_environment_has_no_downloads_folder() {
+    let mut fs = FakeFs::new();
+    aged_file(&mut fs, "/home/u/Downloads/old.iso", 1000, 400);
+    let tree = scan_at(&fs, "/", false);
+    let mut env = env();
+    env.set_downloads_missing();
+
+    let found = platter_rules::evaluate(&tree, &env, &platter_rules::RuleSet::builtin());
+
+    assert!(get(&found, "old-downloads").is_none());
+}
+
+#[test]
+fn the_old_downloads_rule_follows_the_configured_downloads_folder_and_leaves_a_namesake_alone() {
+    let mut fs = FakeFs::new();
+    aged_file(&mut fs, "/home/u/Pobrane/old.iso", 1000, 400);
+    aged_file(&mut fs, "/home/u/Downloads/namesake.iso", 500, 400);
+    let tree = scan_at(&fs, "/", false);
+    let env = platter_rules::Environment {
+        user_dirs: vec![(UserDir::Downloads, std::path::PathBuf::from("/home/u/Pobrane"))],
+        ..env()
+    };
+
+    let found = platter_rules::evaluate(&tree, &env, &platter_rules::RuleSet::builtin());
+
+    let old = get(&found, "old-downloads").expect("matched");
+    assert_eq!((old.allocated, old.items), (1000, 1));
+    assert_eq!(old.path, "~/Pobrane/old.iso");
 }

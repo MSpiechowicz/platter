@@ -51,6 +51,9 @@ import type {
  * - Confirmation: the backend asks the user in a native dialog before anything that cannot be undone and rejects
  *   with `cancelled` when declined. A browser has no such dialog, so `startCleanup` simply proceeds. `undoCleanup`
  *   asks the `confirmUndo` hook (default: yes) and rejects with `cancelled` when it says no.
+ * - Administrator tools: the backend runs every elevated tool of a run in one call when the first elevated group is
+ *   reached, so once that group has started a cancel no longer stops the other elevated groups (they are reported as
+ *   they ran). The mock runs each tool group in its own turn and stops at a cancel before any of them.
  */
 
 /** The limits of the backend. */

@@ -2034,7 +2034,7 @@ fn while_four_walks_run_a_search_or_a_folder_ask_is_refused_and_works_again_afte
     let w = world(false);
     let scan = register(&w.state, &many_folders());
     let folder = node_at(&w.state, scan, "/d/app3");
-    let held: Vec<_> = (0..crate::state::WalkSlots::MAX)
+    let held: Vec<_> = (0..crate::state::WalkSlots::DEFAULT_MAX)
         .map(|_| w.state.walks.take().unwrap())
         .collect();
 

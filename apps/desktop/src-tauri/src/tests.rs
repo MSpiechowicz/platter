@@ -207,6 +207,62 @@ fn a_finished_scan_gets_labelled_suggestions_and_asking_again_gives_the_same_ans
     assert_eq!(first["suggestions"].as_array().unwrap().len(), 1);
 }
 
+/// A scan with one disk image of 3 GiB in the user's home (when the machine has one), and the reason the
+/// `disk-images` rule gives for it under the `units` argument of `get_suggestions` (none sends no argument).
+fn disk_images_reason(window: &WebviewWindow<MockRuntime>, scan: u64, units: Option<&str>) -> String {
+    let args = match units {
+        Some(units) => json!({ "scan": scan, "units": units }),
+        None => json!({ "scan": scan }),
+    };
+    let found = invoke(window, "get_suggestions", args).expect("suggestions");
+    let images = found["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|suggestion| suggestion["id"] == "disk-images")
+        .expect("the disk image is listed");
+
+    images["reason"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn the_units_argument_of_the_suggestions_sets_how_the_reasons_write_sizes() {
+    let (_app, window) = app();
+    let Some(home) = window.state::<AppState>().platform.environment().home else {
+        return;
+    };
+    let mut fs = platter_core::testing::FakeFs::new();
+    fs.file(&format!("{}/VMs/win11.qcow2", home.display()), 3 << 30);
+    let scan = finished_scan(&window, &fs);
+    let sizes = |units| platter_core::format_size(1 << 30, units);
+
+    let decimal = disk_images_reason(&window, scan, Some("GB"));
+    let binary = disk_images_reason(&window, scan, Some("GiB"));
+    let absent = disk_images_reason(&window, scan, None);
+
+    assert!(decimal.starts_with(&format!(
+        "1 image of {} or more",
+        sizes(platter_core::Units::Decimal)
+    )));
+    assert!(binary.starts_with(&format!(
+        "1 image of {} or more",
+        sizes(platter_core::Units::Binary)
+    )));
+    assert!(
+        decimal.contains("1.1 GB") && binary.contains("1.0 GiB"),
+        "{decimal} / {binary}"
+    );
+    assert_eq!(absent, decimal, "GB is the default");
+    assert_eq!(
+        disk_images_reason(&window, scan, Some("GiB")),
+        binary,
+        "and back again"
+    );
+
+    let error = invoke(&window, "get_suggestions", json!({ "scan": scan, "units": "MB" }));
+    assert!(error.is_err(), "an unknown unit is refused");
+}
+
 #[test]
 fn suggestions_go_away_with_the_scan() {
     let (_app, window) = app();

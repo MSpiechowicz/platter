@@ -21,6 +21,8 @@ const NODE_LOCKFILES: &[&str] = &[
     "bun.lock",
     "bun.lockb",
 ];
+/// The two files of a pnpm workspace root: members have no lockfile of their own, the root holds it.
+const PNPM_WORKSPACE: &[&str] = &["pnpm-workspace.yaml", "pnpm-lock.yaml"];
 /// Places where tools install packages of their own; deleting their `node_modules` breaks the tool.
 const NODE_TOOL_DIRS: &[&str] = &[
     "node_modules",
@@ -45,6 +47,7 @@ const fn node_modules() -> Named {
     Named::new(&["node_modules"])
         .next_to("package.json")
         .next_to_any(NODE_LOCKFILES)
+        .or_in_workspace(PNPM_WORKSPACE)
         .not_inside(NODE_TOOL_DIRS)
         .not_below(SYSTEM_PREFIXES)
         .not_below_drive(WINDOWS_SYSTEM_FOLDERS)
@@ -162,7 +165,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::new("btrfs-snapshots", "btrfs snapshots", Review, Matcher::Fixed("/.snapshots"),
         "Snapshots in the default snapper location. Deleting them removes those rollback points. How much space that frees depends on how much the snapshots share with the live system.").only_on(Os::Linux),
     Rule::new("old-downloads", "Old downloads", Review,
-        Matcher::Files(Files::in_home("Downloads").idle(365)),
+        Matcher::Files(Files::in_user_dir(UserDir::Downloads).idle(365)),
         "{n:file} in Downloads not modified for {days} days or more. These are personal files, so only you can tell whether you still need them."),
     Rule::new("disk-images", "Virtual machine and disk images", Review,
         Matcher::Files(Files::in_home("").of(Category::DiskImage).at_least(GIB)),

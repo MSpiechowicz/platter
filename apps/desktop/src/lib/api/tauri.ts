@@ -107,7 +107,8 @@ export function createTauriApi(): Api {
 
     getSummary: (scan: ScanId, node: NodeId) => call<SummaryDto>('get_summary', { scan, node }),
 
-    getSuggestions: (scan: ScanId) => call<SuggestionsDto>('get_suggestions', { scan }),
+    getSuggestions: (scan: ScanId, units?: SizeUnits) =>
+      call<SuggestionsDto>('get_suggestions', { scan, units }),
 
     planCleanup: (scan: ScanId, suggestionIds: string[], options?: CleanupOptions) =>
       call<CleanupPlanDto>('plan_cleanup', { scan, suggestions: suggestionIds, options }),

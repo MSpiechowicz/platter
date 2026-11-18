@@ -110,8 +110,8 @@ export class ColumnsScene {
   #mixes = columnMix();
   #group: Group | null = null;
   #columns: Column[] = [];
-  /** One look per column, and one per floor of a column whose floors have colours of their own. */
-  #looks = new Map<string, { id: NodeId; look: Look }>();
+  /** One look per column, and one per floor of a column whose floors have colours of their own (`hue`). */
+  #looks = new Map<string, { id: NodeId; hue: NodeId | undefined; look: Look }>();
   #ids = new Map<Mesh, NodeId>();
   #picks: Mesh[] = [];
   #selected: NodeId | null = null;
@@ -210,6 +210,25 @@ export class ColumnsScene {
     this.invalidate();
   }
 
+  /**
+   * Gives the columns the colours of a newer map, in place: only the looks whose colour changed are repainted. The
+   * columns are neither replaced nor refitted, and the columns do not grow again.
+   */
+  setColors(colors: ColorMap): void {
+    let changed = false;
+
+    for (const { id, hue, look } of this.#looks.values()) {
+      if (look.recolor(this.#colorFor(id, hue, colors), this.#background, this.#mixes)) {
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this.#paint();
+      this.invalidate();
+    }
+  }
+
   /** The selected column stays lit, the others go dark; the hovered one glows. */
   setHighlight(selected: NodeId | null, hovered: NodeId | null): void {
     this.#selected = selected;
@@ -254,12 +273,15 @@ export class ColumnsScene {
       return known.look;
     }
 
-    const color = hue === undefined ? colorOf(colors, top) : (colors.get(hue) ?? colorOf(colors, top));
-    const look = new Look(color, this.#background, this.#mixes);
+    const look = new Look(this.#colorFor(top, hue, colors), this.#background, this.#mixes);
 
-    this.#looks.set(key, { id: top, look });
+    this.#looks.set(key, { id: top, hue, look });
 
     return look;
+  }
+
+  #colorFor(top: NodeId, hue: NodeId | undefined, colors: ColorMap): string {
+    return hue === undefined ? colorOf(colors, top) : (colors.get(hue) ?? colorOf(colors, top));
   }
 
   /** The theme changed: the card behind and every column's mix towards the page are redone, and a frame is drawn. */

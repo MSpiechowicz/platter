@@ -261,18 +261,8 @@ export function splitParts(labels: AdvisorLabelsDto): SplitPart[] {
     .map(([key, step]) => ({ key, folders: step.folders, share: step.folders / total }));
 }
 
-/** "87%" for the legend. Never "100%" while something else holds a part, and never "0%" for a part that exists. */
-export function percentText(share: number): string {
-  if (share >= 1) {
-    return '100%';
-  }
-
-  if (share > 0 && share < 0.005) {
-    return '<1%';
-  }
-
-  return `${Math.min(99, Math.round(share * 100))}%`;
-}
+/** The legend's percentage is the app's one rule: see `percentText` in `format.ts`. */
+export { percentText } from '../../format';
 
 /**
  * The labels the user has to look at: the model says `review`. One the user has decided already (`decided`) stays in

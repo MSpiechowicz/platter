@@ -10,6 +10,7 @@ import type {
   OutcomeKind,
   PlanGroupDto,
   ScanId,
+  SizeUnits,
   SuggestionDto,
   SuggestionsDto,
   Verdict,
@@ -150,6 +151,7 @@ export class CleanupStore {
   #data: SuggestionsDto | undefined;
   #run: Run | undefined;
   #stamp = 0;
+  #units: SizeUnits = settings.units;
   /** Bumped when an answer that is still on its way no longer matters. */
   #epoch = 0;
 
@@ -303,7 +305,7 @@ export class CleanupStore {
     let data: SuggestionsDto;
 
     try {
-      data = await this.#api.getSuggestions(scanId);
+      data = await this.#api.getSuggestions(scanId, settings.units);
     } catch {
       // Nothing is shown as kept or safe; the backend still refuses what it must.
       return;
@@ -420,6 +422,18 @@ export class CleanupStore {
     }
 
     return this.#stamp;
+  }
+
+  /**
+   * The units the pages fetch the suggestions in, so a change of them in the settings fetches them again: held still
+   * while a cleanup runs, like `stampFor`, and let go when it ends.
+   */
+  unitsFor(units: SizeUnits): SizeUnits {
+    if (!this.busy) {
+      this.#units = units;
+    }
+
+    return this.#units;
   }
 
   toggle(id: string): void {
@@ -700,7 +714,7 @@ export class CleanupStore {
 
     switch (event.type) {
       case 'groupStarted':
-        this.#progress({ group: titleOf(run.plan.groups, event.ruleId) });
+        this.#progress({ group: progressTitle(run.plan.groups, event.ruleId) });
         break;
 
       case 'targetDone': {
@@ -813,6 +827,23 @@ const sum = (items: SuggestionDto[]): number => items.reduce((total, item) => to
 
 const titleOf = (groups: PlanGroupDto[], ruleId: string): string =>
   groups.find((group) => group.ruleId === ruleId)?.title ?? ruleId;
+
+const asAdministrator = (group: PlanGroupDto): boolean => group.action === 'runTool' && group.needsElevation;
+
+/**
+ * What the progress line names while a group runs. The backend runs every system tool that needs the administrator in
+ * one go, when the first of them is reached: that group's line names them all, as they all run then.
+ */
+export function progressTitle(groups: PlanGroupDto[], ruleId: string): string {
+  const elevated = groups.filter(asAdministrator);
+  const first = elevated[0];
+
+  if (elevated.length > 1 && first?.ruleId === ruleId) {
+    return elevated.map((group) => group.title).join(', ');
+  }
+
+  return titleOf(groups, ruleId);
+}
 
 /** Why `startCleanup` said no. Nothing is retried: the next attempt is the user's next click. */
 function notStarted(error: unknown): string {

@@ -380,3 +380,24 @@ fn index_matches_position_in_all() {
         assert_eq!(category.index(), i);
     }
 }
+
+#[test]
+fn heaviest_is_the_category_with_most_bytes_and_none_without_bytes() {
+    let mut sums = [0u64; Category::COUNT];
+    assert_eq!(Category::heaviest(&sums), None, "all zero");
+
+    sums[Category::Archive.index()] = 5;
+    sums[Category::Code.index()] = 9;
+    assert_eq!(Category::heaviest(&sums), Some(Category::Code));
+
+    sums[Category::Image.index()] = 9;
+    assert_eq!(
+        Category::heaviest(&sums),
+        Some(Category::Image),
+        "a tie goes to the lower index"
+    );
+
+    let mut only_other = [0u64; Category::COUNT];
+    only_other[Category::Other.index()] = 1;
+    assert_eq!(Category::heaviest(&only_other), Some(Category::Other));
+}

@@ -42,6 +42,10 @@ pub struct Named {
     pub sibling: Option<&'static str>,
     /// The parent must also hold a file with one of these names (a lockfile next to `node_modules`).
     pub sibling_any: &'static [&'static str],
+    /// Instead of `sibling_any`: some folder from the parent up to and including the scan root holds
+    /// every one of these names as a regular file (the pnpm workspace files above a member's
+    /// `node_modules`). Empty for no such alternative.
+    pub workspace_root: &'static [&'static str],
     /// No folder on the way down to the directory, scan root included, has one of these names: tools
     /// install their own copies there (`~/.vscode/extensions/*/node_modules`).
     pub not_inside: &'static [&'static str],
@@ -59,6 +63,7 @@ impl Named {
             names,
             sibling: None,
             sibling_any: &[],
+            workspace_root: &[],
             not_inside: &[],
             not_below: &[],
             not_below_drive: &[],
@@ -69,6 +74,13 @@ impl Named {
     /// Only when the parent directory also holds a file with one of these names.
     pub const fn next_to_any(mut self, markers: &'static [&'static str]) -> Self {
         self.sibling_any = markers;
+        self
+    }
+
+    /// Also when a folder from the parent up to and including the scan root holds every one of these
+    /// names as a regular file: the member of a workspace has no lockfile of its own.
+    pub const fn or_in_workspace(mut self, markers: &'static [&'static str]) -> Self {
+        self.workspace_root = markers;
         self
     }
 
@@ -109,12 +121,20 @@ impl Named {
     }
 }
 
-/// Individual files below a folder of the home directory, selected by what they are. The suggestion
-/// covers only the bytes of the files that qualify, not the folder.
+/// Where a [`Files`] rule looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilesIn {
+    /// A folder relative to the home directory; empty means the whole home directory.
+    Home(&'static str),
+    /// One of the user's personal folders, wherever the desktop put it and whatever it is called.
+    UserDir(UserDir),
+}
+
+/// Individual files below a folder, selected by what they are. The suggestion covers only the bytes of
+/// the files that qualify, not the folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Files {
-    /// Folder relative to the home directory; empty means the whole home directory.
-    pub home_relative: &'static str,
+    pub location: FilesIn,
     pub age: Option<Age>,
     pub category: Option<Category>,
     /// Smallest allocated size of a qualifying file.
@@ -123,8 +143,18 @@ pub struct Files {
 
 impl Files {
     pub const fn in_home(home_relative: &'static str) -> Self {
+        Self::at(FilesIn::Home(home_relative))
+    }
+
+    /// Below one of the user's personal folders, found by its role (`Downloads` is `Pobrane` on a Polish
+    /// desktop).
+    pub const fn in_user_dir(dir: UserDir) -> Self {
+        Self::at(FilesIn::UserDir(dir))
+    }
+
+    const fn at(location: FilesIn) -> Self {
         Self {
-            home_relative,
+            location,
             age: None,
             category: None,
             min_bytes: 0,

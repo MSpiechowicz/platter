@@ -12,7 +12,7 @@
 </script>
 
 <script lang="ts">
-  import { baseName } from '../../format';
+  import { baseName, percentText } from '../../format';
   import type { VolumeDto } from '../../api/types';
   import { afterPaint } from '../../motion/afterPaint';
   import { fmt } from '../../state/fmt.svelte';
@@ -154,7 +154,7 @@
             class="rail"
             title="{baseName(volume.device)}: {fmt.size(used)} of {fmt.size(volume.total)} used"
           >
-            <b class="num">{Math.round(share * 100)}%</b>
+            <b class="num">{percentText(share)}</b>
             <Bar value={share} label="Disk used" />
           </div>
         {:else if volume}

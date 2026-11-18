@@ -38,8 +38,8 @@
       color: ui.explorerFocusColor,
       scan: ui.explorerScan,
     }));
-    // Ids are only good for the scan they came from.
-    const remembered = place.scan === undefined || place.scan === state.scanId ? place.focus : undefined;
+    // Ids are only good for the scan they came from: a place that names no scan is not reused.
+    const remembered = place.scan === state.scanId ? place.focus : undefined;
     const wanted = focusId ?? remembered ?? hooks.focus ?? undefined;
 
     const start = await resolveStart(api, state.scanId, state.rootId, wanted);

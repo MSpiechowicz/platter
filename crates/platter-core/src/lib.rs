@@ -6,6 +6,8 @@
 //! - [`budget`]: the entry and memory allowance a scan reserves while directories are listed.
 //! - [`query`]: paged children, level-of-detail, path and summary queries returning [`dto`] types.
 //! - [`dto`]: the serde wire types shared with the frontend.
+//! - [`units`]: the unit family a size is written in, and [`format_size`].
+//! - [`elevated`]: the closed list of commands that run as the administrator on Linux.
 //! - `testing` (feature `testing`): an in-memory `DirSource` for tests.
 //!
 //! A typical caller (CLI, IPC layer):
@@ -17,16 +19,19 @@
 
 pub mod budget;
 pub mod dto;
+pub mod elevated;
 pub mod error;
 pub mod model;
 pub mod ports;
 pub mod query;
 pub mod scan;
+pub mod units;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 pub use budget::{BudgetLimits, EntryBudget, Lease, LimitHit};
+pub use elevated::ElevatedTool;
 pub use error::{QueryError, ScanError, ScanLimit};
 pub use model::{
     Category, EntryKind, Environment, MAX_RULE_PATH_BYTES, MAX_RULES_FILE_BYTES, MAX_USER_RULES, ModelLabel,
@@ -44,3 +49,4 @@ pub use query::{
     find_folders_until,
 };
 pub use scan::{CancelToken, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_MEMORY_BYTES, ProgressFn, ScanConfig, scan};
+pub use units::{Units, format_size};

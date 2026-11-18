@@ -209,7 +209,9 @@ fn a_tree_exactly_at_the_name_byte_limit_is_scanned_and_one_byte_less_is_not() {
     assert!(run(&fs, &with_limit(total)).is_ok());
     assert!(matches!(
         run(&fs, &with_limit(total - 1)),
-        Err(ScanError::TooLarge { .. })
+        Err(ScanError::TooLarge {
+            limit: ScanLimit::Names(limit)
+        }) if limit == total - 1
     ));
 }
 

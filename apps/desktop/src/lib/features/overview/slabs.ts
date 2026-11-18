@@ -125,7 +125,11 @@ export function buildSlabs({ levels, insideOf, total, free }: SlabInput): Slab[]
 
   const big = sorted.filter(isBig);
   const small = sorted.filter((entry, index) => !isBig(entry, index));
-  const share = (size: number): number => (total > 0 ? size / total : 0);
+  // On btrfs the folders can add up to more than the disk (shared extents): shares are of the larger of the two, as
+  // the stack's heights are, so no slab says more than 100%.
+  const listed = sorted.reduce((sum, entry) => sum + entry.node.allocated, 0) + Math.max(free ?? 0, 0);
+  const whole = Math.max(total, listed);
+  const share = (size: number): number => (whole > 0 ? size / whole : 0);
   const colors = levelColors(levels);
 
   const slabs: Slab[] = big.map(({ node, name }) => ({

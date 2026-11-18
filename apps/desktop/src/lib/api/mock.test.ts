@@ -150,6 +150,45 @@ describe('scanning', () => {
     expect(totals.dirs).toBeGreaterThan(50);
   });
 
+  it('counts the directories and mounts below the root, and an error for each unreadable folder and each warning', async () => {
+    const walk = async (api: Api, id: ScanId, rootId: number): Promise<NodeDto[]> => {
+      const found: NodeDto[] = [];
+
+      for (const stack = [rootId]; stack.length > 0;) {
+        for (const kid of await allChildren(api, id, stack.pop() as number)) {
+          found.push(kid);
+
+          if (kid.kind === 'dir') {
+            stack.push(kid.id);
+          }
+        }
+      }
+
+      return found;
+    };
+
+    for (const warnings of [[], ['mountTableUnavailable', 'excludedUnresolved']] as const) {
+      const api = createMockApi({ ...FAST, warnings: [...warnings] });
+      const { id, rootId, totals, events } = await scan(api, '/', true);
+      const nodes = await walk(api, id, rootId);
+      const unreadable = nodes.filter((node) => node.unreadable).length;
+
+      // The root is not counted, a mount is (it is a directory that was not entered).
+      expect(nodes.some((node) => node.kind === 'mount')).toBe(true);
+      expect(unreadable).toBeGreaterThan(0);
+      expect(totals.dirs).toBe(nodes.filter((node) => node.kind === 'dir' || node.kind === 'mount').length);
+      expect(totals.errors).toBe(unreadable + warnings.length);
+
+      // Progress counts the same things, so it never runs past the totals.
+      for (const event of events) {
+        if (event.type === 'progress') {
+          expect(event.dirs).toBeLessThanOrEqual(totals.dirs);
+          expect(event.errors).toBeLessThanOrEqual(totals.errors);
+        }
+      }
+    }
+  });
+
   it('builds a tree of a few thousand nodes that adds up to the volume usage', async () => {
     const api = createMockApi(FAST);
     const { totals } = await scan(api);
@@ -521,18 +560,22 @@ describe('getLod', () => {
     expect(opened[0]?.node.id).toBe(all[0]?.id);
   });
 
-  it('names one merged child "1 smaller item", also when it could have been shown', async () => {
+  it('shows every child when they fit exactly, and takes no placeholder for the last one', async () => {
     const api = createMockApi(FAST);
     const { id, rootId } = await scan(api);
     const all = await allChildren(api, id, rootId);
 
-    // Like the backend: the loop stops when the budget is used up, before the last sibling takes the placeholder's place.
+    // The root, the children, and one node for the placeholder that stands in until the last child is admitted for free.
     const lod = await api.getLod(id, rootId, all.length + 1, 1);
-    const collapsed = lod.children.at(-1)?.node;
 
     expect(lod.children).toHaveLength(all.length);
-    expect(collapsed).toMatchObject({ id: COLLAPSED_NODE_ID, kind: 'collapsed', name: '1 smaller item' });
-    expect(collapsed?.allocated).toBe(all.at(-1)?.allocated);
+    expect(lod.children.some((child) => child.node.kind === 'collapsed')).toBe(false);
+    expect(count(lod)).toBe(all.length + 1);
+
+    // One less and the smallest two are merged.
+    const tight = await api.getLod(id, rootId, all.length, 1);
+
+    expect(tight.children.at(-1)?.node).toMatchObject({ kind: 'collapsed', name: '2 smaller items' });
   });
 
   it('spends the budget on the largest nodes anywhere, so a directory shows only some of its children', async () => {
@@ -632,35 +675,46 @@ describe('getSummary', () => {
     expect(largestDirs.every((dir) => dir.kind === 'dir' && dir.allocated > 0)).toBe(true);
   });
 
-  it('on a disk shaped like a real one (97% in /home) lists the one big folder, then the small ones', async () => {
+  it('on a disk shaped like a real one (97% in /home) goes down the folders that hold most of it, as far as six levels', async () => {
     const api = createMockApi(FAST);
     const { id, rootId } = await scan(api, '/real');
     const { largestDirs, node } = await api.getSummary(id, rootId);
 
-    // /home is dominated by its only child, so `sam` stands in for it; it holds 97% of the disk. Nothing is
-    // expanded after that, because eight candidates remain: the rest of the list is `/var`, `/usr`, `/opt`, a
-    // 17 MB `/etc` and the first three of fourteen items of 8 KB.
+    // /home is dominated by `sam`, which holds 97% of the disk and so gives way to its folders. `.local` is dominated by
+    // `share`, then `Steam`, then `steamapps` (level 6, the deepest a folder may be listed). The `.docker` chain ends at
+    // `0`, also on level 6. Then come `prefixes`, `Projekty`, `.cache`, `/var`, `/usr` and the 20 GB `shadercache`;
+    // the rest of the folders (`/opt`, `/etc`, the tiny items) fall off the end of the eight.
     expect(largestDirs.map((dir) => dir.name)).toEqual([
-      'sam',
+      'steamapps',
+      '0',
+      'prefixes',
+      'Projekty',
+      '.cache',
       'var',
       'usr',
-      'opt',
-      'etc',
-      'stub-1',
-      'stub-2',
-      'stub-3',
+      'shadercache',
     ]);
-    expect((largestDirs[0]?.allocated ?? 0) / node.allocated).toBeGreaterThan(0.97);
+    expect((largestDirs[0]?.allocated ?? 0) / node.allocated).toBeGreaterThan(0.47);
+    expect((largestDirs[0]?.allocated ?? 0) / node.allocated).toBeLessThan(0.48);
   });
 
-  it('keeps /home in the list when its biggest child holds less than 80% of it', async () => {
+  it('replaces /home by its folders when it holds 97% of the disk, and keeps a big folder of only files', async () => {
     const api = createMockApi(FAST);
     const { id, rootId } = await scan(api, '/skew');
     const { largestDirs, node } = await api.getSummary(id, rootId);
 
-    // vm-images is a folder of 18 files and holds 68% of /home, so /home stays; no mount, empty or unreadable folder is listed.
-    expect(largestDirs.map((dir) => dir.name).slice(0, 5)).toEqual(['home', 'var', 'usr', 'opt', 'etc']);
-    expect((largestDirs[0]?.allocated ?? 0) / node.allocated).toBeGreaterThan(0.97);
+    // /home holds more than 80% of the disk and has folders, so they stand in for it. vm-images is a folder of 18
+    // files and holds about 71% of the disk (less than 80%, and with no folder inside), so it stays as it is.
+    // No mount, empty or unreadable folder is listed.
+    expect(largestDirs.map((dir) => dir.name).slice(0, 5)).toEqual([
+      'vm-images',
+      'Videos',
+      'Games',
+      'Projekty',
+      'var',
+    ]);
+    expect(largestDirs.map((dir) => dir.name)).not.toContain('home');
+    expect((largestDirs[0]?.allocated ?? 0) / node.allocated).toBeGreaterThan(0.7);
     expect(largestDirs.every((dir) => dir.kind === 'dir' && dir.allocated > 0)).toBe(true);
   });
 
@@ -936,7 +990,7 @@ describe('getSuggestions', () => {
 
     expect(old?.path).toBe('~/Downloads/**');
     expect(old?.reason).toMatch(/^\d+ files in Downloads not modified for 365 days or more\./);
-    expect(images?.reason).toMatch(/^\d+ images of 1 GiB or more in your home folder\./);
+    expect(images?.reason).toMatch(/^\d+ images of 1\.1 GB or more in your home folder\./);
 
     for (const node of old?.nodes ?? []) {
       const dto = await api.getNode(id, node);
@@ -944,6 +998,17 @@ describe('getSuggestions', () => {
       expect(dto.kind).toBe('file');
       expect(NOW - dto.mtime).toBeGreaterThanOrEqual(365 * 86_400);
     }
+  });
+
+  it('writes the sizes of the reasons in the units asked for: GB when none are', async () => {
+    const api = createMockApi(FAST);
+    const { id } = await scan(api, '/');
+    const reasonIn = async (units?: 'GB' | 'GiB'): Promise<string | undefined> =>
+      (await api.getSuggestions(id, units)).suggestions.find((entry) => entry.id === 'disk-images')?.reason;
+
+    expect(await reasonIn()).toMatch(/^\d+ images of 1\.1 GB or more/);
+    expect(await reasonIn('GB')).toBe(await reasonIn());
+    expect(await reasonIn('GiB')).toMatch(/^\d+ images of 1\.0 GiB or more/);
   });
 
   it('lists up to 20 matched nodes, largest first, and never counts a byte twice', async () => {

@@ -502,6 +502,34 @@ describe('the Explorer', () => {
       expect(crumbs()).toEqual(['/']);
     });
 
+    it('ignores a place that does not say which scan it is from', async () => {
+      ui.explorerFocus = await rootChild('home');
+      ui.explorerScan = undefined;
+      render(Explorer, { props: {} });
+
+      await within(await screen.findByLabelText('Map of the open folder')).findAllByRole('button');
+      expect(crumbs()).toEqual(['/']);
+    });
+
+    it('does not keep a node it is asked for while no scan is ready, so a scan that finishes later opens on its root', async () => {
+      const home = await rootChild('home');
+
+      ui.openInExplorer(home, '#123456');
+      scan.reset();
+      ui.openInExplorer(home, '#123456');
+
+      expect(ui.page).toBe('explorer');
+      expect(ui.explorerFocus).toBeUndefined();
+      expect(ui.explorerFocusColor).toBeUndefined();
+      expect(ui.explorerScan).toBeUndefined();
+
+      await startScan();
+      render(Explorer, { props: {} });
+
+      await within(await screen.findByLabelText('Map of the open folder')).findAllByRole('button');
+      expect(crumbs()).toEqual(['/']);
+    });
+
     it('opens on the scan root, without an error, when the remembered folder is gone', async () => {
       ui.explorerFocus = 987_654_321;
       ui.explorerScan = scanId();

@@ -3,12 +3,13 @@
 use std::sync::Arc;
 
 use platter_cleanup::with_real_keeps;
-use platter_core::EntryProbe;
 use platter_core::dto::{ScanId, SuggestionsDto};
+use platter_core::{EntryProbe, Units};
 use platter_platform::Platform;
-use platter_rules::evaluate_with;
+use platter_rules::evaluate_with_units;
 use tauri::State;
 
+use crate::commands::advisor::question::SizeUnitsDto;
 use crate::error::CommandResult;
 use crate::state::{AppState, ScanRegistry};
 use crate::user_rules::UserRulesView;
@@ -20,26 +21,44 @@ use crate::user_rules::UserRulesView;
 /// blocking pool. The result is kept with the scan and made again only when the model's labels, the
 /// advisor option or the user's rules change; repeated calls are free. While the rules file is broken the
 /// user's rules are left out (and every plan is refused until the file is dealt with).
+///
+/// `units` (`"GB"` or `"GiB"`, `"GB"` when absent) is how the sizes in the reasons are written. A change
+/// of units makes the result again, like a change of labels.
 #[tauri::command]
-pub async fn get_suggestions(state: State<'_, AppState>, scan: ScanId) -> CommandResult<SuggestionsDto> {
+pub async fn get_suggestions(
+    state: State<'_, AppState>,
+    scan: ScanId,
+    units: Option<SizeUnitsDto>,
+) -> CommandResult<SuggestionsDto> {
+    let units = Units::from(units.unwrap_or(SizeUnitsDto::Gb));
     let scans = Arc::clone(&state.scans);
     let platform = Arc::clone(&state.platform);
     let user_rules = Arc::clone(&state.user_rules);
     let advisor_enabled = state.advisor.enabled();
 
     tauri::async_runtime::spawn_blocking(move || {
-        suggestions(&scans, &platform, scan, advisor_enabled, &user_rules.view())
+        suggestions(
+            &scans,
+            &platform,
+            scan,
+            advisor_enabled,
+            &user_rules.view(),
+            units,
+        )
     })
     .await?
 }
 
-/// The suggestions of `scan`: `notFound` when it is unknown or still running.
+/// The suggestions of `scan`, the sizes in the reasons written in `units`: `notFound` when it is unknown or
+/// still running. A caller that reads only the verdicts or the totals passes [`Units::Decimal`], the
+/// command's default, so it shares the stored result with the web view.
 pub fn suggestions(
     scans: &ScanRegistry,
     platform: &Platform,
     scan: ScanId,
     advisor_enabled: bool,
     user_rules: &UserRulesView,
+    units: Units,
 ) -> CommandResult<SuggestionsDto> {
     suggestions_with(
         scans,
@@ -48,6 +67,7 @@ pub fn suggestions(
         scan,
         advisor_enabled,
         user_rules,
+        units,
     )
 }
 
@@ -59,11 +79,18 @@ pub(crate) fn suggestions_with(
     scan: ScanId,
     advisor_enabled: bool,
     user_rules: &UserRulesView,
+    units: Units,
 ) -> CommandResult<SuggestionsDto> {
-    scans.suggestions(scan, advisor_enabled, user_rules.generation, |tree, labels| {
-        let env = platform.environment_for(tree.root_path());
-        let rules = with_real_keeps(user_rules.rule_set(), env.home.as_deref(), probe);
+    scans.suggestions_in(
+        scan,
+        advisor_enabled,
+        user_rules.generation,
+        units,
+        |tree, labels| {
+            let env = platform.environment_for(tree.root_path());
+            let rules = with_real_keeps(user_rules.rule_set(), env.home.as_deref(), probe);
 
-        evaluate_with(tree, &env, &rules, labels)
-    })
+            evaluate_with_units(tree, &env, &rules, labels, units)
+        },
+    )
 }

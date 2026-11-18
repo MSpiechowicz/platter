@@ -26,7 +26,7 @@ pub fn run(args: &VolumesArgs) -> CliResult<()> {
                 format::display(&volume.fs_type),
                 format::bytes(volume.total),
                 format::bytes(volume.available),
-                format!("{:.0}%", format::percent(used, volume.total)),
+                format::percent_text(format::fraction(used, volume.total)),
                 if volume.removable { "yes" } else { "" }.to_owned(),
             ]
         })

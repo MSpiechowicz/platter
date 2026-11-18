@@ -183,7 +183,7 @@ fn a_user_safe_on_a_personal_folder_loses_to_the_builtin_keep() {
 }
 
 #[test]
-fn a_user_safe_on_the_scan_root_is_refused() {
+fn a_user_safe_on_the_scan_root_is_never_matched_so_nothing_is_planned() {
     let fs = fs();
     let tree = scan_at(&fs, "/home/u/stuff");
     let rules = rules(&[(UserVerdict::Safe, "/home/u/stuff")]);
@@ -198,7 +198,8 @@ fn a_user_safe_on_the_scan_root_is_refused() {
     );
 
     assert!(plan.groups().is_empty());
-    assert_eq!(refused_for(&plan, "/home/u/stuff"), Some(&Refusal::ScanRoot));
+    assert!(plan.refused.is_empty(), "{:?}", plan.refused);
+    assert_eq!(plan.not_found, ["user-safe"]);
 }
 
 #[test]

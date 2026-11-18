@@ -111,7 +111,8 @@ fn user_dir_of(role: WellKnown) -> Option<UserDir> {
         WellKnown::Music => Some(UserDir::Music),
         WellKnown::Pictures => Some(UserDir::Pictures),
         WellKnown::Videos => Some(UserDir::Videos),
-        WellKnown::Downloads | WellKnown::Public | WellKnown::Templates => None,
+        WellKnown::Downloads => Some(UserDir::Downloads),
+        WellKnown::Public | WellKnown::Templates => None,
     }
 }
 

@@ -1,25 +1,12 @@
 import { baseName, joinPath } from '../paths';
+import { CATEGORIES, isProjectMarker, ofDirectory, ofFile } from './mock-categories';
 import { layoutFor, type DirSpec, type FileGroup } from './mock-layouts';
 import type { Category, NodeKind, OsName, SkipReason } from './types';
 
+export { CATEGORIES };
+
 export const BLOCK_SIZE = 4096;
 export const DAY = 86_400;
-
-/** In the backend's index order, which breaks ties between categories of equal size. */
-export const CATEGORIES: Category[] = [
-  'video',
-  'image',
-  'audio',
-  'document',
-  'archive',
-  'code',
-  'build',
-  'package',
-  'app',
-  'diskImage',
-  'data',
-  'other',
-];
 
 /** A node of the in-memory tree. The id is the index in `MockTree.nodes`; children are contiguous. */
 export interface MockNode {
@@ -48,8 +35,9 @@ export interface MockTree {
   now: number;
   rootPath: string;
   /**
-   * What this machine calls its personal folders, by their English name, where that is another name below the home
-   * folder (`{ Downloads: 'Pobrane' }`; the XDG `user-dirs.dirs` of the backend). Left out: the English names.
+   * What this machine calls its personal folders, by their English name, below the home folder
+   * (`{ Downloads: 'Pobrane' }`; the XDG `user-dirs.dirs` of the backend). The demo disks name `Downloads`. A hand-made
+   * tree may leave a folder out, and then it has its English name.
    */
   userDirs?: Readonly<Record<string, string>>;
 }
@@ -103,7 +91,8 @@ const WORDS = [
   'umber', 'velvet', 'willow', 'xenon', 'yarrow', 'zephyr', 'anchor', 'beacon', 'cinder', 'dune',
 ];
 
-const EXTENSIONS: Record<Category, string[]> = {
+/** Extensions a file of a category gets in its name. Each one maps back to the category (`ofFile`). */
+const NAME_EXTENSIONS: Record<Category, string[]> = {
   video: ['mkv', 'mp4', 'webm'],
   image: ['jpg', 'png', 'webp', 'heic'],
   audio: ['flac', 'mp3', 'ogg'],
@@ -111,16 +100,16 @@ const EXTENSIONS: Record<Category, string[]> = {
   archive: ['zip', 'tar.zst', '7z', 'tar.gz'],
   code: ['rs', 'ts', 'svelte', 'py', 'toml'],
   build: ['o', 'rlib', 'rmeta', 'd'],
-  package: ['js', 'mjs', 'json', 'd.ts'],
-  app: ['so', 'pak', 'bin', 'dll'],
+  package: ['deb', 'rpm', 'whl', 'jar'],
+  app: ['so', 'pak', 'dll', 'dylib'],
   diskImage: ['iso', 'qcow2', 'img'],
   data: ['sqlite', 'parquet', 'gguf', 'jsonl'],
-  other: ['dat', 'bin', 'cache', 'log'],
+  other: ['dat', 'bin', 'cache', 'tmp'],
 };
 
 function fileName(random: Random, category: Category, index: number): string {
   const word = pick(random, WORDS);
-  const ext = pick(random, EXTENSIONS[category]);
+  const ext = pick(random, NAME_EXTENSIONS[category]);
 
   if (category === 'image') {
     return `IMG_${String(1000 + index).padStart(4, '0')}.${ext}`;
@@ -138,8 +127,8 @@ interface Draft {
   mtime: number;
   unreadable?: boolean;
   skipped?: SkipReason;
-  /** A file that is also hard-linked from somewhere else. */
-  shared?: boolean;
+  /** Set for each of the names of a file that has more than one hard link, the same number for all of them. */
+  link?: number;
   kids: Draft[];
 }
 
@@ -148,6 +137,10 @@ interface Context {
   now: number;
   oneFileSystem: boolean;
   excluded: ReadonlySet<string>;
+  /** Hard-link groups made so far. */
+  links: number;
+  /** The second names of hard-linked files that a parent folder has not yet collected. */
+  partners: Draft[];
 }
 
 /** A directory owns one block, like on a real disk; `apparent` stays 0, as `du` counts it. */
@@ -201,6 +194,8 @@ function buildDir(spec: DirSpec, bytes: number, ctx: Context, path: string, isRo
       : weightOf(kid, ctx, below(path, kid.name));
   const total = kids.reduce((sum, kid) => sum + share(kid), 0) + filesWeight;
 
+  const linked: Draft[] = [];
+
   for (const kid of kids) {
     const kidPath = below(path, kid.name);
     const weight = weightOf(kid, ctx, kidPath);
@@ -208,6 +203,7 @@ function buildDir(spec: DirSpec, bytes: number, ctx: Context, path: string, isRo
     // A mount point that is not entered still shows up, as an empty `mount` node.
     if (weight > 0 || kid.mount || kid.unreadable || kid.empty || ctx.excluded.has(kidPath)) {
       draft.kids.push(buildDir(kid, total > 0 ? (bytes * weight) / total : 0, ctx, kidPath));
+      linked.push(...ctx.partners.splice(0));
     }
   }
 
@@ -219,7 +215,27 @@ function buildDir(spec: DirSpec, bytes: number, ctx: Context, path: string, isRo
     draft.kids.push(markerFile(name, ctx.now));
   }
 
+  if (linked.length > 0) {
+    draft.kids.push(packageStore(linked, ctx.now));
+  }
+
   return draft;
+}
+
+/**
+ * Where the other names of the hard-linked files live: a pnpm store inside the project, as `store-dir` can put it.
+ * It is deeper than the files it shares with, so the scan, which charges the first name it meets, charges the originals.
+ */
+function packageStore(partners: Draft[], now: number): Draft {
+  const store = dirDraft('.pnpm-store', now);
+  const version = dirDraft('v3', now);
+  const files = dirDraft('files', now);
+
+  files.kids = partners;
+  version.kids = [files];
+  store.kids = [version];
+
+  return store;
 }
 
 /** A small file such as `Cargo.toml`. It has no weight and does not touch the random numbers, so the rest of the tree stays as it is. */
@@ -227,7 +243,7 @@ function markerFile(name: string, now: number): Draft {
   return {
     name,
     kind: 'file',
-    category: name.endsWith('.toml') ? 'code' : 'data',
+    category: ofFile(name, 300),
     apparent: 300,
     allocated: BLOCK_SIZE,
     mtime: now - 200 * DAY,
@@ -274,16 +290,23 @@ function addFiles(parent: Draft, group: FileGroup, bytes: number, ctx: Context):
       return;
     }
 
-    target.kids.push({
-      name: fileName(random, category, index),
+    const name = fileName(random, category, index);
+    const file: Draft = {
+      name,
       kind: 'file',
-      category,
+      category: ofFile(name, apparent),
       apparent,
       allocated: Math.ceil(apparent / BLOCK_SIZE) * BLOCK_SIZE,
       mtime,
-      ...(group.sharedEvery && index % group.sharedEvery === 0 ? { shared: true } : {}),
       kids: [],
-    });
+    };
+
+    if (group.sharedEvery && index % group.sharedEvery === 0) {
+      file.link = ctx.links++;
+      ctx.partners.push({ ...file, kids: [] });
+    }
+
+    target.kids.push(file);
   });
 }
 
@@ -297,6 +320,8 @@ export function buildTree(options: TreeOptions): MockTree {
     now: options.now,
     oneFileSystem: options.oneFileSystem,
     excluded: new Set(options.excluded ?? []),
+    links: 0,
+    partners: [],
   };
   const rootSpec: DirSpec = {
     name: rootName(options.root),
@@ -308,35 +333,55 @@ export function buildTree(options: TreeOptions): MockTree {
   return flatten(rootDraft, options);
 }
 
+/** A folder waiting for its children to be copied into the arena. */
+interface Pending {
+  draft: Draft;
+  id: number;
+  /** Category imposed by a well-known ancestor folder, if any. */
+  inherited: Category | null;
+}
+
+/**
+ * Ids in breadth-first order, as the backend's assembler gives them. The category of a folder that a well-known name
+ * covers (`node_modules`) is imposed on everything below it, the outermost such folder winning. A file otherwise has
+ * the category of its name. The first name of a hard-linked file that the walk meets is charged its bytes, the others
+ * have none.
+ */
 function flatten(rootDraft: Draft, options: TreeOptions): MockTree {
   const nodes: MockNode[] = [];
-  const queue: { draft: Draft; id: number }[] = [];
+  const queue: Pending[] = [];
+  const seenLinks = new Set<number>();
 
-  const add = (draft: Draft, parent: number): number => {
+  const add = (draft: Draft, parent: number, category: Category, inherited: Category | null): void => {
     const id = nodes.length;
+    const charged = draft.link === undefined || !seenLinks.has(draft.link);
+
+    if (draft.link !== undefined) {
+      seenLinks.add(draft.link);
+    }
 
     nodes.push({
       id,
       parent,
       name: draft.name,
       kind: draft.kind,
-      allocated: draft.allocated,
-      apparent: draft.apparent,
+      allocated: charged ? draft.allocated : 0,
+      apparent: charged ? draft.apparent : 0,
       files: draft.kind === 'dir' || draft.kind === 'mount' ? 0 : 1,
-      category: draft.category,
+      category,
       mtime: draft.mtime,
       ...(draft.unreadable ? { unreadable: true } : {}),
       ...(draft.skipped ? { skipped: draft.skipped } : {}),
-      sharedFiles: draft.shared ? 1 : 0,
+      sharedFiles: draft.link === undefined ? 0 : 1,
       firstChild: 0,
       childCount: 0,
     });
-    queue.push({ draft, id });
-
-    return id;
+    queue.push({ draft, id, inherited });
   };
 
-  add(rootDraft, -1);
+  const rootImposed = ofDirectory(null, rootDraft.name, () => false);
+
+  add(rootDraft, -1, rootImposed ?? 'other', rootImposed);
 
   for (let head = 0; head < queue.length; head++) {
     const entry = queue[head];
@@ -346,17 +391,40 @@ function flatten(rootDraft: Draft, options: TreeOptions): MockTree {
     }
 
     const node = nodes[entry.id] as MockNode;
+    const kids = entry.draft.kids;
+    let projectLike: boolean | undefined;
+    const isProject = (): boolean => (projectLike ??= kids.some((kid) => isProjectMarker(kid.name)));
+
     node.firstChild = nodes.length;
-    node.childCount = entry.draft.kids.length;
-    entry.draft.kids.forEach((kid) => add(kid, node.id));
+    node.childCount = kids.length;
+
+    for (const kid of kids) {
+      if (kid.kind === 'dir') {
+        const imposed = entry.inherited ?? ofDirectory(entry.draft.name, kid.name, isProject);
+
+        add(kid, node.id, imposed ?? 'other', imposed);
+      } else if (kid.kind === 'mount') {
+        add(kid, node.id, 'other', null);
+      } else {
+        add(kid, node.id, entry.inherited ?? kid.category, null);
+      }
+    }
   }
 
   aggregate(nodes, options.now);
 
-  return { nodes, now: options.now, rootPath: options.root };
+  return {
+    nodes,
+    now: options.now,
+    rootPath: options.root,
+    userDirs: { Downloads: 'Downloads' },
+  };
 }
 
-/** One reverse pass: every child is folded into its parent. */
+/**
+ * One reverse pass: every child is folded into its parent. A folder's category is the one holding most of the bytes
+ * of its files (ties go to the first in `CATEGORIES`). A folder without bytes keeps the category its name imposes, or `other`.
+ */
 function aggregate(nodes: MockNode[], now: number): void {
   const bytesByCategory = nodes.map(() => new Float64Array(CATEGORIES.length));
 
@@ -376,6 +444,14 @@ function aggregate(nodes: MockNode[], now: number): void {
     const node = nodes[id] as MockNode;
     const parent = nodes[node.parent] as MockNode;
 
+    if (node.kind === 'dir') {
+      const heaviest = heaviestCategory(bytesByCategory[id] as Float64Array);
+
+      if (heaviest) {
+        node.category = heaviest;
+      }
+    }
+
     parent.allocated += node.allocated;
     parent.apparent += node.apparent;
     parent.files += node.files;
@@ -387,21 +463,25 @@ function aggregate(nodes: MockNode[], now: number): void {
     from.forEach((value, index) => (into[index] = (into[index] ?? 0) + value));
   }
 
-  for (const node of nodes) {
-    if (node.kind !== 'dir') {
-      continue;
-    }
+  const root = nodes[0] as MockNode;
+  const heaviest = heaviestCategory(bytesByCategory[0] as Float64Array);
 
-    const bytes = bytesByCategory[node.id] as Float64Array;
-    let best = bytes.length - 1;
-
-    bytes.forEach((value, index) => {
-      if (value > (bytes[best] ?? 0)) {
-        best = index;
-      }
-    });
-    node.category = CATEGORIES[best] ?? 'other';
+  if (heaviest) {
+    root.category = heaviest;
   }
+}
+
+/** The category with the most bytes, the first of equals, or null when there are none. */
+function heaviestCategory(bytes: Float64Array): Category | null {
+  let best = 0;
+
+  bytes.forEach((value, index) => {
+    if (value > (bytes[best] ?? 0)) {
+      best = index;
+    }
+  });
+
+  return (bytes[best] ?? 0) > 0 ? (CATEGORIES[best] ?? null) : null;
 }
 
 export function childrenOf(tree: MockTree, node: MockNode): MockNode[] {

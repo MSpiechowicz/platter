@@ -25,6 +25,8 @@ pub(crate) struct Assembly<'a> {
     pub expected_name_bytes: u64,
     /// The entry limit in force, for the error when the arena overflows.
     pub entry_limit: u64,
+    /// The name-byte limit in force, for the error when the name arena overflows.
+    pub name_limit: u64,
     pub warnings: Vec<ScanWarning>,
 }
 
@@ -106,7 +108,7 @@ fn flatten(root: Chunk, input: &Assembly<'_>) -> Result<Tree, ScanError> {
 
         let first_child = nodes.len();
         if first_child + chunk.entries.len() >= u32::MAX as usize {
-            return Err(too_large(input));
+            return Err(too_many_entries(input));
         }
 
         let mut subdirs = std::mem::take(&mut chunk.subdirs).into_iter();
@@ -115,7 +117,7 @@ fn flatten(root: Chunk, input: &Assembly<'_>) -> Result<Tree, ScanError> {
 
         for (index, entry) in chunk.entries.iter().enumerate() {
             let name = &chunk.names[entry.name_range()];
-            let name_off = u32::try_from(names.len()).map_err(|_| too_large(input))?;
+            let name_off = u32::try_from(names.len()).map_err(|_| too_many_names(input))?;
             names.extend_from_slice(name);
 
             let node_id = nodes.len() as u32;
@@ -199,9 +201,15 @@ fn flatten(root: Chunk, input: &Assembly<'_>) -> Result<Tree, ScanError> {
     })
 }
 
-fn too_large(input: &Assembly<'_>) -> ScanError {
+fn too_many_entries(input: &Assembly<'_>) -> ScanError {
     ScanError::TooLarge {
         limit: ScanLimit::Entries(input.entry_limit),
+    }
+}
+
+fn too_many_names(input: &Assembly<'_>) -> ScanError {
+    ScanError::TooLarge {
+        limit: ScanLimit::Names(input.name_limit),
     }
 }
 
@@ -240,8 +248,8 @@ fn aggregate(nodes: &mut [Node], dirs: &mut [DirInfo]) -> Totals {
 
         let files = match node.kind {
             NodeKind::Dir => {
-                if let Some(dominant) = dominant(&by_category[node.dir as usize]) {
-                    nodes[i].category = dominant;
+                if let Some(heaviest) = Category::heaviest(&by_category[node.dir as usize]) {
+                    nodes[i].category = heaviest;
                 }
                 dirs[node.dir as usize].files
             }
@@ -280,13 +288,4 @@ fn aggregate(nodes: &mut [Node], dirs: &mut [DirInfo]) -> Totals {
     }
 
     totals
-}
-
-fn dominant(sums: &[u64; Category::COUNT]) -> Option<Category> {
-    let (index, &bytes) = sums
-        .iter()
-        .enumerate()
-        .max_by_key(|&(index, &bytes)| (bytes, std::cmp::Reverse(index)))?;
-
-    (bytes > 0).then(|| Category::ALL[index])
 }

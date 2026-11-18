@@ -569,9 +569,11 @@ mod scan_roots {
     fn from_the_matched_folder_itself() {
         let found = run(&scan_at(&fs(), "/home/u/.cache", false), rules());
 
-        let cache = get(&found, "cache").expect("the scan root can be the match");
-        assert_eq!((cache.allocated, cache.path.as_str()), (100, "~/.cache"));
-        assert_eq!(cache.nodes, [NodeId::ROOT]);
+        assert!(
+            get(&found, "cache").is_none(),
+            "the folder that was scanned is never a suggestion: {found:?}"
+        );
+        assert!(found.suggestions.is_empty(), "{found:?}");
     }
 
     #[test]

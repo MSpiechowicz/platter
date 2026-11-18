@@ -245,15 +245,74 @@ fn lod_expands_the_largest_directories_first() {
         "biggest directory is expanded"
     );
     assert!(
-        by_name("small").is_none(),
-        "the smallest directory loses out to big's files"
+        by_name("small").unwrap().children.is_empty(),
+        "the smallest directory loses out to big's files, so it is shown without its content"
     );
-
-    let collapsed = result.children.last().unwrap();
-    assert_eq!(collapsed.node.kind, NodeKind::Collapsed);
-    assert_eq!(collapsed.node.name, "1 smaller item");
-    assert_eq!(collapsed.node.allocated, (1..=30).sum::<u64>());
+    assert!(
+        result.children.iter().all(|c| c.node.kind != NodeKind::Collapsed),
+        "the last sibling takes the room of the placeholder it would have been merged into"
+    );
     assert_eq!(count(&result), 12);
+
+    let big = by_name("big").unwrap();
+    assert_eq!(big.children.last().unwrap().node.kind, NodeKind::Collapsed);
+}
+
+#[test]
+fn lod_shows_siblings_that_fit_exactly_instead_of_merging_the_last_one() {
+    let mut fs = FakeFs::new();
+    for i in 0..5 {
+        fs.file(&format!("/d/f{i}"), 100 + i);
+    }
+    let tree = scan_fake(&fs, false);
+    let dir = find(&tree, "d");
+
+    // The directory and its five files are six nodes: all of them fit, no placeholder is needed.
+    let exact = lod(&tree, dir, 6, 10).unwrap();
+    assert_eq!(count(&exact), 6);
+    assert_eq!(exact.children.len(), 5);
+    assert!(exact.children.iter().all(|c| c.node.kind == NodeKind::File));
+
+    // One node less: three files and a placeholder for the other two.
+    let short = lod(&tree, dir, 5, 10).unwrap();
+    assert_eq!(count(&short), 5);
+    assert_eq!(short.children.len(), 4);
+    assert_eq!(short.children.last().unwrap().node.name, "2 smaller items");
+}
+
+#[test]
+fn a_collapsed_node_of_only_empty_items_is_other() {
+    let mut fs = FakeFs::new();
+    fs.file("/d/big1.mp4", 1000).file("/d/big2.mp4", 900);
+    for i in 0..4 {
+        fs.file(&format!("/d/empty{i}.zip"), 0);
+    }
+    let tree = scan_fake(&fs, false);
+
+    let result = lod(&tree, find(&tree, "d"), 4, 10).unwrap();
+    let collapsed = result.children.last().unwrap();
+
+    assert_eq!(collapsed.node.kind, NodeKind::Collapsed);
+    assert_eq!(collapsed.node.allocated, 0);
+    assert_eq!(collapsed.node.category, Category::Other);
+}
+
+#[test]
+fn a_collapsed_node_takes_the_category_with_most_bytes() {
+    let mut fs = FakeFs::new();
+    fs.file("/d/big.mp4", 1000);
+    fs.file("/d/a.zip", 30).file("/d/b.zip", 20).file("/d/c.png", 40);
+    let tree = scan_fake(&fs, false);
+
+    let result = lod(&tree, find(&tree, "d"), 3, 10).unwrap();
+    let collapsed = result.children.last().unwrap();
+
+    assert_eq!(collapsed.node.kind, NodeKind::Collapsed);
+    assert_eq!(
+        collapsed.node.category,
+        Category::Archive,
+        "50 bytes of archives beat 40 of images"
+    );
 }
 
 #[test]
@@ -489,12 +548,93 @@ fn largest_dirs_leave_out_a_directory_dominated_by_its_child() {
 #[test]
 fn largest_dirs_keep_a_directory_when_no_child_reaches_the_share() {
     let mut fs = FakeFs::new();
-    // 790 of 1000 is 79%: just under the threshold, so `home` is not replaced. It has a single child
-    // directory, which would only swap it for a smaller folder, so it is not expanded to fill the list.
+    // 790 of home's 1000 is 79%: just under the threshold, so the child does not dominate `home`. `home`
+    // holds under 80% of `h` too, so it is not replaced, and with a single child directory it is not
+    // expanded to fill the list either.
     fs.file("/h/home/user/data.bin", 790);
     fs.file("/h/home/readme", 210);
+    fs.file("/h/other/x.bin", 400);
 
-    assert_eq!(largest_dir_names(&fs, "h"), ["home"]);
+    assert_eq!(largest_dir_names(&fs, "h"), ["home", "other"]);
+}
+
+#[test]
+fn largest_dirs_expand_a_folder_holding_most_of_the_summarized_node_even_when_the_list_is_full() {
+    let mut fs = FakeFs::new();
+    // `real` holds 870 of the 950 bytes (91%) and splits into three folders, none of them dominant. Eight
+    // other folders already fill the list, so only the share of the whole can open `real`.
+    fs.file("/r/real/c1/x.bin", 300)
+        .file("/r/real/c2/x.bin", 290)
+        .file("/r/real/c3/x.bin", 280);
+    for i in 1..=8 {
+        fs.file(&format!("/r/s{i}/x.bin"), 10);
+    }
+
+    let names = largest_dir_names(&fs, "r");
+    assert_eq!(names, ["c1", "c2", "c3", "s1", "s2", "s3", "s4", "s5"]);
+}
+
+#[test]
+fn largest_dirs_expand_a_folder_holding_most_of_the_node_through_a_single_child_folder() {
+    let mut fs = FakeFs::new();
+    // `home` is all of `h`, and its only child folder holds 70% of it: no dominant child, but the list would
+    // be headed by a folder that is the whole node, so its child is listed instead.
+    fs.file("/h/home/user/data.bin", 700);
+    fs.file("/h/home/readme", 300);
+
+    assert_eq!(largest_dir_names(&fs, "h"), ["user"]);
+}
+
+#[test]
+fn largest_dirs_keep_a_big_folder_that_holds_only_files() {
+    let mut fs = FakeFs::new();
+    fs.file("/h/big/a.bin", 600).file("/h/big/b.bin", 300);
+    fs.file("/h/other/x.bin", 50);
+
+    assert_eq!(largest_dir_names(&fs, "h"), ["big", "other"]);
+}
+
+#[test]
+fn largest_dirs_keep_a_big_folder_of_loose_files_with_a_small_subfolder() {
+    // `big` is 90% of `h`, but its one subfolder is a twentieth of it: the folder itself is what takes the
+    // space, so it is listed, not its small subfolder.
+    let mut fs = FakeFs::new();
+    fs.file("/h/big/a.bin", 860).file("/h/big/small/x", 40);
+    fs.file("/h/other/x.bin", 100);
+
+    assert_eq!(largest_dir_names(&fs, "h"), ["big", "other"]);
+}
+
+#[test]
+fn largest_dirs_go_into_a_big_folder_whose_subfolders_hold_most_of_it() {
+    // `big` is 90% of `h` and its two subfolders hold 60% of it (neither alone 80%): it is listed through them.
+    let mut fs = FakeFs::new();
+    fs.file("/h/big/a.bin", 360)
+        .file("/h/big/s1/x", 300)
+        .file("/h/big/s2/x", 240);
+    fs.file("/h/other/x.bin", 100);
+
+    assert_eq!(largest_dir_names(&fs, "h"), ["s1", "s2", "other"]);
+}
+
+#[test]
+fn largest_dirs_keep_a_big_folder_whose_only_folders_are_empty() {
+    let mut fs = FakeFs::new();
+    fs.dir("/h/big/empty").file("/h/big/a.bin", 900);
+    fs.file("/h/other/x.bin", 50);
+
+    assert_eq!(largest_dir_names(&fs, "h"), ["big", "other"]);
+}
+
+#[test]
+fn largest_dirs_stop_expanding_a_folder_holding_most_of_the_node_at_the_depth_limit() {
+    let mut fs = FakeFs::new();
+    // d1..d5 are dominated by their only child, so d6 (level 6) is reached. It is all of the node and has
+    // a folder of 70%, which would open it, but the depth limit keeps it.
+    fs.file("/h/d1/d2/d3/d4/d5/d6/d7/data.bin", 700);
+    fs.file("/h/d1/d2/d3/d4/d5/d6/readme", 300);
+
+    assert_eq!(largest_dir_names(&fs, "h"), ["d6"]);
 }
 
 #[test]

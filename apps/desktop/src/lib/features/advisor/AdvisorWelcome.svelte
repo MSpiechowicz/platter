@@ -4,6 +4,7 @@
   import Card from '../../components/ui/Card.svelte';
   import Icon, { type IconName } from '../../components/ui/Icon.svelte';
   import Notice from '../../components/ui/Notice.svelte';
+  import { percentText } from '../../format';
   import type { AdvisorStatusDto } from '../../api/types';
   import type { AdvisorStore } from '../../state/advisor.svelte';
   import { fmt } from '../../state/fmt.svelte';
@@ -27,7 +28,6 @@
   /** A download in progress keeps its Cancel button: the slot has no room for a problem next to it. */
   const failed = $derived(!downloading && problem !== undefined);
   const share = $derived(status.download ? downloadShare(status.download) : 0);
-  const percent = $derived(Math.round(share * 100));
 
   const reduced = $derived(motion.reduced);
   const moving = $derived(!reduced && !failed);
@@ -148,7 +148,7 @@
             {#if status.download}
               <Bar value={share} label="Download progress" />
               <div class="prow">
-                <span class="num">{receivedText(status.download, fmt.size)} · {percent}%</span>
+                <span class="num">{receivedText(status.download, fmt.size)} · {percentText(share)}</span>
                 <Button onclick={() => store.cancelDownload()}>Cancel</Button>
               </div>
             {:else}

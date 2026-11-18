@@ -148,14 +148,21 @@ pub fn execute<P: EntryProbe, R: EntryRemover>(
 
     // Once the administrator password was refused, no other prompt is shown in this run.
     let mut refused: Option<String> = None;
+    // The commands that need the password are asked for together, one prompt for all, when the first of
+    // them is reached. Each group then reports its own answer in its own place.
+    let batch = ElevatedBatch::of(plan);
+    let mut batch_answers: Option<Vec<Result<(), ToolFailure>>> = None;
 
-    'groups: for group in &plan.groups {
+    'groups: for (position, group) in plan.groups.iter().enumerate() {
         if let CleanupAction::RunTool(tool) = group.action {
             let Some(runner) = disk.tools else {
                 report.tools_not_run.push(group.rule_id);
                 continue;
             };
-            if cancel.is_cancelled() {
+
+            // A command the batch already ran is reported even if the run was cancelled meanwhile: it ran.
+            let ran_already = batch_answers.is_some() && batch.slot(position).is_some();
+            if !ran_already && cancel.is_cancelled() {
                 report.cancelled = true;
                 break 'groups;
             }
@@ -164,8 +171,14 @@ pub fn execute<P: EntryProbe, R: EntryRemover>(
                 rule_id: group.rule_id,
                 targets: group.targets.len(),
             });
-            let outcome = if let (true, Some(why)) = (tool.needs_elevation, &refused) {
-                TargetOutcome::Skipped(why.clone())
+            let outcome = if let Some(slot) = batch.slot(position) {
+                let answers = batch_answers.get_or_insert_with(|| runner.run_batch(&batch.commands));
+                let answer = answers
+                    .get(slot)
+                    .cloned()
+                    .unwrap_or_else(|| Err(ToolFailure::Io("the runner gave no answer".to_owned())));
+
+                outcome_of(answer, tool, &mut refused)
             } else {
                 run_tool(runner, tool, &mut refused)
             };
@@ -224,6 +237,53 @@ pub fn execute<P: EntryProbe, R: EntryRemover>(
     report
 }
 
+/// The commands of a plan that need the administrator password, each once, and which group takes
+/// which. Asked for together (see [`ToolRunner::run_batch`]) so that the system prompts once.
+struct ElevatedBatch {
+    commands: Vec<ToolCommand<'static>>,
+    /// For each group of the plan, its place in `commands` when it is one of them.
+    slots: Vec<Option<usize>>,
+}
+
+impl ElevatedBatch {
+    fn of(plan: &CleanupPlan) -> Self {
+        let mut commands: Vec<ToolCommand<'static>> = Vec::new();
+        let mut slots = Vec::with_capacity(plan.groups.len());
+
+        for group in &plan.groups {
+            let CleanupAction::RunTool(tool) = group.action else {
+                slots.push(None);
+                continue;
+            };
+            if !tool.needs_elevation {
+                slots.push(None);
+                continue;
+            }
+
+            let command = ToolCommand {
+                program: tool.program,
+                args: tool.args,
+                elevated: true,
+            };
+            // Two groups with the same command run it once.
+            let slot = commands
+                .iter()
+                .position(|known| *known == command)
+                .unwrap_or_else(|| {
+                    commands.push(command);
+                    commands.len() - 1
+                });
+            slots.push(Some(slot));
+        }
+
+        Self { commands, slots }
+    }
+
+    fn slot(&self, group: usize) -> Option<usize> {
+        self.slots.get(group).copied().flatten()
+    }
+}
+
 fn run_tool(
     runner: &dyn ToolRunner,
     tool: crate::action::Tool,
@@ -234,9 +294,23 @@ fn run_tool(
         args: tool.args,
         elevated: tool.needs_elevation,
     };
+    if let (true, Some(why)) = (tool.needs_elevation, &*refused) {
+        return TargetOutcome::Skipped(why.clone());
+    }
+
+    outcome_of(runner.run(&command), tool, refused)
+}
+
+/// What the runner's answer for `tool` means for its targets. A refused password is remembered in
+/// `refused`.
+fn outcome_of(
+    answer: Result<(), ToolFailure>,
+    tool: crate::action::Tool,
+    refused: &mut Option<String>,
+) -> TargetOutcome {
     let shown = format!("{} {}", tool.program, tool.args.join(" "));
 
-    match runner.run(&command) {
+    match answer {
         Ok(()) => TargetOutcome::ByTool(shown),
         Err(ToolFailure::NotInstalled) => {
             TargetOutcome::Skipped(format!("{} is not installed", tool.program))

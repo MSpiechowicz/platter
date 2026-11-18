@@ -19,7 +19,7 @@ pub enum Command {
     Suggest(SuggestArgs),
     /// Clean what rules find in a directory: `--dry-run` shows the plan, `--yes` carries it out.
     Clean(CleanArgs),
-    /// Scan a directory and write a JSON fixture for the frontend mock.
+    /// Scan a directory and write a JSON snapshot of it: totals, a level-of-detail tree and a summary.
     ExportFixture(ExportArgs),
 }
 
