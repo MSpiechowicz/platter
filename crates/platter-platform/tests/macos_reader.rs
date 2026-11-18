@@ -341,14 +341,18 @@ fn a_scan_that_starts_in_the_system_volumes_enters_the_data_volume_like_any_othe
         return;
     };
 
-    // Only a scan of `/` leaves `/System/Volumes` out: here the Data volume is another device and an
-    // ordinary disk, entered unless the scan stays on one filesystem.
+    // Only a scan of `/` leaves `/System/Volumes` out: here the Data volume is entered. Whether it reads
+    // as a mount of its own depends on the device number macOS reports for it in this listing (on the CI
+    // runner it is the one of `/System/Volumes`), so only the entering is asserted.
     let data = listing
         .entries
         .iter()
         .find(|entry| entry.name == b"Data")
         .expect("Data");
-    assert!(data.meta.is_mount_root, "the Data volume is its own mount");
+    eprintln!(
+        "/System/Volumes/Data: dev {} mount root {}",
+        data.meta.dev, data.meta.is_mount_root
+    );
     assert!(data.child.is_some());
     assert_eq!(data.skipped, None);
 }

@@ -209,6 +209,7 @@ impl Store {
     /// and never followed, and so is anything but a regular file. A file that is damaged, in use, or
     /// made by a newer version is a [`Problem`], and is left as it is.
     pub fn open(path: &Path) -> Result<Self> {
+        let path = &in_its_real_folder(path)?;
         refuse_a_link(path)?;
 
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -683,6 +684,25 @@ fn quick_check(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// `path` with its folder resolved, the file name kept as it is. SQLite's `NOFOLLOW` refuses a link
+/// anywhere in the path, not only at the file's name, and a folder on the way may well be one (on macOS
+/// every temporary folder is under `/var`, a link to `/private/var`; a home folder can be reached through
+/// one). Only a link at the name itself is refused, by [`refuse_a_link`] and by SQLite.
+fn in_its_real_folder(path: &Path) -> Result<std::path::PathBuf> {
+    let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(Problem::new("the history file could not be opened"));
+    };
+    let folder = if folder.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        folder
+    };
+    let real =
+        std::fs::canonicalize(folder).map_err(|_| Problem::new("the history file could not be opened"))?;
+
+    Ok(real.join(name))
+}
+
 /// A link at `path` is never followed, and a path that is not a regular file is not a database.
 fn refuse_a_link(path: &Path) -> Result<()> {
     match std::fs::symlink_metadata(path) {
@@ -954,6 +974,20 @@ mod tests {
         };
 
         assert!(problem.message().contains("link"), "{problem}");
+    }
+
+    /// As on macOS, where every temporary folder is below `/var`, a link to `/private/var`.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_among_the_folders_on_the_way_is_not_a_link_at_the_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("var")).unwrap();
+        let path = dir.path().join("var/history.sqlite");
+
+        Store::open(&path).unwrap();
+
+        assert!(dir.path().join("real/history.sqlite").is_file());
     }
 
     #[test]
