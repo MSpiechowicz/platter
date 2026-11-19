@@ -654,7 +654,14 @@ describe('AdvisorCard cleaning', () => {
     });
 
     await waitFor(() => expect(footer().textContent).toContain('Freed 1.2 GB.'));
-    expect(footer().textContent).toContain('The disk changed. Rescan to clean again.');
+    // The footer says what happened. The way on is a toast with its own Rescan button.
+    expect(footer().textContent).not.toContain('The disk changed.');
+    expect(ui.toasts.at(-1)).toMatchObject({
+      title: 'Freed 1.2 GB',
+      description: 'The disk changed. Rescan to clean again.',
+      kind: 'ok',
+      action: { label: 'Rescan' },
+    });
     expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
     expect(button('Clean safe · 105 GB').disabled).toBe(true);
     expect(button('Clean selected (2)').disabled).toBe(true);

@@ -23,6 +23,17 @@
       <div>
         <b>{toast.title}</b>
         {#if toast.description}<p>{toast.description}</p>{/if}
+        {#if toast.action}
+          {@const action = toast.action}
+          <button
+            class="ta"
+            type="button"
+            onclick={() => {
+              ui.dismiss(toast.id);
+              action.run();
+            }}>{action.label}</button
+          >
+        {/if}
       </div>
       <button class="tx" type="button" aria-label="Close" onclick={() => ui.dismiss(toast.id)}>
         <Icon name="close" size={10} stroke={1.6} />
@@ -80,6 +91,22 @@
     font-size: 12.5px;
     line-height: 1.45;
     color: var(--muted);
+  }
+
+  .ta {
+    margin-top: 10px;
+    padding: 5px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--tc);
+    background: color-mix(in srgb, var(--tc) 14%, transparent);
+    color: var(--tc);
+    font-size: 12.5px;
+    font-weight: 600;
+    transition: background 0.15s;
+  }
+
+  .ta:hover {
+    background: color-mix(in srgb, var(--tc) 26%, transparent);
   }
 
   .tx {

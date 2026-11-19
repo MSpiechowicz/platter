@@ -5,14 +5,23 @@ import { scan } from './scan.svelte';
 export type Page = 'scan' | 'overview' | 'explorer' | 'cleanup' | 'advisor' | 'history' | 'settings';
 export type ToastKind = 'ok' | 'info' | 'error';
 
+/** A button on a toast: clicking it runs `run` and closes the toast. */
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+
 export interface Toast {
   id: number;
   title: string;
   description: string;
   kind: ToastKind;
+  action?: ToastAction;
 }
 
 const TOAST_LIFETIME_MS = 4200;
+/** A toast with a button stays longer: there is something to do, not only to read. */
+const ACTION_TOAST_LIFETIME_MS = 10_000;
 const MAX_TOASTS = 3;
 
 export class UiStore {
@@ -72,14 +81,14 @@ export class UiStore {
     this.explorerScan = undefined;
   }
 
-  /** Shows a toast at the bottom right. It closes itself after a few seconds. */
-  toast(title: string, description = '', kind: ToastKind = 'ok'): number {
+  /** Shows a toast at the bottom right, with a button when `action` is given. It closes itself after a few seconds. */
+  toast(title: string, description = '', kind: ToastKind = 'ok', action?: ToastAction): number {
     const id = this.#nextToastId++;
 
-    this.toasts = [...this.toasts, { id, title, description, kind }].slice(-MAX_TOASTS);
+    this.toasts = [...this.toasts, { id, title, description, kind, action }].slice(-MAX_TOASTS);
     this.#timers.set(
       id,
-      setTimeout(() => this.dismiss(id), TOAST_LIFETIME_MS),
+      setTimeout(() => this.dismiss(id), action ? ACTION_TOAST_LIFETIME_MS : TOAST_LIFETIME_MS),
     );
 
     return id;

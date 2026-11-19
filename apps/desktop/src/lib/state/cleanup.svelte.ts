@@ -16,6 +16,7 @@ import type {
   Verdict,
 } from '../api/types';
 import { scan as defaultScan, type ScanStore } from './scan.svelte';
+import { fmt } from './fmt.svelte';
 import { settings } from './settings.svelte';
 import { visibleText } from '../features/overview/display';
 import { ui as defaultUi, type UiStore } from './ui.svelte';
@@ -835,7 +836,36 @@ export class CleanupStore {
       kind: 'done',
       result: { ...result, trashed: run.trashed, problems: run.problems, undo: undefined },
     };
+
+    // What was freed, and the way on, where it is seen: the footer keeps only the short result.
+    this.#ui.toast(
+      doneTitle(this.phase.result),
+      OUTDATED_TOAST,
+      this.phase.result.kind === 'failed' ? 'error' : 'ok',
+      {
+        label: 'Rescan',
+        run: () => void this.rescan(),
+      },
+    );
   }
+}
+
+/** Under the toast a cleanup ends with: the scan no longer describes the disk. */
+export const OUTDATED_TOAST = 'The disk changed. Rescan to clean again.';
+
+/** The title of the toast a cleanup ends with. */
+function doneTitle(result: CleanupResult): string {
+  if (result.kind === 'failed') {
+    return 'Cleaning failed';
+  }
+  if (result.freed !== undefined && result.freed > 0) {
+    return `Freed ${fmt.size(result.freed)}`;
+  }
+  if (result.cancelled) {
+    return 'Cleanup stopped';
+  }
+
+  return 'Cleanup finished';
 }
 
 const markedGroupOf = (plan: CleanupPlanDto): PlanGroupDto | undefined =>

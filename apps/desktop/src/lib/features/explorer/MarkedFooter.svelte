@@ -148,15 +148,19 @@
     gap: 6px;
   }
 
+  /* A small button, not a link: what to do next has to be seen. */
   .act {
-    padding: 0;
-    font-size: 12.5px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    font-size: 12px;
     font-weight: 600;
     color: var(--accent);
+    transition: background 0.15s;
   }
 
   .act:hover {
-    color: var(--accent-hover);
-    text-decoration: underline;
+    background: color-mix(in srgb, var(--accent) 26%, transparent);
   }
 </style>

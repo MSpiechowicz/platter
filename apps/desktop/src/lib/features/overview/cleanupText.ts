@@ -222,9 +222,8 @@ export function footerStatus(store: CleanupStore, options: FooterOptions = {}): 
     }
 
     case 'done': {
-      const text = [resultText(phase.result, options.freedShown), store.outdated ? OUTDATED_TEXT : '']
-        .filter(Boolean)
-        .join(' ');
+      // The way on (rescan) is the toast's and the button's: the footer says only what happened.
+      const text = resultText(phase.result, options.freedShown);
       const failed = phase.result.kind === 'failed' || phase.result.withProblems > 0;
 
       return {
@@ -238,7 +237,7 @@ export function footerStatus(store: CleanupStore, options: FooterOptions = {}): 
     case 'idle': {
       if (store.notice !== undefined) {
         return {
-          text: [visibleText(store.notice), store.outdated ? OUTDATED_TEXT : ''].filter(Boolean).join(' '),
+          text: visibleText(store.notice),
           details: notes,
           actions,
           attention: false,

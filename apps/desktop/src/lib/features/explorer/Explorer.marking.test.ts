@@ -268,7 +268,12 @@ describe('marking in the Explorer', () => {
 
       expect(status.textContent).toContain('Moved to the trash: 2 items.');
       expect(status.textContent).toContain('This can be undone.');
-      expect(status.textContent).toContain('The disk changed. Rescan to clean again.');
+      expect(status.textContent).not.toContain('The disk changed.');
+      expect(ui.toasts.at(-1)).toMatchObject({
+        title: 'Cleanup finished',
+        description: 'The disk changed. Rescan to clean again.',
+        action: { label: 'Rescan' },
+      });
       expect(within(footer()).getByRole('button', { name: 'Undo' })).toBeTruthy();
       expect(within(footer()).getByRole('button', { name: 'Rescan' })).toBeTruthy();
 
