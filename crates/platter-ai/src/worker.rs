@@ -1625,7 +1625,15 @@ impl Worker {
     }
 
     fn configure(&mut self) -> Status {
-        let options = self.shared.lock().status.options;
+        // The options and the count of switches are read together: `configure` changes both under this lock,
+        // so a switch that lands between two separate reads cannot be counted as seen with the old options.
+        let (options, switches) = {
+            let inner = self.shared.lock();
+            (
+                inner.status.options,
+                self.shared.gpu_switches.load(Ordering::SeqCst),
+            )
+        };
         if !options.enabled {
             return self.guarded_unload();
         }
@@ -1635,7 +1643,6 @@ impl Worker {
         // says (on the card with the card switched off, or on the processor with the card switched on): the
         // next job loads it there. One that already is stays (the processor after the card was switched
         // off).
-        let switches = self.shared.gpu_switches.load(Ordering::SeqCst);
         let toggled = switches != self.gpu_switches_seen;
         self.gpu_switches_seen = switches;
         if toggled {
