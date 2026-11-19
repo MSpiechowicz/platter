@@ -201,6 +201,10 @@ describe('app.css tokens', () => {
       '--ay',
       '--advisor-col',
       '--panel-col',
+      '--land-ms',
+      '--land-ease',
+      '--fade-ms',
+      '--draw-ms',
     ]);
     const sources = import.meta.glob('../**/*.svelte', {
       query: '?raw',

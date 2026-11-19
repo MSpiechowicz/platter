@@ -2,6 +2,7 @@ import { setMockAdvisorState } from './api/mock-advisor';
 import type { ScanId } from './api/types';
 import { hooks } from './hooks';
 import { advisor } from './state/advisor.svelte';
+import { opening, type SavedScanSummary } from './state/opening.svelte';
 import { platform } from './state/platform.svelte';
 import { scan } from './state/scan.svelte';
 import { settings } from './state/settings.svelte';
@@ -19,23 +20,13 @@ export async function bootstrap(): Promise<void> {
     settings.sidebarCollapsed = true;
   }
 
-  await startUpdates();
+  // The update check and the advisor go on beside the opening screen, which waits for neither.
+  const background = inBackground(startBackground());
 
-  // The Advisor view opens at once only without a scan; with one it opens when the scan (and the labels) are there.
-  if (hooks.view === 'settings' || (hooks.view === 'advisor' && !advisorScan())) {
-    ui.go(hooks.view);
-  }
+  await openApp(background.settled);
 
-  // The advisor first: its options, then its status channel.
-  await startAdvisor();
-
-  if (hooks.overlays) {
-    showOverlays();
-  }
-
-  await scan.loadVolumes();
-
-  await openLastScan();
+  // What the hooks below need (the system, the advisor's labels) is there once the background start-up is.
+  await background.done();
 
   if (
     hooks.view === 'overview' ||
@@ -92,14 +83,112 @@ export async function bootstrap(): Promise<void> {
 }
 
 /**
- * Opens the scan kept from the last run, so the app starts on its Overview (the effect in `App.svelte` moves there
- * like for a finished scan). With "Rescan when Platter opens" on it scans that folder again right away. Without a
- * saved scan the start page stays.
+ * Loads the disks and opens the scan kept from the last run, so the app starts on its Overview (the effect in
+ * `App.svelte` moves there like for a finished scan). With "Rescan when Platter opens" on it scans that folder
+ * again right away. Without a saved scan the start page stays. These are the steps of the opening screen, which
+ * shows them one by one. A test hook goes without the screen and does the same work at once.
  */
+async function openApp(ready: Promise<unknown>): Promise<void> {
+  if (opening.phase === 'done') {
+    await scan.loadVolumes();
+    await openLastScan();
+    return;
+  }
+
+  let restoring: Promise<boolean> | undefined;
+  let rescanned = false;
+
+  await opening.run({
+    disks: async () => {
+      await scan.loadVolumes();
+
+      return scan.volumes.length;
+    },
+    lastScan: async () => {
+      restoring = scan.restore();
+
+      return (await restoring) ? savedScan() : null;
+    },
+    rescan: settings.rescanOnOpen
+      ? () => {
+          rescanned = true;
+          return scan.rescan();
+        }
+      : undefined,
+    ready,
+  });
+
+  // A saved scan that took longer than the opening screen waits (a slow network folder) opens later. "Rescan when
+  // Platter opens" still applies to it, as it would have in the third step.
+  if (settings.rescanOnOpen && !rescanned && restoring) {
+    void restoring.then(
+      (opened) => {
+        if (opened && scan.state.status === 'ready') {
+          void scan.rescan();
+        }
+      },
+      () => undefined,
+    );
+  }
+}
+
 async function openLastScan(): Promise<void> {
   if ((await scan.restore()) && settings.rescanOnOpen) {
     await scan.rescan();
   }
+}
+
+/** What the opening screen says about the scan that was just opened. */
+function savedScan(): SavedScanSummary | null {
+  const state = scan.state;
+
+  if (state.status !== 'ready') {
+    return null;
+  }
+
+  return { bytes: state.totals.allocated, scannedAt: state.scannedAt, outdated: state.outdated };
+}
+
+/**
+ * The start-up work that is not a step of the opening screen: the update schedule, the first view of a hook, the
+ * advisor. It starts at once and goes on while the screen shows.
+ */
+async function startBackground(): Promise<void> {
+  await startUpdates();
+
+  // The Advisor view opens at once only without a scan; with one it opens when the scan (and the labels) are there.
+  if (hooks.view === 'settings' || (hooks.view === 'advisor' && !advisorScan())) {
+    ui.go(hooks.view);
+  }
+
+  // The advisor first: its options, then its status channel.
+  await startAdvisor();
+
+  if (hooks.overlays) {
+    showOverlays();
+  }
+}
+
+/**
+ * Lets work that nobody waits for yet fail without an unhandled rejection: `settled` resolves either way (for those
+ * who only need it to be over), and `done` ends the wait with the failure, if there was one.
+ */
+function inBackground(work: Promise<void>): { settled: Promise<unknown>; done: () => Promise<void> } {
+  const settled = work.then(
+    () => undefined,
+    (error: unknown) => ({ error }),
+  );
+
+  return {
+    settled,
+    done: async () => {
+      const failed = (await settled) as { error: unknown } | undefined;
+
+      if (failed) {
+        throw failed.error;
+      }
+    },
+  };
 }
 
 /** What a scan starts on when no root is given: the first volume, or the root of the system's own style. */

@@ -11,6 +11,7 @@
   import CleanupPage from './lib/features/cleanup/CleanupPage.svelte';
   import Explorer from './lib/features/explorer/Explorer.svelte';
   import History from './lib/features/history/History.svelte';
+  import OpeningScreen from './lib/features/opening/OpeningScreen.svelte';
   import OverviewPage from './lib/features/overview/OverviewPage.svelte';
   import ScanProgress from './lib/features/scan/ScanProgress.svelte';
   import SettingsPage from './lib/features/settings/SettingsPage.svelte';
@@ -24,6 +25,7 @@
     resolveScreen,
     SCAN_FIRST_HINT,
   } from './lib/state/navigation';
+  import { opening } from './lib/state/opening.svelte';
   import { scan } from './lib/state/scan.svelte';
   import { settings } from './lib/state/settings.svelte';
   import { ui, type Page } from './lib/state/ui.svelte';
@@ -43,18 +45,25 @@
   syncMotionAttribute();
 
   onMount(() => {
-    bootstrap();
+    // Whatever goes wrong while starting, the app opens: the opening screen never stays up over an app it hides.
+    bootstrap().catch((error: unknown) => {
+      opening.skip();
+      console.error('Start-up failed', error);
+    });
   });
+
+  // The menu's logo, which the opening screen's logo lands on.
+  let brandLogo: HTMLElement | null = $state(null);
 
   // A narrow window always shows the icon rail.
   const collapsed = $derived(settings.sidebarCollapsed || viewport.narrow);
-  const state = $derived(scan.state);
-  const screen = $derived(resolveScreen(state, ui.page));
+  const scanState = $derived(scan.state);
+  const screen = $derived(resolveScreen(scanState, ui.page));
 
   const items = $derived(
     NAV.map((item) => {
       // The item whose page is on screen is never dimmed: Cleanup shows its own first step while a scan runs.
-      const available = isPageAvailable(item.id, state.status) || item.id === highlightedPage(screen);
+      const available = isPageAvailable(item.id, scanState.status) || item.id === highlightedPage(screen);
 
       return { ...item, disabled: !available, hint: available ? undefined : SCAN_FIRST_HINT };
     }),
@@ -64,7 +73,7 @@
   let lastStatus = scan.state.status;
 
   $effect(() => {
-    const status = state.status;
+    const status = scanState.status;
 
     if (status === 'ready' && lastStatus !== 'ready') {
       ui.go(pageAfterScan(untrack(() => ui.page)));
@@ -75,7 +84,7 @@
 
   // The Explorer's place belongs to one scan: a new scan, a failed or a cancelled one starts at the scan root.
   $effect(() => {
-    if (state.status !== 'ready') {
+    if (scanState.status !== 'ready') {
       ui.forgetExplorer();
     }
   });
@@ -96,13 +105,15 @@
   }
 </script>
 
-<AppShell {collapsed}>
+<AppShell {collapsed} phase={opening.phase}>
   {#snippet sidebar()}
     <Sidebar
       {items}
       active={highlightedPage(screen)}
       onselect={(id) => ui.go(id as Page)}
       {collapsed}
+      arriving={opening.phase !== 'done'}
+      bind:logo={brandLogo}
       ontoggle={viewport.narrow
         ? undefined
         : () => settings.set('sidebarCollapsed', !settings.sidebarCollapsed)}
@@ -122,7 +133,8 @@
   {:else if screen.id === 'history'}
     <PageBoundary><History /></PageBoundary>
   {:else if screen.id === 'advisor'}
-    <PageBoundary><AdvisorPage ready={screen.scan} scanning={state.status === 'scanning'} /></PageBoundary>
+    <PageBoundary><AdvisorPage ready={screen.scan} scanning={scanState.status === 'scanning'} /></PageBoundary
+    >
   {:else if screen.id === 'progress'}
     <PageBoundary><ScanProgress running={screen.scan} /></PageBoundary>
   {:else if screen.id === 'explorer'}
@@ -135,6 +147,10 @@
     <PageBoundary><StartPage /></PageBoundary>
   {/if}
 </AppShell>
+
+{#if opening.phase !== 'done'}
+  <OpeningScreen target={brandLogo} />
+{/if}
 
 <GpuProblemDialog />
 <ToastHost />

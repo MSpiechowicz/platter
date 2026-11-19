@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.svelte';
 import { api } from './lib/api';
+import { opening } from './lib/state/opening.svelte';
 import { scan } from './lib/state/scan.svelte';
 import { settings } from './lib/state/settings.svelte';
 import { ui } from './lib/state/ui.svelte';
@@ -25,6 +26,8 @@ async function startScan(): Promise<void> {
 describe('the app', () => {
   beforeEach(() => {
     scan.reset();
+    // These tests are about the app itself: the opening screen has its own tests.
+    opening.skip();
     ui.go('scan');
     settings.set('units', 'GB');
     settings.set('sidebarCollapsed', false);
@@ -326,5 +329,45 @@ describe('the app', () => {
     await startScan();
 
     expect(nav('Advisor').getAttribute('aria-disabled')).toBe('true');
+  });
+});
+
+const shell = (): HTMLElement => document.querySelector('.app') as HTMLElement;
+const openingScreen = (): HTMLElement | null => screen.queryByRole('region', { name: 'Opening Platter' });
+
+describe('the app: opening', () => {
+  beforeEach(async () => {
+    // A scan the last test left running would finish into this one.
+    await waitFor(() => expect(scan.state.status).not.toBe('scanning'), { timeout: 3000 });
+    scan.reset();
+    ui.go('scan');
+    settings.set('sidebarCollapsed', false);
+    settings.set('rescanOnOpen', false);
+    opening.reset('opening');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    opening.skip();
+  });
+
+  it('shows only the opening screen until the steps are done, then the start screen when there is no saved scan', async () => {
+    vi.spyOn(api, 'openLastScan').mockResolvedValue(null);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    render(App);
+
+    expect(openingScreen()).toBeTruthy();
+    expect(shell().inert).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(screen.getByText('none kept')).toBeTruthy();
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    // The window has no layout here, so the landing ends at once.
+    expect(openingScreen()).toBeNull();
+    expect(shell().inert).toBe(false);
+    expect(screen.getByText('NEW SCAN')).toBeTruthy();
   });
 });

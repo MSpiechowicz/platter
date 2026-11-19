@@ -28,6 +28,10 @@
     onselect: (id: string) => void;
     /** 60 px icon rail: icons and logo keep their place, labels fade out. */
     collapsed: boolean;
+    /** The opening screen's logo is on its way here: the menu's own logo and name wait until it has landed. */
+    arriving?: boolean;
+    /** The element holding the logo, so the opening screen's logo can fly to it. */
+    logo?: HTMLElement | null;
     /** Omit to hide the "Collapse menu" item (the window is too narrow to expand). */
     ontoggle?: () => void;
     /** The volume that was scanned. Nothing is shown at the bottom when there is none. */
@@ -46,6 +50,8 @@
     active,
     onselect,
     collapsed,
+    arriving = false,
+    logo = $bindable(null),
     ontoggle,
     volume,
     advisorBytes,
@@ -92,13 +98,13 @@
   const share = $derived(volume && volume.total > 0 ? used / volume.total : 0);
 </script>
 
-<aside class="side" class:mini={collapsed}>
+<aside class="side" class:mini={collapsed} class:arriving>
   {#if slideVisible}
     <i class="slide" class:placed style="height:{height}px;transform:translateY({top}px)"></i>
   {/if}
 
   <div class="brand">
-    <Logo />
+    <div class="mark" bind:this={logo}><Logo /></div>
     <span>PLATTER</span>
   </div>
 
@@ -196,6 +202,15 @@
     letter-spacing: 0.14em;
     padding: 4px 5px 18px;
     white-space: nowrap;
+  }
+
+  .mark {
+    display: flex;
+  }
+
+  .arriving .mark,
+  .arriving .brand span {
+    opacity: 0;
   }
 
   nav {
