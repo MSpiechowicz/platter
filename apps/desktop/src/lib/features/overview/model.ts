@@ -6,7 +6,7 @@ import {
   buildSlabs,
   dominantChild,
   isSlabSized,
-  levelColors,
+  levelPalette,
   MAX_BREAKDOWN,
   type Slab,
   type SlabLevel,
@@ -107,8 +107,10 @@ export async function loadOverview(api: Api, request: OverviewRequest): Promise<
   const resolver = createFolderColorResolver(api, scanId);
 
   // The folders of the stack are coloured already; the largest folders are found from them, with the least lookups.
-  for (const [id, color] of levelColors(levels)) {
-    resolver.seed(id, color);
+  const palette = levelPalette(levels);
+
+  for (const [id, color] of palette.colors) {
+    resolver.seed(id, color, palette.usedAbove.get(id));
   }
 
   await Promise.all([

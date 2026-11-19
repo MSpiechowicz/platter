@@ -250,10 +250,16 @@ describe('the colours of folders', () => {
     const before = new Map(inside.map((child) => [child.node.name, store.colors.get(child.node.id)]));
 
     expect(store.dominantTile).toBe(home?.node.id);
-    // The biggest folder inside keeps the tile's colour; the next ones take the palette without it.
+    // The biggest folder inside keeps the tile's colour. The next ones take the palette without it, and without the
+    // colours of the tiles beside it, which are on the same map.
+    const besides = store.topLevel
+      .filter((node) => node.id !== home?.node.id)
+      .map((node) => store.colors.get(node.id));
     expect(before.get('.local')).toBe(PALETTE[0]);
-    expect(before.get('.docker')).toBe(PALETTE[1]);
-    expect(before.get('Faugus')).toBe(PALETTE[2]);
+    for (const name of ['.docker', 'Faugus']) {
+      expect(before.get(name), name).not.toBe(PALETTE[0]);
+      expect(besides, name).not.toContain(before.get(name));
+    }
 
     store.open(home?.node.id as NodeId);
     await expanded(store);
@@ -275,13 +281,16 @@ describe('the colours of folders', () => {
 
     const rootColors = new Map(store.colors);
     const usr = store.topLevel.find((node) => node.name === 'usr') as NodeDto;
+    const home = store.topLevel.find((node) => node.name === 'home') as NodeDto;
 
     store.open(usr.id);
     await settled(store);
 
     expect(store.focusColor).toBe(rootColors.get(usr.id));
     expect(store.colors.get(store.topLevel[0]?.id as NodeId)).toBe(rootColors.get(usr.id));
-    expect(store.colors.get(store.topLevel[1]?.id as NodeId)).toBe(PALETTE[0]);
+    // The second in /usr skips the colours used above it: not cyan, the colour of /home beside /usr.
+    expect(rootColors.get(home.id)).toBe(PALETTE[0]);
+    expect(store.colors.get(store.topLevel[1]?.id as NodeId)).not.toBe(PALETTE[0]);
 
     store.up();
     await settled(store, mock.rootId);

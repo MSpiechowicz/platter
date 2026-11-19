@@ -1,6 +1,6 @@
 import { COLLAPSED_NODE_ID } from '../../api/client';
 import type { NodeId } from '../../api/types';
-import { childColors } from '../../folderColor';
+import { childColors, usedBelow } from '../../folderColor';
 import { SLATE } from '../../palette';
 import { theme } from '../../state/theme.svelte';
 import type { ChainedLod } from './layout/chains';
@@ -107,21 +107,49 @@ const sized = (items: readonly ChainedLod[]): { id: NodeId; allocated: number }[
  * map the same rule is applied one level down, with the tile's colour as the parent's: the folders inside it get the
  * colours they will have once it is opened. The "smaller items" node is slate.
  */
-export function assignMapColors(focusColor: string | null, children: readonly ChainedLod[]): ColorMap {
-  const colors = new Map<NodeId, string>(childColors(focusColor, sized(children)));
+export function assignMapColors(
+  focusColor: string | null,
+  children: readonly ChainedLod[],
+  focusAbove: readonly string[] = [],
+): ColorMap {
+  return mapPalette(focusColor, children, focusAbove).colors;
+}
+
+/**
+ * `assignMapColors`, with the colours used above every coloured folder (see `childColors`, rule 3): what its own
+ * children avoid, remembered when the folder is opened. `focusAbove` is that of the focused folder.
+ */
+export function mapPalette(
+  focusColor: string | null,
+  children: readonly ChainedLod[],
+  focusAbove: readonly string[] = [],
+): { colors: ColorMap; usedAbove: ReadonlyMap<NodeId, string[]> } {
+  const top = childColors(focusColor, sized(children), focusAbove);
+  const topAbove = usedBelow(focusAbove, top.values());
+  const colors = new Map<NodeId, string>(top as Map<NodeId, string>);
+  const usedAbove = new Map<NodeId, string[]>([...top.keys()].map((id) => [id as NodeId, topAbove]));
   const dominant = dominantTile(children);
 
   if (dominant) {
-    const inside = childColors(colors.get(dominant.node.id) ?? null, sized(ownChildren(dominant)));
+    const dominantAbove = usedAbove.get(dominant.node.id) ?? topAbove;
+    const inside = childColors(
+      colors.get(dominant.node.id) ?? null,
+      sized(ownChildren(dominant)),
+      dominantAbove,
+    );
+    const insideAbove = usedBelow(dominantAbove, inside.values());
 
-    inside.forEach((color, id) => colors.set(id, color));
+    inside.forEach((color, id) => {
+      colors.set(id as NodeId, color);
+      usedAbove.set(id as NodeId, insideAbove);
+    });
   }
 
   if (children.some((child) => child.node.id === COLLAPSED_NODE_ID)) {
     colors.set(COLLAPSED_NODE_ID, SLATE);
   }
 
-  return colors;
+  return { colors, usedAbove };
 }
 
 export interface TileStyle {

@@ -134,7 +134,11 @@ describe('createFolderColorResolver', () => {
 
     expect(await resolver.colorOf(deepest.id)).toBe(PALETTE[0]);
     expect(await resolver.colorOf(largest.id)).toBe(PALETTE[0]);
-    expect(await resolver.colorOf(second.id)).toBe(PALETTE[1]);
+    // The second takes the first colour that no folder above it uses: not those of the root's other children.
+    const top = await children(api, scanId, 0);
+    const aboveColors = childColors(null, top);
+    const expected = PALETTE.find((color) => ![...aboveColors.values()].includes(color));
+    expect(await resolver.colorOf(second.id)).toBe(expected);
   });
 
   it('gives the same answers whatever order the folders are asked in', async () => {

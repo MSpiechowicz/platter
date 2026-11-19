@@ -6,7 +6,7 @@ import type { ChildrenPage, LodNode, NodeDto, NodeId, PathDto, ScanId, SortKey }
 import { platform } from '../../../state/platform.svelte';
 import { resource, type Resource } from '../../../state/resource.svelte';
 import { createFolderColorResolver, type FolderColorResolver } from '../../../folderColor';
-import { assignMapColors, colorOf, dominantTile, type ColorMap } from '../colors';
+import { colorOf, dominantTile, mapPalette, type ColorMap } from '../colors';
 import {
   chainsToExpand,
   collapseChains,
@@ -154,6 +154,8 @@ export class ExplorerStore {
    * root, which has none, and while the colour of a folder reached by a link is still being looked up.
    */
   focusColor = $state<string | null>(null);
+  /** The colours used above the focused folder, which its children avoid (see `childColors` in folderColor.ts). */
+  focusAbove = $state.raw<readonly string[]>([]);
   /** A child of the open folder. */
   selected = $state<NodeId | null>(null);
   /** The child under the pointer, in the map or in the list. */
@@ -181,6 +183,9 @@ export class ExplorerStore {
   // Bookkeeping that is never rendered, so a plain Map is right.
   // eslint-disable-next-line svelte/prefer-svelte-reactivity
   readonly #known = new Map<NodeId, string | null>();
+  /** The same for the colours used above each folder: known ones need no lookup when the folder is opened. */
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity
+  readonly #knownAbove = new Map<NodeId, readonly string[]>();
   #reload = $state(0);
   /** The rows loaded after the first page of the whole folder, and after the first page of the matches. */
   #more = $state.raw<MoreRows | null>(null);
@@ -211,6 +216,7 @@ export class ExplorerStore {
     this.selected = start.select ?? null;
     this.#resolver = createFolderColorResolver(api, scanId);
     this.#known.set(rootId, null);
+    this.#knownAbove.set(rootId, []);
 
     if (start.color !== undefined) {
       this.#known.set(start.focus, start.color);
@@ -390,7 +396,8 @@ export class ExplorerStore {
   readonly model: ChainedLod | undefined = $derived(this.#lod ? collapseChains(this.#lod) : undefined);
 
   /** The colour of each top-level child, and of each folder inside a top-level tile that holds most of the map. */
-  readonly colors: ColorMap = $derived(assignMapColors(this.focusColor, this.model?.children ?? []));
+  readonly #palette = $derived(mapPalette(this.focusColor, this.model?.children ?? [], this.focusAbove));
+  readonly colors: ColorMap = $derived(this.#palette.colors);
 
   /** The top-level tile that holds most of the map and shows its own folders in colours of their own. */
   get dominantTile(): NodeId | undefined {
@@ -444,19 +451,26 @@ export class ExplorerStore {
 
   /** The colour of the focused folder as it is looked up: a known one at once, a deep link's after a request. */
   #adoptColor(focus: NodeId): void {
-    if (this.#known.has(focus)) {
+    if (this.#known.has(focus) && this.#knownAbove.has(focus)) {
       this.focusColor = this.#known.get(focus) ?? null;
+      this.focusAbove = this.#knownAbove.get(focus) ?? [];
 
       return;
     }
 
-    this.focusColor = null;
-    void this.#resolver.colorOf(focus).then(
-      (color) => {
-        this.#known.set(focus, color);
+    // A colour known without what is used above it (a deep link) is shown at once. The children follow the lookup.
+    this.focusColor = this.#known.get(focus) ?? null;
+    this.focusAbove = [];
+    void Promise.all([this.#resolver.colorOf(focus), this.#resolver.usedAboveOf(focus)]).then(
+      ([color, above]) => {
+        if (!this.#known.has(focus)) {
+          this.#known.set(focus, color);
+        }
+        this.#knownAbove.set(focus, above);
 
         if (this.shown?.focus === focus) {
-          this.focusColor = color;
+          this.focusColor = this.#known.get(focus) ?? null;
+          this.focusAbove = above;
         }
       },
       () => undefined,
@@ -750,10 +764,22 @@ export class ExplorerStore {
     // The way back finds every folder it came through with its colour. A chain has one colour: its first folder's.
     if (tile) {
       const color = this.colors.get(tile.node.id) ?? null;
+      // A chain's folders each hold one folder only: the colours used above them are its first folder's.
+      const above = this.#palette.usedAbove.get(tile.node.id);
 
-      links.forEach((link) => this.#known.set(link.id, color));
+      links.forEach((link) => {
+        this.#known.set(link.id, color);
+        if (above !== undefined) {
+          this.#knownAbove.set(link.id, above);
+        }
+      });
     } else if (!this.#known.has(id) && this.colors.has(id)) {
       this.#known.set(id, this.colors.get(id) ?? null);
+      const above = this.#palette.usedAbove.get(id);
+
+      if (above !== undefined) {
+        this.#knownAbove.set(id, above);
+      }
     }
 
     id = destination;

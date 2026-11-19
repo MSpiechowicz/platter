@@ -11,6 +11,7 @@ import {
   ownChildren,
   FLAT_MIX,
   FLAT_MIX_LIGHT,
+  mapPalette,
   MERGED_STEP,
   PALETTE,
   pageBackground,
@@ -214,15 +215,20 @@ describe('assignMapColors with one tile that holds most of the map', () => {
     const colors = assignMapColors(null, top);
 
     expect(dominantTile(top)).toBe(home);
-    // The largest folder inside keeps the tile's colour; the others take the palette, skipping it.
+    // The largest folder inside keeps the tile's colour. The others take the palette, skipping it, and skipping
+    // the colours of `var` and `usr` beside the tile, which are shown on the same map.
     expect(colors.get(a)).toBe(colors.get(idOf(home)));
-    expect(colors.get(b)).toBe(PALETTE[1]);
-    expect(colors.get(c)).toBe(PALETTE[2]);
+    expect(colors.get(b)).toBe(PALETTE[3]);
+    expect(colors.get(c)).toBe(PALETTE[4]);
   });
 
   it('gives the folders inside the colours they have once the tile is opened', () => {
-    const colors = assignMapColors(null, top);
-    const opened = assignMapColors(colors.get(idOf(home)) as string, home?.children ?? []);
+    const { colors, usedAbove } = mapPalette(null, top);
+    const opened = assignMapColors(
+      colors.get(idOf(home)) as string,
+      home?.children ?? [],
+      usedAbove.get(idOf(home)),
+    );
 
     for (const id of [a, b, c]) {
       expect(opened.get(id), String(id)).toBe(colors.get(id));

@@ -1,5 +1,5 @@
 import type { NodeDto, NodeId } from '../../api/types';
-import { childColors } from '../../folderColor';
+import { childColors, usedBelow } from '../../folderColor';
 import { SLATE } from '../../palette';
 import { platform } from '../../state/platform.svelte';
 
@@ -78,17 +78,33 @@ interface Candidate {
  * parent is the dominant child of the level above, so its colour is already known when the level is reached.
  */
 export function levelColors(levels: readonly SlabLevel[]): Map<NodeId, string> {
+  return levelPalette(levels).colors;
+}
+
+/**
+ * `levelColors`, with the colours used above each folder of `levels` (see `childColors`, rule 3): what its own
+ * children avoid. The scan root has nothing used above it, and each level passes its colours on to the next.
+ */
+export function levelPalette(levels: readonly SlabLevel[]): {
+  colors: Map<NodeId, string>;
+  usedAbove: Map<NodeId, string[]>;
+} {
   const colors = new Map<NodeId, string>();
+  const usedAbove = new Map<NodeId, string[]>();
 
   for (const level of levels) {
     const parentColor = level.parent === undefined ? null : (colors.get(level.parent) ?? SLATE);
+    const parentAbove = level.parent === undefined ? [] : (usedAbove.get(level.parent) ?? []);
+    const levelColors = childColors(parentColor, level.children, parentAbove);
+    const childAbove = usedBelow(parentAbove, levelColors.values());
 
-    for (const [id, color] of childColors(parentColor, level.children)) {
+    for (const [id, color] of levelColors) {
       colors.set(id, color);
+      usedAbove.set(id, childAbove);
     }
   }
 
-  return colors;
+  return { colors, usedAbove };
 }
 
 function candidatesOf(levels: SlabLevel[]): Candidate[] {

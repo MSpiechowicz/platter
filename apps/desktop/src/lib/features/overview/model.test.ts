@@ -193,8 +193,9 @@ describe('loadOverview breakdown of a dominant folder', () => {
       '/home/sam/misc',
     ]);
     // Each folder has its own colour: Videos is the biggest below home and sam, so it has the colour of home
-    // (the first), Projekty the next, and var is the second folder of the root, like home's own second.
-    expect(data.slabs.slice(0, 3).map((slab) => slab.color)).toEqual([PALETTE[0], PALETTE[1], PALETTE[1]]);
+    // (the first), and var is the second folder of the root. Projekty skips the colours used above it (var's,
+    // and shared's beside sam), so it does not look like var next to it in the stack.
+    expect(data.slabs.slice(0, 3).map((slab) => slab.color)).toEqual([PALETTE[0], PALETTE[3], PALETTE[1]]);
   });
 
   /** Three dominant folders in a row; the biggest child of the last one is dominant too. */
@@ -352,8 +353,9 @@ describe('loadOverview breakdown of a dominant folder', () => {
     expect(colorOf('/home/a')).toBe(PALETTE[0]);
     expect(colorOf('/home/a/inner')).toBe(PALETTE[0]);
     // The others take the palette in order, below their own parent: /home/b is the second in /home (cyan is taken
-    // by its parent), /var the second in the root, and /var/log the largest in /var.
-    expect(colorOf('/home/b')).toBe(PALETTE[1]);
+    // by its parent, and pink by /var beside it, which comes last), /var the second in the root, and /var/log the
+    // largest in /var.
+    expect(colorOf('/home/b')).toBe(PALETTE[2]);
     expect(colorOf('/var/log')).toBe(PALETTE[1]);
 
     // A folder that is a slab has the colour of its slab.

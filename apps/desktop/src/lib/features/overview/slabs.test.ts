@@ -197,11 +197,12 @@ describe('buildSlabs with a broken down folder', () => {
 
     // /home is the biggest folder of the root (cyan), /home/sam the biggest in it, Videos the biggest in that.
     expect(colorOf(5)).toBe(PALETTE[0]);
-    // Projekty is the second in /home/sam, so it takes the first palette colour that is not its parent's.
-    expect(colorOf(6)).toBe(PALETTE[1]);
-    // shared is the second in /home; var is the second in the root.
-    expect(colorOf(4)).toBe(PALETTE[1]);
+    // var is the second in the root. shared, the second in /home, skips var's colour, which is used above it.
     expect(colorOf(2)).toBe(PALETTE[1]);
+    expect(colorOf(4)).toBe(PALETTE[2]);
+    // Projekty, the second in /home/sam, skips the colours of var and shared too: no two slabs look alike.
+    expect(colorOf(6)).toBe(PALETTE[3]);
+    expect(new Set(slabs.map((slab) => slab.color)).size).toBe(slabs.length);
   });
 
   it('keeps at most six data slabs and merges the rest into "other"', () => {
@@ -247,8 +248,9 @@ describe('levelColors', () => {
 
     expect([1, 2, 7].map((id) => colors.get(id))).toEqual([PALETTE[0], PALETTE[1], PALETTE[2]]);
     expect([3, 8].map((id) => colors.get(id))).toEqual([PALETTE[0], PALETTE[0]]);
-    expect(colors.get(4)).toBe(PALETTE[1]);
-    expect(colors.get(9)).toBe(PALETTE[1]);
+    // The others skip the colours used above them: those of var and opt, then of shared too.
+    expect(colors.get(4)).toBe(PALETTE[3]);
+    expect(colors.get(9)).toBe(PALETTE[4]);
   });
 });
 

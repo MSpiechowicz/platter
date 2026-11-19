@@ -11,6 +11,10 @@ import { PALETTE, SLATE } from './palette';
  *    others take the palette colours in order, skipping the parent's. Below the root, which has no colour, every
  *    child takes the palette in order. When the palette is used up the rest are slate, and so are zero-size
  *    children and the synthetic "smaller items" node.
+ * 3. A colour the folders above already use (the siblings of the folder and of each folder above it: its "used
+ *    above" colours) comes last in that order. Folders of different levels are shown side by side (the Overview
+ *    stack, the map), so a folder deep down does not take the colour of a big folder next to its ancestor
+ *    (`/Applications` and `/Users/sam/Projects`). Such a colour is only reused when the others are taken.
  *
  * A folder's colour is therefore a property of the folder, whatever view it is drawn in and however deep the
  * view starts.
@@ -18,9 +22,15 @@ import { PALETTE, SLATE } from './palette';
 export function childColors(
   parentColor: string | null,
   children: readonly { id: number; allocated: number }[],
+  usedAbove: readonly string[] = [],
 ): Map<number, string> {
   const sorted = [...children].sort((a, b) => b.allocated - a.allocated || a.id - b.id);
-  const free = PALETTE.filter((color) => color.toLowerCase() !== parentColor?.toLowerCase());
+  const used = new Set(usedAbove.map((color) => color.toLowerCase()));
+  const others = PALETTE.filter((color) => color.toLowerCase() !== parentColor?.toLowerCase());
+  const free = [
+    ...others.filter((color) => !used.has(color.toLowerCase())),
+    ...others.filter((color) => used.has(color.toLowerCase())),
+  ];
   const colors = new Map<number, string>();
   let next = 0;
 
@@ -35,6 +45,22 @@ export function childColors(
   });
 
   return colors;
+}
+
+/**
+ * The "used above" colours of the children of a folder (see `childColors`, rule 3): the folder's own `usedAbove`
+ * and the colours of the folder and its siblings, `siblings`. Slate is no colour of the palette and is left out.
+ */
+export function usedBelow(usedAbove: readonly string[], siblings: Iterable<string>): string[] {
+  const all = new Set(usedAbove.map((color) => color.toLowerCase()));
+
+  for (const color of siblings) {
+    if (color.toLowerCase() !== SLATE.toLowerCase()) {
+      all.add(color.toLowerCase());
+    }
+  }
+
+  return [...all];
 }
 
 /** How many of a folder's biggest children are looked at to find a child's colour. */
@@ -52,8 +78,16 @@ export interface FolderColorResolver {
     parentColor: string | null,
     children: readonly { id: number; allocated: number }[],
   ): Map<number, string>;
-  /** Tells the resolver a colour that is already known, so it need not look it up. A known colour is never replaced. */
-  seed(node: NodeId, color: string): void;
+  /**
+   * The colours used above `node` (see `childColors`, rule 3), which its own children avoid. Found from the tree like
+   * its colour, and remembered.
+   */
+  usedAboveOf(node: NodeId): Promise<string[]>;
+  /**
+   * Tells the resolver a colour that is already known, so it need not look it up, with the colours used above the
+   * folder when they are known too. A known value is never replaced.
+   */
+  seed(node: NodeId, color: string, usedAbove?: readonly string[]): void;
 }
 
 /**
@@ -63,8 +97,10 @@ export interface FolderColorResolver {
  */
 export function createFolderColorResolver(api: Api, scan: ScanId): FolderColorResolver {
   const known = new Map<NodeId, string>();
+  /** The colours used above each folder whose children the walk coloured, or that was seeded with them. */
+  const above = new Map<NodeId, string[]>();
   const children = new Map<NodeId, Promise<{ id: number; allocated: number }[]>>();
-  const pending = new Map<NodeId, Promise<string>>();
+  const pending = new Map<NodeId, Promise<void>>();
 
   const remember = (colors: Map<number, string>): void => {
     for (const [id, color] of colors) {
@@ -89,71 +125,104 @@ export function createFolderColorResolver(api: Api, scan: ScanId): FolderColorRe
     return request;
   };
 
-  /** Walks down from the deepest ancestor whose colour is known. */
-  const resolve = async (node: NodeId): Promise<string> => {
+  /**
+   * Walks down to `node` from the deepest ancestor whose colour and "used above" colours are both known (the scan
+   * root at worst: no colour, nothing used above), remembering both for every folder on the way.
+   */
+  const resolve = async (node: NodeId): Promise<void> => {
     const path = await api.getPath(scan, node);
     const ids = path.segments.map((segment) => segment.id);
+    const root = ids[0] as NodeId;
 
-    // The scan root has no colour; slate stands in for it where a colour is needed, and is not remembered
-    // (the children of the root take the palette from its first colour).
-    if (ids.length === 1) {
-      return known.get(node) ?? SLATE;
+    if (!above.has(root)) {
+      above.set(root, []);
     }
 
-    // The deepest known colour wins; the walk starts below it.
     let start = ids.length - 1;
 
-    while (start > 0 && !known.has(ids[start] as NodeId)) {
+    while (start > 0 && !(known.has(ids[start] as NodeId) && above.has(ids[start] as NodeId))) {
       start--;
     }
 
-    let color: string | null = known.get(ids[start] as NodeId) ?? null;
+    // The scan root has no colour (slate stands in for it where one is needed, and is not remembered).
+    let color: string | null = start === 0 ? null : (known.get(ids[start] as NodeId) ?? null);
 
     for (let depth = start; depth < ids.length - 1; depth++) {
       const parent = ids[depth] as NodeId;
       const child = ids[depth + 1] as NodeId;
+      const parentAbove = above.get(parent) ?? [];
+      const colors = childColors(color, await biggestChildren(parent), parentAbove);
+      const childAbove = usedBelow(parentAbove, colors.values());
 
-      remember(childColors(color, await biggestChildren(parent)));
+      remember(colors);
+      for (const id of colors.keys()) {
+        if (!above.has(id as NodeId)) {
+          above.set(id as NodeId, childAbove);
+        }
+      }
+
       color = known.get(child) ?? SLATE;
       known.set(child, color);
+      if (!above.has(child)) {
+        above.set(child, childAbove);
+      }
+    }
+  };
+
+  /** One walk per folder at a time, however many ask. */
+  const walk = (node: NodeId): Promise<void> => {
+    let request = pending.get(node);
+
+    if (!request) {
+      request = resolve(node);
+      pending.set(node, request);
+      void request.then(
+        () => pending.delete(node),
+        () => pending.delete(node),
+      );
     }
 
-    return known.get(node) as string;
+    return request;
   };
 
   return {
-    colorOf(node) {
-      const cached = known.get(node);
-
-      if (cached !== undefined) {
-        return Promise.resolve(cached);
+    async colorOf(node) {
+      if (!known.has(node)) {
+        await walk(node);
       }
 
-      let request = pending.get(node);
-
-      if (!request) {
-        request = resolve(node);
-        pending.set(node, request);
-        void request.then(
-          () => pending.delete(node),
-          () => pending.delete(node),
-        );
-      }
-
-      return request;
+      return known.get(node) ?? SLATE;
     },
 
-    childrenOf(_parent, parentColor, kids) {
-      const colors = childColors(parentColor, kids);
+    async usedAboveOf(node) {
+      if (!above.has(node)) {
+        await walk(node);
+      }
+
+      return above.get(node) ?? [];
+    },
+
+    childrenOf(parent, parentColor, kids) {
+      const parentAbove = above.get(parent) ?? [];
+      const colors = childColors(parentColor, kids, parentAbove);
+      const childAbove = usedBelow(parentAbove, colors.values());
 
       remember(colors);
+      for (const id of colors.keys()) {
+        if (!above.has(id as NodeId)) {
+          above.set(id as NodeId, childAbove);
+        }
+      }
 
       return colors;
     },
 
-    seed(node, color) {
+    seed(node, color, usedAbove) {
       if (!known.has(node)) {
         known.set(node, color);
+      }
+      if (usedAbove !== undefined && !above.has(node)) {
+        above.set(node, [...usedAbove]);
       }
     },
   };
