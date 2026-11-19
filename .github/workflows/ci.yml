@@ -32,6 +32,8 @@ jobs:
           persist-credentials: false
 
       - name: Install Linux build dependencies
+        # The script stops a hung apt itself: this is the last stop, well short of the job's limit.
+        timeout-minutes: 25
         run: scripts/ci/install-linux-deps.sh
 
       # rustup 1.28+ no longer installs the toolchain named in rust-toolchain.toml on first use.

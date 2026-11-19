@@ -32,11 +32,19 @@ packages=(
   xz-utils
 )
 
-sudo apt-get update
-sudo apt-get install --yes --no-install-recommends "${packages[@]}"
+# A mirror that stops answering makes apt wait for ever (a release once sat 48 minutes in `apt-get update`):
+# each connection gives up after 30 seconds and is tried again, and a whole command that still hangs is
+# stopped after 10 minutes and run once more.
+apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+apt_get() {
+  timeout 10m sudo apt-get "${apt_options[@]}" "$@" || timeout 10m sudo apt-get "${apt_options[@]}" "$@"
+}
+
+apt_get update
+apt_get install --yes --no-install-recommends "${packages[@]}"
 
 # A newer Ubuntu has it as a package.
-sudo apt-get install --yes --no-install-recommends glslc 2>/dev/null || true
+apt_get install --yes --no-install-recommends glslc 2>/dev/null || true
 
 if ! command -v glslc >/dev/null 2>&1; then
   sdk_version=1.4.363.1
@@ -46,6 +54,7 @@ if ! command -v glslc >/dev/null 2>&1; then
   download=${RUNNER_TEMP:-/tmp}/$sdk_file
 
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --connect-timeout 30 --max-time 600 --retry 3 --retry-all-errors \
     --output "$download" "https://sdk.lunarg.com/sdk/download/$sdk_version/linux/$sdk_file"
   echo "$sdk_sha256  $download" | sha256sum --check --strict
   sudo mkdir -p "$sdk_root"

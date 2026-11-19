@@ -83,6 +83,8 @@ jobs:
           fi
 
       - name: Install Linux build dependencies
+        # The script stops a hung apt itself: this is the last stop, well short of the job's limit.
+        timeout-minutes: 25
         run: scripts/ci/install-linux-deps.sh
 
       - name: Install the toolchain from rust-toolchain.toml
