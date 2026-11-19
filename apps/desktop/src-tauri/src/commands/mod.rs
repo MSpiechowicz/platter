@@ -3,6 +3,7 @@
 pub mod advisor;
 pub mod cleanup;
 pub mod history;
+pub mod last_scan;
 pub mod query;
 pub mod rules;
 pub mod scan;

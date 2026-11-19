@@ -35,6 +35,8 @@ export async function bootstrap(): Promise<void> {
 
   await scan.loadVolumes();
 
+  await openLastScan();
+
   if (
     hooks.view === 'overview' ||
     hooks.view === 'scanning' ||
@@ -86,6 +88,17 @@ export async function bootstrap(): Promise<void> {
     });
     await untilScanEnds();
     ui.go('scan');
+  }
+}
+
+/**
+ * Opens the scan kept from the last run, so the app starts on its Overview (the effect in `App.svelte` moves there
+ * like for a finished scan). With "Rescan when Platter opens" on it scans that folder again right away. Without a
+ * saved scan the start page stays.
+ */
+async function openLastScan(): Promise<void> {
+  if ((await scan.restore()) && settings.rescanOnOpen) {
+    await scan.rescan();
   }
 }
 

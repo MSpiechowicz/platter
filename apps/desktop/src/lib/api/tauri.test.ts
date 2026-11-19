@@ -261,3 +261,23 @@ describe('the Tauri advisor commands', () => {
     expect(isApiError(error) && [error.code, error.message]).toEqual(['invalid', 'The scan is outdated.']);
   });
 });
+
+describe('the Tauri last scan command', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it('opens the saved scan with no arguments, and passes on that there is none', async () => {
+    const saved = { scanId: 3, outdated: false, scannedAt: 1_750_000_000 };
+    const api = createTauriApi();
+
+    invoke.mockResolvedValueOnce(saved).mockResolvedValueOnce(null);
+
+    expect(await api.openLastScan()).toBe(saved);
+    expect(await api.openLastScan()).toBeNull();
+    expect(invoke.mock.calls).toEqual([
+      ['open_last_scan', undefined],
+      ['open_last_scan', undefined],
+    ]);
+  });
+});

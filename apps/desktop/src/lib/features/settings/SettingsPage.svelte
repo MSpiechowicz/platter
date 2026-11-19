@@ -1,5 +1,8 @@
 <script lang="ts">
+  import { api } from '../../api';
+  import { describeError, isApiError } from '../../api/client';
   import PageHeader from '../../components/layout/PageHeader.svelte';
+  import Button from '../../components/ui/Button.svelte';
   import Card from '../../components/ui/Card.svelte';
   import Field from '../../components/ui/Field.svelte';
   import Segmented from '../../components/ui/Segmented.svelte';
@@ -28,6 +31,27 @@
   function saved(): void {
     ui.toast('Saved', 'The setting applies from now on.');
   }
+
+  let forgetting = $state(false);
+
+  /** Deletes the scan kept on disk. The backend asks first in its own dialog, and a no changes nothing. */
+  async function forgetSavedScan(): Promise<void> {
+    forgetting = true;
+
+    try {
+      await api.forgetLastScan();
+      ui.toast(
+        'Saved scan forgotten',
+        'The scan on screen stays until Platter closes. The next scan is kept again.',
+      );
+    } catch (error) {
+      if (!isApiError(error) || error.code !== 'cancelled') {
+        ui.toast('Could not forget the saved scan', describeError(error), 'error');
+      }
+    } finally {
+      forgetting = false;
+    }
+  }
 </script>
 
 <PageHeader title="SETTINGS" sub="saved automatically" />
@@ -49,6 +73,35 @@
               saved();
             }}
           />
+        {/snippet}
+      </Field>
+      <Field
+        label="Rescan when Platter opens"
+        description="Platter opens the last scan as it was. Turn this on to scan its folder again at every start."
+      >
+        {#snippet control(labelId, descriptionId)}
+          <Toggle
+            checked={settings.rescanOnOpen}
+            aria-labelledby={labelId}
+            aria-describedby={descriptionId}
+            onchange={(event) => {
+              settings.set('rescanOnOpen', event.currentTarget.checked);
+              saved();
+            }}
+          />
+        {/snippet}
+      </Field>
+      <Field
+        label="Saved scan"
+        description="Platter keeps the last scan on disk, with the names of its files and folders, to open it at the next start."
+      >
+        {#snippet control(labelId, descriptionId)}
+          <Button
+            size="sm"
+            disabled={forgetting}
+            aria-describedby={`${labelId} ${descriptionId}`}
+            onclick={() => void forgetSavedScan()}>Forget</Button
+          >
         {/snippet}
       </Field>
       <ExcludedPaths />

@@ -19,6 +19,8 @@ export interface SettingsData {
   /** Do not descend into other mounted filesystems while scanning. */
   oneFileSystem: boolean;
   sidebarCollapsed: boolean;
+  /** Scan the folder of the last scan again at every start. Off: Platter opens the last scan as it was. */
+  rescanOnOpen: boolean;
   /** How the Explorer draws the focused folder. */
   explorerView: ExplorerView;
   /** Use the local advisor model. Off until the model is downloaded; a finished download switches it on. */
@@ -54,6 +56,7 @@ const DEFAULTS: SettingsData = {
   reduceMotion: false,
   oneFileSystem: true,
   sidebarCollapsed: false,
+  rescanOnOpen: false,
   explorerView: 'flat',
   advisorEnabled: false,
   advisorUnloadAfter: 'fiveMinutes',
@@ -140,6 +143,7 @@ function sanitize(raw: unknown): Partial<SettingsData> {
     'reduceMotion',
     'oneFileSystem',
     'sidebarCollapsed',
+    'rescanOnOpen',
     'advisorEnabled',
     'advisorLogQuestions',
     'advisorUseGpu',
@@ -159,6 +163,7 @@ export class SettingsStore implements SettingsData {
   reduceMotion = $state(DEFAULTS.reduceMotion);
   oneFileSystem = $state(DEFAULTS.oneFileSystem);
   sidebarCollapsed = $state(DEFAULTS.sidebarCollapsed);
+  rescanOnOpen = $state(DEFAULTS.rescanOnOpen);
   explorerView = $state<ExplorerView>(DEFAULTS.explorerView);
   advisorEnabled = $state(DEFAULTS.advisorEnabled);
   advisorUnloadAfter = $state<UnloadAfter>(DEFAULTS.advisorUnloadAfter);
@@ -202,6 +207,7 @@ export class SettingsStore implements SettingsData {
       reduceMotion: this.reduceMotion,
       oneFileSystem: this.oneFileSystem,
       sidebarCollapsed: this.sidebarCollapsed,
+      rescanOnOpen: this.rescanOnOpen,
       explorerView: this.explorerView,
       advisorEnabled: this.advisorEnabled,
       advisorUnloadAfter: this.advisorUnloadAfter,

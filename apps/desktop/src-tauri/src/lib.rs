@@ -3,6 +3,7 @@
 
 mod commands;
 mod error;
+mod last_scan;
 mod state;
 mod user_rules;
 
@@ -89,6 +90,8 @@ pub fn run() {
             commands::scan::start_scan,
             commands::scan::cancel_scan,
             commands::scan::drop_scan,
+            commands::last_scan::open_last_scan,
+            commands::last_scan::forget_last_scan,
             commands::query::get_node,
             commands::query::get_children,
             commands::query::get_lod,

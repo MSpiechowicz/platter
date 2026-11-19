@@ -16,6 +16,7 @@ import type {
   GpuProblemChoice,
   HistoryOverviewDto,
   HistoryRestoreDto,
+  LastScanDto,
   LodNode,
   NodeDto,
   NodeId,
@@ -59,6 +60,16 @@ export interface Api {
    * (possibly before this promise resolves).
    */
   startScan(options: ScanOptions, onEvent: (event: ScanEvent) => void): Promise<ScanId>;
+  /**
+   * Opens the scan kept from the last run, or resolves `null` when there is none. It is ready like a finished scan, and
+   * starting a scan of the same options afterwards is allowed. It is meant to be called once, at start.
+   */
+  openLastScan(): Promise<LastScanDto | null>;
+  /**
+   * Deletes the scan kept on disk, after the backend's own confirmation dialog. `cancelled` when the user says no.
+   * The scan on screen stays. The next finished scan is kept again.
+   */
+  forgetLastScan(): Promise<void>;
   cancelScan(scan: ScanId): Promise<void>;
   /** Frees the scan tree in the backend. */
   dropScan(scan: ScanId): Promise<void>;

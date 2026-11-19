@@ -19,6 +19,7 @@ const ready: ReadyScan = {
   rootId: 0,
   totals: { allocated: 1, apparent: 1, files: 1, dirs: 1, errors: 0 },
   elapsedMs: 10,
+  scannedAt: 1_750_000_000,
   warnings: [],
   outdated: false,
 };

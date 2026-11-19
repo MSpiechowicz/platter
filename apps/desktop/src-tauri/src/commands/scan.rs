@@ -15,6 +15,7 @@ use tauri::ipc::Channel;
 
 use crate::commands::history::HistoryService;
 use crate::error::{CommandError, CommandResult};
+use crate::last_scan::LastScanStore;
 use crate::state::{AppState, ScanRegistry};
 
 /// Receives every event of one scan: progress first, then exactly one terminal event.
@@ -96,6 +97,9 @@ pub async fn start_pinned(
     }
     let root = resolved.path;
 
+    // What the saved scan is opened with later: the folder as it was offered, the settings as given.
+    let saved_options = options.clone();
+
     let excluded = options.excluded;
     let platform = Arc::clone(&state.platform);
     let (excluded, excluded_unresolved) = tauri::async_runtime::spawn_blocking({
@@ -118,6 +122,12 @@ pub async fn start_pinned(
     let platform = Arc::clone(&state.platform);
     let registry = Arc::clone(&state.scans);
     let emit = recording(Arc::clone(&state.history), root.clone(), emit);
+    let emit = saving(
+        Arc::clone(&state.scans),
+        Arc::clone(&state.last_scan),
+        saved_options,
+        emit,
+    );
     let spawned = thread::Builder::new()
         .name(format!("platter-scan-driver-{id}"))
         .spawn(move || {
@@ -145,6 +155,24 @@ fn recording(history: Arc<HistoryService>, root: PathBuf, emit: EmitFn) -> EmitF
     Arc::new(move |event| {
         if let ScanEvent::Finished { totals, .. } = &event {
             history.record_scan(&root, totals);
+        }
+        emit(event);
+    })
+}
+
+/// `emit`, and a scan that finished is kept on disk as the last scan (in the background: it neither waits
+/// for the write nor fails when the write does). The event is only sent when the registry stored the tree.
+fn saving(
+    registry: Arc<ScanRegistry>,
+    store: Arc<LastScanStore>,
+    options: ScanOptions,
+    emit: EmitFn,
+) -> EmitFn {
+    Arc::new(move |event| {
+        if let ScanEvent::Finished { scan_id, .. } = &event
+            && let Ok(tree) = registry.tree(*scan_id)
+        {
+            store.save(tree, options.clone(), || registry.is_outdated(*scan_id));
         }
         emit(event);
     })

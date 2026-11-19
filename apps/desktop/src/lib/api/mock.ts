@@ -17,6 +17,7 @@ import type {
   Category,
   ChildrenPage,
   ExternalLink,
+  LastScanDto,
   NodeId,
   OsName,
   PathDto,
@@ -24,6 +25,7 @@ import type {
   ScanId,
   ScanOptions,
   SummaryDto,
+  Totals,
   VolumeDto,
   ScanWarning,
 } from './types';
@@ -171,8 +173,21 @@ export interface MockOptions {
   history?: MockHistoryOptions;
   /** Test hook: the update the mock finds (default: none; see `mock-update.ts`). */
   update?: MockUpdateOptions;
+  /** Test hook: a scan saved by an earlier run, which `openLastScan` opens (default: none). */
+  lastScan?: MockLastScan;
   /** Test hook: the answer of the Undo confirmation dialog (default: confirmed; see `mock-cleanup.ts`). */
   confirmUndo?: () => boolean;
+  /** Test hook: the answer of the "Forget the saved scan?" dialog (default: confirmed). */
+  confirmForget?: () => boolean;
+}
+
+/** The saved scan of an earlier run: fields left out take the demo values (the whole disk, as it was an hour ago). */
+export interface MockLastScan {
+  options?: ScanOptions;
+  /** A cleanup ran since, so the scan no longer describes the disk. */
+  outdated?: boolean;
+  /** When it was scanned, in unix seconds. */
+  scannedAt?: number;
 }
 
 /** Elapsed time reported for an instant scan, so the header does not read "in 0 s". */
@@ -299,6 +314,18 @@ function summaryOf(tree: MockTree, node: MockNode): SummaryDto {
   };
 }
 
+/**
+ * The totals of a scan, as the backend counts them: every directory and mount except the root, and an error for each
+ * folder that could not be read and for each warning (a warning counts as an error too).
+ */
+function totalsOf(tree: MockTree, warnings: ScanWarning[] | undefined): Totals {
+  const total = tree.nodes[0] as MockNode;
+  const dirs = tree.nodes.filter((node) => node.kind === 'dir' || node.kind === 'mount').length - 1;
+  const errors = tree.nodes.filter((node) => node.unreadable === true).length + (warnings?.length ?? 0);
+
+  return { allocated: total.allocated, apparent: total.apparent, files: total.files, dirs, errors };
+}
+
 /** Every directory path in depth-first order: the "currently reading" line of a running scan. */
 function directoryPaths(tree: MockTree): string[] {
   const paths: string[] = [];
@@ -415,10 +442,7 @@ export function createMockApi(options: MockOptions = {}): Api {
     const { tree, onEvent } = record;
     const total = tree.nodes[0] as MockNode;
     const dirs = directoryPaths(tree);
-    // As the backend's totals: every directory and mount except the root, and an error for each folder that could
-    // not be read and for each warning (a warning counts as an error too).
-    const dirCount = tree.nodes.filter((node) => node.kind === 'dir' || node.kind === 'mount').length - 1;
-    const errorCount = tree.nodes.filter((node) => node.unreadable === true).length + (warnings?.length ?? 0);
+    const totals = totalsOf(tree, warnings);
     const started = Date.now();
 
     const finish = (): void => {
@@ -427,13 +451,7 @@ export function createMockApi(options: MockOptions = {}): Api {
         type: 'finished',
         scanId: id,
         rootId: 0,
-        totals: {
-          allocated: total.allocated,
-          apparent: total.apparent,
-          files: total.files,
-          dirs: dirCount,
-          errors: errorCount,
-        },
+        totals,
         elapsedMs: durationMs > 0 ? Date.now() - started : INSTANT_SCAN_ELAPSED_MS,
         ...(warnings && warnings.length > 0 ? { warnings } : {}),
       });
@@ -459,9 +477,9 @@ export function createMockApi(options: MockOptions = {}): Api {
       onEvent({
         type: 'progress',
         files: Math.round(total.files * eased),
-        dirs: Math.round(dirCount * eased),
+        dirs: Math.round(totals.dirs * eased),
         bytes: Math.round(total.allocated * eased),
-        errors: Math.floor(errorCount * eased),
+        errors: Math.floor(totals.errors * eased),
         currentPath: dirs[Math.floor(fraction * (dirs.length - 1))] ?? tree.rootPath,
       });
 
@@ -521,6 +539,55 @@ export function createMockApi(options: MockOptions = {}): Api {
       queueMicrotask(() => run(record, id));
 
       return id;
+    },
+
+    async forgetLastScan() {
+      if (!(options.confirmForget ?? (() => true))()) {
+        throw new ApiRequestError('cancelled', 'forgetting the saved scan was not confirmed');
+      }
+
+      options.lastScan = undefined;
+    },
+
+    async openLastScan() {
+      const saved = options.lastScan;
+
+      if (!saved) {
+        return null;
+      }
+
+      const scanOptions = saved.options ?? { root: volumes[0]?.mountPoint ?? '/', oneFileSystem: true };
+      const id = nextId++;
+      const tree = buildTree({
+        seed,
+        root: scanOptions.root,
+        oneFileSystem: scanOptions.oneFileSystem,
+        excluded: scanOptions.excluded ?? [],
+        bytes: bytesFor(scanOptions.root),
+        now: clock(),
+        dominant: options.dominant,
+        os,
+      });
+      const totals = totalsOf(tree, warnings);
+
+      scans.set(id, { tree, onEvent: () => {}, timer: null, running: false });
+
+      if (saved.outdated) {
+        outdated.add(id);
+      }
+
+      const dto: LastScanDto = {
+        scanId: id,
+        rootId: 0,
+        totals,
+        elapsedMs: INSTANT_SCAN_ELAPSED_MS,
+        ...(warnings && warnings.length > 0 ? { warnings } : {}),
+        options: scanOptions,
+        outdated: saved.outdated ?? false,
+        scannedAt: saved.scannedAt ?? clock() - 3600,
+      };
+
+      return dto;
     },
 
     async cancelScan(scan) {

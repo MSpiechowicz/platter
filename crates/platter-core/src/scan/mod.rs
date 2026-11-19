@@ -26,6 +26,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub use cancel::CancelToken;
 pub use progress::ProgressFn;
+pub(crate) use walker::MAX_DEPTH;
 
 use crate::budget::{BudgetLimits, EntryBudget, LimitHit};
 use crate::error::{ScanError, ScanLimit};

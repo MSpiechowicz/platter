@@ -69,6 +69,20 @@ export type ScanEvent =
   | { type: 'cancelled' }
   | { type: 'failed'; message: string };
 
+/** The scan Platter kept from its last run, opened again. `outdated` is set when a cleanup ran on it since. */
+export interface LastScanDto {
+  scanId: ScanId;
+  rootId: NodeId;
+  totals: Totals;
+  elapsedMs: number;
+  /** Left out when there are none, as in the `finished` event. */
+  warnings?: ScanWarning[];
+  options: ScanOptions;
+  outdated: boolean;
+  /** When the scan finished, in unix seconds. */
+  scannedAt: number;
+}
+
 export interface Totals {
   allocated: number;
   apparent: number;

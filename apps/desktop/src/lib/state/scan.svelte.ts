@@ -21,6 +21,8 @@ export type ScanState =
       rootId: NodeId;
       totals: Totals;
       elapsedMs: number;
+      /** When the scan finished, in unix seconds. A scan opened from the last run keeps its own time. */
+      scannedAt: number;
       /** What the scan could not do properly; empty when it went well. */
       warnings: ScanWarning[];
       /** A cleanup ran on this scan: it no longer describes the disk, so rescan to see it as it is. */
@@ -169,6 +171,50 @@ export class ScanStore {
     }
   }
 
+  /**
+   * Opens the scan kept from the last run as the ready scan, as it was (outdated or not). It does nothing when there
+   * is none, when a scan was started or reset in the meantime, or when the backend fails: the start screen stays.
+   * Resolves to whether a scan was opened.
+   */
+  async restore(): Promise<boolean> {
+    if (this.state.status !== 'idle') {
+      return false;
+    }
+
+    const generation = this.#generation;
+
+    try {
+      const saved = await this.#api.openLastScan();
+
+      if (!saved) {
+        return false;
+      }
+
+      if (generation !== this.#generation || this.state.status !== 'idle') {
+        // The user was quicker: the opened scan is not wanted any more.
+        this.#drop(saved.scanId);
+        return false;
+      }
+
+      this.#scanId = saved.scanId;
+      this.state = {
+        status: 'ready',
+        options: saved.options,
+        scanId: saved.scanId,
+        rootId: saved.rootId,
+        totals: saved.totals,
+        elapsedMs: saved.elapsedMs,
+        scannedAt: saved.scannedAt,
+        warnings: saved.warnings ?? [],
+        outdated: saved.outdated,
+      };
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Scans the same root again with the same options. */
   async rescan(): Promise<void> {
     const options = this.options;
@@ -222,6 +268,7 @@ export class ScanStore {
           rootId: event.rootId,
           totals: event.totals,
           elapsedMs: event.elapsedMs,
+          scannedAt: Math.floor(Date.now() / 1000),
           warnings: event.warnings ?? [],
           outdated: false,
         };

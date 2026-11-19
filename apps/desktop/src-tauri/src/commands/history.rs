@@ -977,6 +977,8 @@ pub async fn restore_run(state: &AppState, cleanup: i64) -> CommandResult<Histor
     let taken = state.cleanups.take_by_history(cleanup);
     let platform = Arc::clone(&state.platform);
 
+    // The scan kept on disk is outdated before anything moves, so a stop in the middle leaves it so.
+    state.scans.disk_will_change();
     let worked = tauri::async_runtime::spawn_blocking(move || {
         items
             .into_iter()

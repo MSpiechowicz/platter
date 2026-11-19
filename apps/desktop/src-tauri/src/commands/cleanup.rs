@@ -725,6 +725,8 @@ pub async fn undo_run(state: &AppState, cleanup: CleanupId) -> CommandResult<Vec
     let results = done.results;
     let platform = Arc::clone(&state.platform);
 
+    // The scan kept on disk is outdated before anything is put back, so a stop in the middle leaves it so.
+    state.scans.disk_will_change();
     let worked = tauri::async_runtime::spawn_blocking(move || {
         let undone = undo(&results, &platform.entry_remover);
         // What could not be put back stays, so undo can be tried again.
@@ -994,6 +996,9 @@ pub async fn start(state: &AppState, plan_id: PlanId, emit: Emit) -> CommandResu
                 .iter()
                 .any(|group| group.action() == CleanupAction::EmptyTrash);
 
+            // The scan kept on disk is outdated before anything moves, so a stop in the middle (a crash, the
+            // app closed) leaves it so; the scans in memory are outdated once this is over.
+            scans.disk_will_change();
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let trash = home_trash(platform.environment().home.as_deref());
                 let disk = Disk {

@@ -17,6 +17,7 @@ import type {
   GpuProblemChoice,
   HistoryOverviewDto,
   HistoryRestoreDto,
+  LastScanDto,
   LodNode,
   NodeDto,
   NodeId,
@@ -83,6 +84,9 @@ export function createTauriApi(): Api {
 
       return call<ScanId>('start_scan', { options, onEvent: channel });
     },
+
+    openLastScan: () => call<LastScanDto | null>('open_last_scan'),
+    forgetLastScan: () => callVoid('forget_last_scan'),
 
     cancelScan: (scan: ScanId) => callVoid('cancel_scan', { scan }),
 

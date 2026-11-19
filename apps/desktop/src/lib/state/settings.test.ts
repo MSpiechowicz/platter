@@ -24,6 +24,21 @@ describe('SettingsStore', () => {
     expect(settings.explorerView).toBe('flat');
   });
 
+  it('opens the last scan as it was by default, and keeps the choice to rescan at start', () => {
+    const storage = new MemoryStorage();
+    const settings = new SettingsStore(storage);
+
+    expect(settings.rescanOnOpen).toBe(false);
+
+    settings.set('rescanOnOpen', true);
+
+    expect(new SettingsStore(storage).rescanOnOpen).toBe(true);
+
+    storage.setItem(SETTINGS_KEY, JSON.stringify({ rescanOnOpen: 'yes' }));
+
+    expect(new SettingsStore(storage).rescanOnOpen).toBe(false);
+  });
+
   it('keeps the advisor off until the model is downloaded', () => {
     const settings = new SettingsStore(new MemoryStorage());
 

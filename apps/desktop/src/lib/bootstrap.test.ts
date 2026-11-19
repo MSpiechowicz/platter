@@ -13,7 +13,11 @@ vi.mock('./api/mock-advisor', () => ({
   setMockAdvisorState: (value: string) => state.calls.push(`mock:${value}`),
 }));
 
-async function boot(hooks: Record<string, unknown>, os?: 'windows' | 'macos') {
+async function boot(
+  hooks: Record<string, unknown>,
+  os?: 'windows' | 'macos',
+  { restored = false, rescanOnOpen = false } = {},
+) {
   vi.resetModules();
   vi.doMock('./hooks', () => ({
     hooks: {
@@ -50,10 +54,16 @@ async function boot(hooks: Record<string, unknown>, os?: 'windows' | 'macos') {
   });
 
   const startScan = vi.spyOn(scan, 'start').mockResolvedValue();
+  const restore = vi.spyOn(scan, 'restore').mockResolvedValue(restored);
+  const rescan = vi.spyOn(scan, 'rescan').mockResolvedValue();
+
+  if (rescanOnOpen) {
+    settings.rescanOnOpen = true;
+  }
 
   await bootstrap();
 
-  return { advisor, settings, check, start, platform, startScan };
+  return { advisor, settings, check, start, platform, startScan, restore, rescan };
 }
 
 describe('bootstrap: the advisor', () => {
@@ -177,5 +187,33 @@ describe('bootstrap: the theme', () => {
     await boot({});
 
     expect(document.documentElement.dataset.theme).toBe('dark');
+  });
+});
+
+describe('bootstrap: the last scan', () => {
+  beforeEach(() => {
+    state.calls = [];
+    localStorage.clear();
+  });
+
+  it('opens the saved scan and leaves it as it is by default', async () => {
+    const { restore, rescan } = await boot({}, undefined, { restored: true });
+
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(rescan).not.toHaveBeenCalled();
+  });
+
+  it('scans the opened scan again when "Rescan when Platter opens" is on', async () => {
+    const { rescan } = await boot({}, undefined, { restored: true, rescanOnOpen: true });
+
+    expect(rescan).toHaveBeenCalledTimes(1);
+  });
+
+  it('scans nothing at start when there is no saved scan, whatever the setting', async () => {
+    const { restore, rescan, startScan } = await boot({}, undefined, { restored: false, rescanOnOpen: true });
+
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(rescan).not.toHaveBeenCalled();
+    expect(startScan).not.toHaveBeenCalled();
   });
 });

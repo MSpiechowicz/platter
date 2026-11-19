@@ -51,6 +51,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 sha2 = "0.11"
 # Pinned on its own: SQLite is compiled from the bundled C source (no system library), so the exact version is reviewed.
 rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled"] }
+# Pinned on its own like the other crates that build C: the saved scan (`last-scan.bin`) is compressed with zstd, and `zstd-sys`
+# builds the C library from source, so the exact version is reviewed.
+zstd = { version = "=0.14.4", default-features = false }
 
 [profile.release]
 lto = "thin"

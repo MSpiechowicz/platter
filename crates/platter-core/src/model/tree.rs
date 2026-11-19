@@ -9,7 +9,7 @@ pub(crate) const NO_PARENT: u32 = u32::MAX;
 pub(crate) const NO_DIR: u32 = u32::MAX;
 
 /// Fixed-size record of one entry. Directory-only data lives in [`DirInfo`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Node {
     pub parent: u32,
     pub name_off: u32,
@@ -25,7 +25,7 @@ pub(crate) struct Node {
     pub mtime: i64,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct DirInfo {
     pub first_child: u32,
     pub child_count: u32,
@@ -103,6 +103,11 @@ pub struct Tree {
 impl Tree {
     pub fn root(&self) -> NodeId {
         NodeId::ROOT
+    }
+
+    /// Bytes of the scan root's path (the start of every path of the tree).
+    pub(crate) fn root_path_len(&self) -> u64 {
+        self.root_path.as_os_str().as_encoded_bytes().len() as u64
     }
 
     /// Number of nodes, root included.
@@ -209,6 +214,11 @@ impl Tree {
             .binary_search_by_key(&id.0, |&(node, _)| node)
             .ok()
             .map(|index| self.entered_mounts[index].1)
+    }
+
+    /// The mount roots the scan went into, with what the scan saw of each, ascending by id.
+    pub fn entered_mounts(&self) -> impl ExactSizeIterator<Item = (NodeId, ScannedMount)> + '_ {
+        self.entered_mounts.iter().map(|&(id, mount)| (NodeId(id), mount))
     }
 
     /// How many files in the subtree (the file itself for a file-like node) have more than one hard link.

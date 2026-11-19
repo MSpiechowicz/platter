@@ -15,6 +15,8 @@
 //!   grant is given back when the scan finishes, is abandoned or is dropped, and a tree's share when the
 //!   tree is evicted or dropped. A tree that a query still holds after that is no longer counted: it
 //!   is already missing from the free memory the next pool is made from, and it ends with the query;
+//! - the last scan that finished is also kept on disk (see [`LastScanStore`]), and `restore` puts it back as a
+//!   finished scan on the next start: it takes the same memory a scan would and evicts the other trees;
 //! - a scan that is cancelled or fails leaves nothing behind;
 //! - `cancel` is a no-op for an unknown or already ended scan, like `drop_scan`: a cancel can race with
 //!   the scan finishing, and neither outcome is an error for the UI;
@@ -39,6 +41,7 @@ use crate::commands::advisor::question::AskedBack;
 use crate::commands::cleanup::{CleanupRegistry, Confirm, RefuseAll};
 use crate::commands::history::{FixedVolumes, HistoryService};
 use crate::error::{CommandError, CommandResult};
+use crate::last_scan::LastScanStore;
 use crate::user_rules::UserRulesStore;
 
 /// Scans that may run at the same time.
@@ -63,6 +66,8 @@ pub struct AppState {
     pub history: Arc<HistoryService>,
     /// The local model: its download, its memory, its options.
     pub advisor: Arc<AdvisorService>,
+    /// The last finished scan kept on disk (`last-scan.bin` and `last-scan.json`).
+    pub last_scan: Arc<LastScanStore>,
     /// The user's own rules (`rules.json`): what they say now, and the only way they change.
     pub user_rules: Arc<UserRulesStore>,
     /// The local log of free questions (`advisor-questions.jsonl`), written only when the user's switch is on.
@@ -97,8 +102,24 @@ impl AppState {
         let mut state = Self::with_parts(AdvisorService::production(), UserRulesStore::production());
         state.question_log = Arc::new(QuestionLog::production());
         state.history = Arc::new(HistoryService::production());
+        state.use_last_scan(LastScanStore::production());
 
         state
+    }
+
+    /// Keeps the last scan in `store`; a cleanup marks what the store holds as outdated.
+    fn use_last_scan(&mut self, store: LastScanStore) {
+        let store = Arc::new(store);
+
+        self.scans = Arc::new(ScanRegistry::with_last_scan(Arc::clone(&store)));
+        self.last_scan = store;
+    }
+
+    /// The state with the last scan kept in `dir` (tests; the other constructors keep none).
+    #[cfg(test)]
+    pub fn with_last_scan_dir(mut self, dir: &std::path::Path) -> Self {
+        self.use_last_scan(LastScanStore::new(Some(dir.to_path_buf())));
+        self
     }
 
     /// The state with another advisor (tests give it a fake model and a fake server) and no rules file:
@@ -129,6 +150,7 @@ impl AppState {
         Self {
             platform: Arc::new(Platform::current()),
             scans: Arc::new(ScanRegistry::default()),
+            last_scan: Arc::new(LastScanStore::new(None)),
             cleanups: Arc::new(CleanupRegistry::default()),
             history: Arc::new(HistoryService::in_memory(FixedVolumes::default())),
             advisor: Arc::new(advisor),
@@ -167,6 +189,13 @@ impl AppState {
     pub fn allow_picked(&self, root: String, identity: Option<(u64, u64)>) {
         let mut allowed = self.roots.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         allowed.insert(root, identity);
+    }
+
+    /// Remembers a folder the user did not pick now (the one of the last scan, opened again), only when
+    /// nothing is known of it yet: a folder that is allowed already keeps what it was allowed with.
+    pub fn allow_picked_if_new(&self, root: String, identity: Option<(u64, u64)>) {
+        let mut allowed = self.roots.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        allowed.entry(root).or_insert(identity);
     }
 
     /// `None` when `root` was not offered; else the identity it must have (`None` inside: any).
@@ -283,6 +312,10 @@ impl Inner {
         (running, held)
     }
 
+    fn has_running(&self) -> bool {
+        self.slots.values().any(|slot| matches!(slot, Slot::Running(..)))
+    }
+
     /// Allocates the next id and registers a running scan with `grant` under it.
     fn register(&mut self, grant: u64) -> CommandResult<(ScanId, CancelToken, u64)> {
         let running = self
@@ -313,12 +346,30 @@ impl Inner {
     }
 }
 
+/// What a restore takes back: the pool it was told it may use, and the scans registered so far.
+#[derive(Debug, Clone, Copy)]
+pub struct RestoreTicket {
+    /// The most memory the tree may hold.
+    pub pool: u64,
+    last_id: ScanId,
+}
+
 #[derive(Default)]
 pub struct ScanRegistry {
     inner: Mutex<Inner>,
+    /// Told when the disk changed, so the scan kept on disk is marked outdated too.
+    last_scan: Option<Arc<LastScanStore>>,
 }
 
 impl ScanRegistry {
+    /// A registry whose scans are kept on disk by `store`.
+    pub fn with_last_scan(store: Arc<LastScanStore>) -> Self {
+        Self {
+            last_scan: Some(store),
+            ..Self::default()
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, Inner> {
         // A panic while holding the lock cannot leave `Inner` half-updated (each method does one
         // insert/remove), so recover from poisoning instead of taking every command down.
@@ -353,9 +404,7 @@ impl ScanRegistry {
         let (running, held) = inner.memory();
         let others = running.saturating_add(held);
 
-        let pool = available.map_or(DEFAULT_MAX_MEMORY_BYTES, |available| {
-            memory_budget_for(available.saturating_add(held))
-        });
+        let pool = pool_for(available, held);
         let grant = pool.saturating_sub(others);
         if others > 0 && grant < MIN_SHARED_GRANT_BYTES {
             return Err(CommandError::invalid(MEMORY_IN_USE));
@@ -393,6 +442,67 @@ impl ScanRegistry {
         );
 
         Some(tree)
+    }
+
+    /// The most memory a tree put back with [`Self::restore`] may hold now, and the ticket that restore takes
+    /// back; `None` while a scan runs (then nothing is put back). The finished trees count as free, as a
+    /// restore evicts them.
+    pub fn restore_pool(&self, available: Option<u64>) -> Option<RestoreTicket> {
+        let inner = self.lock();
+        if inner.has_running() {
+            return None;
+        }
+
+        let (_, held) = inner.memory();
+
+        Some(RestoreTicket {
+            pool: pool_for(available, held),
+            last_id: inner.last_id,
+        })
+    }
+
+    /// Registers a tree read from the last scan kept on disk as a finished scan and evicts every other
+    /// finished tree, like [`Self::finish`]. `outdated` says the disk changed since the tree was made.
+    ///
+    /// `Ok(None)` (nothing is changed) when a scan was registered since the `ticket` was given: the user went
+    /// on while the tree was read, and what they started is not evicted for an older scan. Refused as
+    /// `invalid` when the tree is larger than the memory a scan may use now (the pool of
+    /// [`Self::begin_within`]).
+    pub fn restore(
+        &self,
+        tree: Tree,
+        outdated: bool,
+        available: Option<u64>,
+        ticket: &RestoreTicket,
+    ) -> CommandResult<Option<ScanId>> {
+        let mut inner = self.lock();
+        if inner.last_id != ticket.last_id || inner.has_running() {
+            return Ok(None);
+        }
+
+        let (_, held) = inner.memory();
+        let memory = tree.memory_bytes() as u64;
+        if memory > pool_for(available, held) {
+            return Err(CommandError::invalid(
+                "the last scan needs more memory than Platter may use for scans now",
+            ));
+        }
+
+        inner.slots.retain(|_, slot| !matches!(slot, Slot::Finished(_)));
+        inner.last_id += 1;
+        let id = inner.last_id;
+        inner.slots.insert(
+            id,
+            Slot::Finished(Finished {
+                tree: Arc::new(tree),
+                memory,
+                suggestions: Arc::default(),
+                labels: Arc::default(),
+                outdated: Arc::new(AtomicBool::new(outdated)),
+            }),
+        );
+
+        Ok(Some(id))
     }
 
     /// Forgets a running scan that ended without a tree (cancelled or failed), giving its grant back.
@@ -530,14 +640,30 @@ impl ScanRegistry {
     /// A cleanup or an undo changed the disk: every finished scan is outdated, and so is every scan
     /// still running, when it finishes (it may have read the disk before the change).
     pub fn disk_changed(&self) {
-        let mut inner = self.lock();
-        inner.epoch += 1;
-        for slot in inner.slots.values() {
-            if let Slot::Finished(finished) = slot {
-                finished.outdated.store(true, Ordering::SeqCst);
-                // Labels name folders of a tree that no longer describes the disk.
-                lock(&finished.labels).replace(None);
+        {
+            let mut inner = self.lock();
+            inner.epoch += 1;
+            for slot in inner.slots.values() {
+                if let Slot::Finished(finished) = slot {
+                    finished.outdated.store(true, Ordering::SeqCst);
+                    // Labels name folders of a tree that no longer describes the disk.
+                    lock(&finished.labels).replace(None);
+                }
             }
+        }
+
+        // The scan kept on disk no longer describes it either, whether it is open or not.
+        if let Some(store) = &self.last_scan {
+            store.mark_outdated();
+        }
+    }
+
+    /// A cleanup or an undo is about to change the disk: the scan kept on disk is marked outdated now, so
+    /// that a stop in the middle of it leaves the kept scan outdated too. (The scans in memory are
+    /// outdated by [`Self::disk_changed`] once it is over.)
+    pub fn disk_will_change(&self) {
+        if let Some(store) = &self.last_scan {
+            store.mark_outdated();
         }
     }
 
@@ -553,6 +679,14 @@ impl ScanRegistry {
             None => Err(unknown_scan(id)),
         }
     }
+}
+
+/// The memory all scans may use together when `available` is free and the finished trees hold `held`
+/// (which is not free, yet Platter's to give).
+fn pool_for(available: Option<u64>, held: u64) -> u64 {
+    available.map_or(DEFAULT_MAX_MEMORY_BYTES, |available| {
+        memory_budget_for(available.saturating_add(held))
+    })
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

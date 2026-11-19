@@ -48,6 +48,7 @@ tauri.workspace = true
 tauri-plugin-dialog.workspace = true
 tauri-plugin-opener.workspace = true
 tauri-plugin-updater.workspace = true
+zstd.workspace = true
 
 
 # The cleanup confirmation is built with the GTK that Tauri already runs on (same version, no new

@@ -6,6 +6,7 @@ mod environment;
 mod id;
 mod kind;
 mod label;
+mod snapshot;
 mod totals;
 mod tree;
 mod user_rule;

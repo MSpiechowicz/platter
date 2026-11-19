@@ -19,6 +19,8 @@ fn app() -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
             commands::scan::start_scan,
             commands::scan::cancel_scan,
             commands::scan::drop_scan,
+            commands::last_scan::open_last_scan,
+            commands::last_scan::forget_last_scan,
             commands::suggestions::get_suggestions,
             commands::rules::list_user_rules,
             commands::rules::add_user_rule,
@@ -116,6 +118,13 @@ fn a_scan_with_a_channel_starts_and_can_be_cancelled_twice() {
         invoke(&window, "drop_scan", json!({ "scan": id })),
         Ok(Value::Null)
     );
+}
+
+#[test]
+fn opening_the_last_scan_takes_no_arguments_and_answers_null_when_none_was_kept() {
+    let (_app, window) = app();
+
+    assert_eq!(invoke(&window, "open_last_scan", json!({})), Ok(Value::Null));
 }
 
 #[test]

@@ -339,3 +339,108 @@ describe('scan lifecycle', () => {
     await vi.waitFor(() => expect(status(store)()).toBe('ready'));
   });
 });
+
+describe('restoring the last scan', () => {
+  const SAVED = 1_749_990_000;
+
+  it('stays idle when there is no saved scan', async () => {
+    const { store } = setup();
+
+    expect(await store.restore()).toBe(false);
+    expect(store.state).toEqual({ status: 'idle' });
+  });
+
+  it('opens the saved scan as the ready one, with its time and as outdated when it was', async () => {
+    const api = createMockApi({
+      durationMs: 0,
+      now: () => NOW,
+      lastScan: { options: ROOT, outdated: true, scannedAt: SAVED },
+    });
+    const store = new ScanStore(api);
+
+    expect(await store.restore()).toBe(true);
+
+    if (store.state.status !== 'ready') {
+      throw new Error('expected ready');
+    }
+
+    expect(store.state).toMatchObject({ options: ROOT, outdated: true, scannedAt: SAVED, warnings: [] });
+    expect((await api.getNode(store.state.scanId, store.state.rootId)).allocated).toBe(
+      store.state.totals.allocated,
+    );
+  });
+
+  it('opens an up to date scan as not outdated, and a rescan then starts the same options again', async () => {
+    const store = new ScanStore(
+      createMockApi({ durationMs: 0, now: () => NOW, lastScan: { options: ROOT, scannedAt: SAVED } }),
+    );
+
+    await store.restore();
+
+    expect(store.state.status === 'ready' && store.state.outdated).toBe(false);
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date((NOW + 60) * 1000));
+
+    try {
+      await store.rescan();
+      await vi.waitFor(() => expect(store.state.status === 'ready' && store.state.scannedAt).toBe(NOW + 60));
+
+      expect(store.state.status === 'ready' && store.state.outdated).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does nothing when a scan was started while the saved one was being opened', async () => {
+    const mock = createMockApi({ durationMs: 0, now: () => NOW, lastScan: { options: ROOT } });
+    const dropped: number[] = [];
+    let release: () => void = () => {};
+    const api: Api = {
+      ...mock,
+      openLastScan: async () => {
+        await new Promise<void>((resolve) => (release = resolve));
+
+        return mock.openLastScan();
+      },
+      dropScan: async (scan) => {
+        dropped.push(scan);
+      },
+    };
+    const store = new ScanStore(api);
+
+    const restoring = store.restore();
+
+    await store.start({ root: '/mnt/backup', oneFileSystem: true });
+    release();
+
+    expect(await restoring).toBe(false);
+    await vi.waitFor(() => expect(store.state.status).toBe('ready'));
+    expect(store.state).toMatchObject({ options: { root: '/mnt/backup' } });
+    expect(dropped).toHaveLength(1);
+  });
+
+  it('keeps the start page when the backend fails', async () => {
+    const api: Api = { ...createMockApi(), openLastScan: () => Promise.reject(new Error('unreadable')) };
+    const store = new ScanStore(api);
+
+    expect(await store.restore()).toBe(false);
+    expect(store.state).toEqual({ status: 'idle' });
+  });
+
+  it('stamps a scan that just finished with the time it finished', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(NOW * 1000));
+
+    try {
+      const store = new ScanStore(createMockApi({ durationMs: 0, now: () => NOW }));
+
+      await store.start(ROOT);
+      await vi.waitFor(() => expect(store.state.status).toBe('ready'));
+
+      expect(store.state.status === 'ready' && store.state.scannedAt).toBe(NOW);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

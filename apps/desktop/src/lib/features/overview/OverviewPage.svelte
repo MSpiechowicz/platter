@@ -23,6 +23,7 @@
   import LargestFoldersCard from './LargestFoldersCard.svelte';
   import { loadOverview } from './model';
   import ReclaimableCard from './ReclaimableCard.svelte';
+  import ScannedAgo from './ScannedAgo.svelte';
   import { warningLines } from './scanWarnings';
   import UsageDaysCard from './UsageDaysCard.svelte';
 
@@ -100,6 +101,7 @@
         </Pill>
         <Button disabled={cleanup.busy} onclick={() => scan.rescan()}>Rescan</Button>
       </div>
+      <ScannedAgo at={ready.scannedAt} />
       {#each warnings as line (line)}
         <p class="warning">{line}</p>
       {/each}
