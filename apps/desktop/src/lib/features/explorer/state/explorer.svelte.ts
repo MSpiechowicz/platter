@@ -5,7 +5,7 @@ import { COLLAPSED_NODE_ID, describeError, isApiError, type Api } from '../../..
 import type { ChildrenPage, LodNode, NodeDto, NodeId, PathDto, ScanId, SortKey } from '../../../api/types';
 import { platform } from '../../../state/platform.svelte';
 import { resource, type Resource } from '../../../state/resource.svelte';
-import { createFolderColorResolver, type FolderColorResolver } from '../../../folderColor';
+import { createFolderColorResolver, type FolderColorResolver, type UsedColor } from '../../../folderColor';
 import { colorOf, dominantTile, mapPalette, type ColorMap } from '../colors';
 import {
   chainsToExpand,
@@ -155,7 +155,7 @@ export class ExplorerStore {
    */
   focusColor = $state<string | null>(null);
   /** The colours used above the focused folder, which its children avoid (see `childColors` in folderColor.ts). */
-  focusAbove = $state.raw<readonly string[]>([]);
+  focusAbove = $state.raw<readonly UsedColor[]>([]);
   /** A child of the open folder. */
   selected = $state<NodeId | null>(null);
   /** The child under the pointer, in the map or in the list. */
@@ -185,7 +185,7 @@ export class ExplorerStore {
   readonly #known = new Map<NodeId, string | null>();
   /** The same for the colours used above each folder: known ones need no lookup when the folder is opened. */
   // eslint-disable-next-line svelte/prefer-svelte-reactivity
-  readonly #knownAbove = new Map<NodeId, readonly string[]>();
+  readonly #knownAbove = new Map<NodeId, readonly UsedColor[]>();
   #reload = $state(0);
   /** The rows loaded after the first page of the whole folder, and after the first page of the matches. */
   #more = $state.raw<MoreRows | null>(null);

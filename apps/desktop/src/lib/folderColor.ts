@@ -14,7 +14,8 @@ import { PALETTE, SLATE } from './palette';
  * 3. A colour the folders above already use (the siblings of the folder and of each folder above it: its "used
  *    above" colours) comes last in that order. Folders of different levels are shown side by side (the Overview
  *    stack, the map), so a folder deep down does not take the colour of a big folder next to its ancestor
- *    (`/Applications` and `/Users/sam/Projects`). Such a colour is only reused when the others are taken.
+ *    (`/Applications` and `/Users/sam/Projects`). When the palette runs out (the macOS root alone has more folders
+ *    than colours), the colour of the smallest folder that uses it is reused first, so a big folder keeps its own.
  *
  * A folder's colour is therefore a property of the folder, whatever view it is drawn in and however deep the
  * view starts.
@@ -22,15 +23,15 @@ import { PALETTE, SLATE } from './palette';
 export function childColors(
   parentColor: string | null,
   children: readonly { id: number; allocated: number }[],
-  usedAbove: readonly string[] = [],
+  usedAbove: readonly UsedColor[] = [],
 ): Map<number, string> {
   const sorted = [...children].sort((a, b) => b.allocated - a.allocated || a.id - b.id);
-  const used = new Set(usedAbove.map((color) => color.toLowerCase()));
+  const usedBy = new Map(usedAbove.map((used) => [used.color.toLowerCase(), used.allocated]));
   const others = PALETTE.filter((color) => color.toLowerCase() !== parentColor?.toLowerCase());
-  const free = [
-    ...others.filter((color) => !used.has(color.toLowerCase())),
-    ...others.filter((color) => used.has(color.toLowerCase())),
-  ];
+  const reused = others
+    .filter((color) => usedBy.has(color.toLowerCase()))
+    .sort((a, b) => (usedBy.get(a.toLowerCase()) ?? 0) - (usedBy.get(b.toLowerCase()) ?? 0));
+  const free = [...others.filter((color) => !usedBy.has(color.toLowerCase())), ...reused];
   const colors = new Map<number, string>();
   let next = 0;
 
@@ -47,20 +48,41 @@ export function childColors(
   return colors;
 }
 
+/** A colour used above a folder, with the size of the biggest folder that uses it there. */
+export interface UsedColor {
+  color: string;
+  allocated: number;
+}
+
 /**
  * The "used above" colours of the children of a folder (see `childColors`, rule 3): the folder's own `usedAbove`
- * and the colours of the folder and its siblings, `siblings`. Slate is no colour of the palette and is left out.
+ * and the colours of the folder and its siblings, `siblings`, which `colors` holds. Slate is no colour of the
+ * palette and is left out.
  */
-export function usedBelow(usedAbove: readonly string[], siblings: Iterable<string>): string[] {
-  const all = new Set(usedAbove.map((color) => color.toLowerCase()));
+export function usedBelow(
+  usedAbove: readonly UsedColor[],
+  colors: ReadonlyMap<number, string>,
+  siblings: readonly { id: number; allocated: number }[],
+): UsedColor[] {
+  const all = new Map<string, number>();
+  const add = (color: string, allocated: number): void => {
+    const key = color.toLowerCase();
 
-  for (const color of siblings) {
-    if (color.toLowerCase() !== SLATE.toLowerCase()) {
-      all.add(color.toLowerCase());
+    if (key !== SLATE.toLowerCase()) {
+      all.set(key, Math.max(all.get(key) ?? 0, allocated));
     }
-  }
+  };
 
-  return [...all];
+  usedAbove.forEach((used) => add(used.color, used.allocated));
+  siblings.forEach((sibling) => {
+    const color = colors.get(sibling.id);
+
+    if (color !== undefined) {
+      add(color, sibling.allocated);
+    }
+  });
+
+  return [...all].map(([color, allocated]) => ({ color, allocated }));
 }
 
 /** How many of a folder's biggest children are looked at to find a child's colour. */
@@ -82,12 +104,12 @@ export interface FolderColorResolver {
    * The colours used above `node` (see `childColors`, rule 3), which its own children avoid. Found from the tree like
    * its colour, and remembered.
    */
-  usedAboveOf(node: NodeId): Promise<string[]>;
+  usedAboveOf(node: NodeId): Promise<UsedColor[]>;
   /**
    * Tells the resolver a colour that is already known, so it need not look it up, with the colours used above the
    * folder when they are known too. A known value is never replaced.
    */
-  seed(node: NodeId, color: string, usedAbove?: readonly string[]): void;
+  seed(node: NodeId, color: string, usedAbove?: readonly UsedColor[]): void;
 }
 
 /**
@@ -98,7 +120,7 @@ export interface FolderColorResolver {
 export function createFolderColorResolver(api: Api, scan: ScanId): FolderColorResolver {
   const known = new Map<NodeId, string>();
   /** The colours used above each folder whose children the walk coloured, or that was seeded with them. */
-  const above = new Map<NodeId, string[]>();
+  const above = new Map<NodeId, UsedColor[]>();
   const children = new Map<NodeId, Promise<{ id: number; allocated: number }[]>>();
   const pending = new Map<NodeId, Promise<void>>();
 
@@ -151,8 +173,9 @@ export function createFolderColorResolver(api: Api, scan: ScanId): FolderColorRe
       const parent = ids[depth] as NodeId;
       const child = ids[depth + 1] as NodeId;
       const parentAbove = above.get(parent) ?? [];
-      const colors = childColors(color, await biggestChildren(parent), parentAbove);
-      const childAbove = usedBelow(parentAbove, colors.values());
+      const kids = await biggestChildren(parent);
+      const colors = childColors(color, kids, parentAbove);
+      const childAbove = usedBelow(parentAbove, colors, kids);
 
       remember(colors);
       for (const id of colors.keys()) {
@@ -205,7 +228,7 @@ export function createFolderColorResolver(api: Api, scan: ScanId): FolderColorRe
     childrenOf(parent, parentColor, kids) {
       const parentAbove = above.get(parent) ?? [];
       const colors = childColors(parentColor, kids, parentAbove);
-      const childAbove = usedBelow(parentAbove, colors.values());
+      const childAbove = usedBelow(parentAbove, colors, kids);
 
       remember(colors);
       for (const id of colors.keys()) {

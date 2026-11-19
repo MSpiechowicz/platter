@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { COLLAPSED_NODE_ID, type Api } from './api/client';
 import { createMockApi } from './api/mock';
 import type { NodeDto, ScanEvent, ScanId } from './api/types';
-import { childColors, COLOR_CHILDREN, createFolderColorResolver } from './folderColor';
+import { childColors, COLOR_CHILDREN, createFolderColorResolver, usedBelow } from './folderColor';
 import { PALETTE, SLATE } from './palette';
 
 const kids = (...sizes: number[]) => sizes.map((allocated, index) => ({ id: index + 1, allocated }));
@@ -51,6 +51,35 @@ describe('childColors', () => {
     );
 
     expect([...below.values()]).toEqual([PALETTE[0], ...PALETTE.slice(1), SLATE, SLATE]);
+  });
+
+  it('reuses the colour of the smallest folder above when the palette is used up (the macOS root)', () => {
+    // The macOS root: Users, Applications, System, Library, opt, private, usr, then tiny ones. Every colour is used.
+    const GB = 1e9;
+    const root = kids(
+      480 * GB,
+      67 * GB,
+      49 * GB,
+      30 * GB,
+      8.6 * GB,
+      8.4 * GB,
+      1.7 * GB,
+      0.01 * GB,
+      0.001 * GB,
+    );
+    const rootColors = childColors(null, root);
+    const users = rootColors.get(1) as string;
+    const applications = rootColors.get(2) as string;
+    const above = usedBelow([], rootColors, root);
+
+    // Inside /Users/sam (cyan, like /Users): Library, Projects, Parallels.
+    const home = childColors(users, kids(255 * GB, 147 * GB, 20 * GB), above);
+
+    expect(home.get(1)).toBe(users);
+    expect(home.get(2)).not.toBe(applications);
+    // Projects takes the colour of the smallest folder of the root that has one, then Parallels the next smallest.
+    expect(home.get(2)).toBe(rootColors.get(8));
+    expect(home.get(3)).toBe(rootColors.get(7));
   });
 
   it('breaks ties by id, whatever order the children come in', () => {

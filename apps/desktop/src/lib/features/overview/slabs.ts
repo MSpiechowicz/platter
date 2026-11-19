@@ -1,5 +1,5 @@
 import type { NodeDto, NodeId } from '../../api/types';
-import { childColors, usedBelow } from '../../folderColor';
+import { childColors, usedBelow, type UsedColor } from '../../folderColor';
 import { SLATE } from '../../palette';
 import { platform } from '../../state/platform.svelte';
 
@@ -87,16 +87,16 @@ export function levelColors(levels: readonly SlabLevel[]): Map<NodeId, string> {
  */
 export function levelPalette(levels: readonly SlabLevel[]): {
   colors: Map<NodeId, string>;
-  usedAbove: Map<NodeId, string[]>;
+  usedAbove: Map<NodeId, UsedColor[]>;
 } {
   const colors = new Map<NodeId, string>();
-  const usedAbove = new Map<NodeId, string[]>();
+  const usedAbove = new Map<NodeId, UsedColor[]>();
 
   for (const level of levels) {
     const parentColor = level.parent === undefined ? null : (colors.get(level.parent) ?? SLATE);
     const parentAbove = level.parent === undefined ? [] : (usedAbove.get(level.parent) ?? []);
     const levelColors = childColors(parentColor, level.children, parentAbove);
-    const childAbove = usedBelow(parentAbove, levelColors.values());
+    const childAbove = usedBelow(parentAbove, levelColors, level.children);
 
     for (const [id, color] of levelColors) {
       colors.set(id, color);

@@ -1,6 +1,6 @@
 import { COLLAPSED_NODE_ID } from '../../api/client';
 import type { NodeId } from '../../api/types';
-import { childColors, usedBelow } from '../../folderColor';
+import { childColors, usedBelow, type UsedColor } from '../../folderColor';
 import { SLATE } from '../../palette';
 import { theme } from '../../state/theme.svelte';
 import type { ChainedLod } from './layout/chains';
@@ -110,7 +110,7 @@ const sized = (items: readonly ChainedLod[]): { id: NodeId; allocated: number }[
 export function assignMapColors(
   focusColor: string | null,
   children: readonly ChainedLod[],
-  focusAbove: readonly string[] = [],
+  focusAbove: readonly UsedColor[] = [],
 ): ColorMap {
   return mapPalette(focusColor, children, focusAbove).colors;
 }
@@ -122,22 +122,20 @@ export function assignMapColors(
 export function mapPalette(
   focusColor: string | null,
   children: readonly ChainedLod[],
-  focusAbove: readonly string[] = [],
-): { colors: ColorMap; usedAbove: ReadonlyMap<NodeId, string[]> } {
-  const top = childColors(focusColor, sized(children), focusAbove);
-  const topAbove = usedBelow(focusAbove, top.values());
+  focusAbove: readonly UsedColor[] = [],
+): { colors: ColorMap; usedAbove: ReadonlyMap<NodeId, UsedColor[]> } {
+  const topSized = sized(children);
+  const top = childColors(focusColor, topSized, focusAbove);
+  const topAbove = usedBelow(focusAbove, top, topSized);
   const colors = new Map<NodeId, string>(top as Map<NodeId, string>);
-  const usedAbove = new Map<NodeId, string[]>([...top.keys()].map((id) => [id as NodeId, topAbove]));
+  const usedAbove = new Map<NodeId, UsedColor[]>([...top.keys()].map((id) => [id as NodeId, topAbove]));
   const dominant = dominantTile(children);
 
   if (dominant) {
     const dominantAbove = usedAbove.get(dominant.node.id) ?? topAbove;
-    const inside = childColors(
-      colors.get(dominant.node.id) ?? null,
-      sized(ownChildren(dominant)),
-      dominantAbove,
-    );
-    const insideAbove = usedBelow(dominantAbove, inside.values());
+    const insideSized = sized(ownChildren(dominant));
+    const inside = childColors(colors.get(dominant.node.id) ?? null, insideSized, dominantAbove);
+    const insideAbove = usedBelow(dominantAbove, inside, insideSized);
 
     inside.forEach((color, id) => {
       colors.set(id as NodeId, color);
