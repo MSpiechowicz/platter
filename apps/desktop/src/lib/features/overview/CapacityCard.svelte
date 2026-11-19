@@ -40,6 +40,10 @@
   const animatedShare = countUp(() => share);
   const animatedUsed = countUp(() => used);
   const animatedFree = countUp(() => volume?.available ?? 0);
+
+  /** The percent figure, with its sign apart: a full-size "%" widens the figure and pulls it off centre. */
+  const shareText = $derived(percentText(animatedShare.value));
+  const shareFigure = $derived(shareText.endsWith('%') ? shareText.slice(0, -1) : shareText);
 </script>
 
 <Card title={volume ? 'Capacity' : 'Scanned'}>
@@ -47,7 +51,9 @@
     {#if volume}
       <div class="gauge">
         <SegRing value={share} size={150} segments={56}>
-          <b class="num">{percentText(animatedShare.value)}</b>
+          <b class="num pct"
+            >{shareFigure}{#if shareFigure !== shareText}<span class="sign">%</span>{/if}</b
+          >
           <span class="label">USED</span>
         </SegRing>
       </div>
@@ -103,10 +109,29 @@
     line-height: 1;
   }
 
+  /* Inside the ring's inner circle (about 84 px across at this size): smaller, with room to the line. */
+  .gauge b.pct {
+    font-size: 26px;
+    margin-bottom: 4px;
+  }
+
+  .sign {
+    margin-left: 1px;
+    font-size: 0.62em;
+    font-weight: 600;
+  }
+
   .label {
     font-size: 11px;
     letter-spacing: 0.14em;
     color: var(--muted);
+  }
+
+  /* Letter spacing also follows the last letter: taken back, so the word sits in the middle. */
+  .gauge .label {
+    display: block;
+    margin-right: -0.14em;
+    font-size: 10px;
   }
 
   .scanned {

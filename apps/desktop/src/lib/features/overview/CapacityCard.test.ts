@@ -20,6 +20,13 @@ const volume: VolumeDto = {
 
 const totals: Totals = { allocated: 740 * GB, apparent: 700 * GB, files: 2000, dirs: 300, errors: 0 };
 
+/** The gauge's figure, whose "%" is a smaller element of its own: matched by the whole text of the figure. */
+function gaugeFigure(text: string): HTMLElement {
+  return screen.getByText(
+    (_, element) => element?.classList.contains('pct') === true && element.textContent === text,
+  );
+}
+
 describe('CapacityCard', () => {
   beforeEach(() => {
     vi.useFakeTimers({
@@ -43,7 +50,7 @@ describe('CapacityCard', () => {
 
     render(CapacityCard, { props: { volume, totals } });
 
-    expect(screen.getByText('0%')).toBeTruthy();
+    expect(gaugeFigure('0%')).toBeTruthy();
 
     for (let ms = 0; ms < 1300; ms += 16) {
       vi.advanceTimersByTime(16);
@@ -51,7 +58,7 @@ describe('CapacityCard', () => {
       expect(document.body.textContent).not.toMatch(/-\d/);
     }
 
-    expect(screen.getByText('74%')).toBeTruthy();
+    expect(gaugeFigure('74%')).toBeTruthy();
     expect(screen.getByText('740 GB')).toBeTruthy();
     expect(screen.getByText('260 GB')).toBeTruthy();
     expect(screen.getByText('1.00 TB')).toBeTruthy();
@@ -62,7 +69,7 @@ describe('CapacityCard', () => {
 
     render(CapacityCard, { props: { volume, totals } });
 
-    expect(screen.getByText('74%')).toBeTruthy();
+    expect(gaugeFigure('74%')).toBeTruthy();
     expect(screen.getByText('740 GB')).toBeTruthy();
   });
 
@@ -116,7 +123,7 @@ describe('CapacityCard', () => {
 
     render(CapacityCard, { props: { volume: newer, totals: richer } });
 
-    expect(screen.getByText('74%')).toBeTruthy();
+    expect(gaugeFigure('74%')).toBeTruthy();
     expect(screen.getByText('260 GB')).toBeTruthy();
   });
 
