@@ -31,6 +31,15 @@ describe('ScannedAgo', () => {
     expect(screen.getByText('Scanned 5 minutes ago')).toBeTruthy();
   });
 
+  it('turns amber once the scan is a day old', () => {
+    const fresh = render(ScannedAgo, { props: { at: NOW - 23 * HOUR } });
+    expect(screen.getByText(/^Scanned /).classList.contains('old')).toBe(false);
+    fresh.unmount();
+
+    render(ScannedAgo, { props: { at: NOW - 25 * HOUR } });
+    expect(screen.getByText(/^Scanned /).classList.contains('old')).toBe(true);
+  });
+
   it('stops its timer when it goes away', () => {
     const { unmount } = render(ScannedAgo, { props: { at: NOW } });
 

@@ -51,7 +51,7 @@ describe('the app', () => {
     expect(await screen.findByText('files read')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
 
-    expect(await screen.findByText(/Scan complete/, undefined, { timeout: 3000 })).toBeTruthy();
+    expect(await screen.findByText(/^Scanned /, undefined, { timeout: 3000 })).toBeTruthy();
     expect(screen.getByText('STORAGE OVERVIEW')).toBeTruthy();
 
     // Capacity of the whole volume, file types, age buckets and largest folders come from the API.
@@ -146,7 +146,7 @@ describe('the app', () => {
   it('forgets the Explorer place when the scan is dropped', async () => {
     render(App);
     await startScan();
-    await screen.findByText(/Scan complete/, undefined, { timeout: 3000 });
+    await screen.findByText(/^Scanned /, undefined, { timeout: 3000 });
 
     ui.openInExplorer(1, '#123456');
     expect(ui.explorerScan).toBeDefined();
@@ -177,7 +177,7 @@ describe('the app', () => {
     expect(screen.getByText('NEW SCAN')).toBeTruthy();
 
     await startScan();
-    await screen.findByText(/Scan complete/, undefined, { timeout: 3000 });
+    await screen.findByText(/^Scanned /, undefined, { timeout: 3000 });
 
     for (const name of ['Overview', 'Explorer']) {
       expect(nav(name).getAttribute('aria-disabled')).toBeNull();
@@ -200,13 +200,13 @@ describe('the app', () => {
     expect(nav('Overview').getAttribute('aria-disabled')).toBe('true');
 
     // Let it finish: a running scan would leak into the next test.
-    await screen.findByText(/Scan complete/, undefined, { timeout: 3000 });
+    await screen.findByText(/^Scanned /, undefined, { timeout: 3000 });
   });
 
   it('keeps the last result while "Scan" shows the start screen, until a new scan starts', async () => {
     render(App);
     await startScan();
-    await screen.findByText(/Scan complete/, undefined, { timeout: 3000 });
+    await screen.findByText(/^Scanned /, undefined, { timeout: 3000 });
     const finished = scan.state;
 
     await fireEvent.click(nav('Scan'));

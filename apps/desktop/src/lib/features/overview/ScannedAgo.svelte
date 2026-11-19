@@ -10,6 +10,7 @@
 
   /** The words change by the minute, so it looks again once a minute. */
   const REFRESH_MS = 60_000;
+  const OLD_AFTER_MS = 24 * 60 * 60 * 1000;
 
   let now = $state(Date.now());
 
@@ -19,16 +20,20 @@
     return () => clearInterval(timer);
   });
 
-  const text = $derived(formatAgo(now - at * 1000));
+  const age = $derived(now - at * 1000);
+  const text = $derived(formatAgo(age));
+  /** A scan a day old or more may well be out of date: it says so in amber. */
+  const old = $derived(age >= OLD_AFTER_MS);
 </script>
 
-<p class="scanned">Scanned {text}</p>
+<span class="scanned" class:old>Scanned {text}</span>
 
 <style>
   .scanned {
-    margin: 6px 0 0;
     color: var(--muted);
-    font-size: 12px;
-    line-height: 1.4;
+  }
+
+  .old {
+    color: var(--amber);
   }
 </style>

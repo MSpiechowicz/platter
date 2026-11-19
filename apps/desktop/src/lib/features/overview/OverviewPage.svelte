@@ -76,6 +76,12 @@
 
   const warnings = $derived(warningLines(ready.warnings));
 
+  /** The whole status, for its tooltip when the pill has no room for all of it: when, to the minute. */
+  const statusTitle = $derived(
+    `Scanned ${new Date(ready.scannedAt * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })} · ` +
+      `${formatCount(ready.totals.files)} files in ${formatDuration(ready.elapsedMs)}`,
+  );
+
   const subtitle = $derived.by(() => {
     const options = scan.options;
 
@@ -96,12 +102,13 @@
   <PageHeader title="STORAGE OVERVIEW" sub={subtitle}>
     <div class="status">
       <div class="topr">
-        <Pill dot grow>
-          Scan complete · <b>{formatCount(ready.totals.files)} files</b> in {formatDuration(ready.elapsedMs)}
+        <Pill dot grow truncate title={statusTitle}>
+          <ScannedAgo at={ready.scannedAt} /> · <b>{formatCount(ready.totals.files)} files</b> in {formatDuration(
+            ready.elapsedMs,
+          )}
         </Pill>
         <Button disabled={cleanup.busy} onclick={() => scan.rescan()}>Rescan</Button>
       </div>
-      <ScannedAgo at={ready.scannedAt} />
       {#each warnings as line (line)}
         <p class="warning">{line}</p>
       {/each}

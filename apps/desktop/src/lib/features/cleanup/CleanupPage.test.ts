@@ -27,7 +27,7 @@ const currentStep = (): string | null =>
 async function scanDisk(): Promise<void> {
   await fireEvent.click(await screen.findByRole('button', { name: /^\/\s/ }));
   await fireEvent.click(within(main()).getByRole('button', { name: 'Scan' }));
-  await screen.findByText(/Scan complete/, undefined, { timeout: 3000 });
+  await screen.findByText(/^Scanned /, undefined, { timeout: 3000 });
 }
 
 async function openCleanup(): Promise<void> {

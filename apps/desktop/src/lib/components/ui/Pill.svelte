@@ -10,13 +10,25 @@
     grow?: boolean;
     /** Something is under way: the dot pulses. */
     busy?: boolean;
+    /** The text is cut with "…" when the pill has no room for all of it, and only then. Give `title` the whole. */
+    truncate?: boolean;
+    /** The tooltip: the whole text, for a pill that may be cut. */
+    title?: string;
     children: Snippet;
   }
 
-  let { dot = false, idle = false, grow = false, busy = false, children }: Props = $props();
+  let {
+    dot = false,
+    idle = false,
+    grow = false,
+    busy = false,
+    truncate = false,
+    title = undefined,
+    children,
+  }: Props = $props();
 </script>
 
-<div class="pill" class:grow>
+<div class="pill" class:grow class:truncate {title}>
   {#if dot}<span class="dot" class:idle class:busy></span>{/if}
   <span class="t">{@render children()}</span>
 </div>
@@ -44,6 +56,19 @@
   .grow {
     flex: 1;
     justify-content: center;
+  }
+
+  /* A pill that may be cut: it can shrink below its text, and the text ends in "…". The trimmed box would clip
+     the letters' descenders once the overflow is hidden, so it keeps its full line box. */
+  .truncate {
+    min-width: 0;
+  }
+
+  .truncate .t {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-box: normal;
   }
 
   .pill :global(b) {
