@@ -3173,7 +3173,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "platter-ai"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "llama-cpp-2",
  "llama-cpp-sys-2",
@@ -3191,7 +3191,7 @@ dependencies = [
 
 [[package]]
 name = "platter-cleanup"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "platter-core",
  "platter-rules",
@@ -3199,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "platter-cli"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "clap",
  "platter-cleanup",
@@ -3213,7 +3213,7 @@ dependencies = [
 
 [[package]]
 name = "platter-core"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "rayon",
  "serde",
@@ -3223,7 +3223,7 @@ dependencies = [
 
 [[package]]
 name = "platter-desktop"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "gtk",
  "platter-ai",
@@ -3245,7 +3245,7 @@ dependencies = [
 
 [[package]]
 name = "platter-history"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "platter-core",
  "rusqlite",
@@ -3256,7 +3256,7 @@ dependencies = [
 
 [[package]]
 name = "platter-platform"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "dunce",
  "jiff 1.0.0",
@@ -3274,7 +3274,7 @@ dependencies = [
 
 [[package]]
 name = "platter-rules"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "platter-core",
  "serde_json",
