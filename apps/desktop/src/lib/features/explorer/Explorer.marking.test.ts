@@ -275,13 +275,13 @@ describe('marking in the Explorer', () => {
         action: { label: 'Rescan' },
       });
       expect(within(footer()).getByRole('button', { name: 'Undo' })).toBeTruthy();
-      expect(within(footer()).getByRole('button', { name: 'Rescan' })).toBeTruthy();
+      // Rescan is the toast's button, not the footer's.
+      expect(within(footer()).queryByRole('button', { name: 'Rescan' })).toBeNull();
 
       await fireEvent.click(within(footer()).getByRole('button', { name: 'Undo' }));
 
       await waitFor(() => expect(footer().textContent).toContain('Put back 2 items.'));
       expect(within(footer()).queryByRole('button', { name: 'Undo' })).toBeNull();
-      expect(within(footer()).getByRole('button', { name: 'Rescan' })).toBeTruthy();
     });
 
     it('starts nothing when the review is cancelled, and keeps the marks and the button', async () => {

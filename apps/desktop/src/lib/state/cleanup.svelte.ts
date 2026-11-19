@@ -270,8 +270,9 @@ export class CleanupStore {
       return phase.cancelling || !acting ? [] : ['cancel'];
     }
 
+    // Rescan after a cleanup is the toast's button (see `#end`): the footer offers only Undo, when it can.
     if (phase.kind === 'done') {
-      return phase.result.undoable ? ['undo', 'rescan'] : ['rescan'];
+      return phase.result.undoable ? ['undo'] : [];
     }
 
     return this.outdated ? ['rescan'] : [];

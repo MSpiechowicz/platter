@@ -111,7 +111,7 @@ function foundNothing(plan: CleanupPlanDto, titleOf: (ruleId: string) => string)
   return `Found nothing for: ${plan.notFound.map((id) => visibleText(titleOf(id))).join(', ')}`;
 }
 
-/** `freedShown`: the caller writes what was freed as a figure of its own, so the sentence leaves it out. */
+/** `freedShown`: what was freed is said elsewhere (the toast, a big figure), so the sentence leaves it out. */
 function resultText(result: CleanupResult, freedShown = false): string {
   if (result.kind === 'failed') {
     return `Cleaning failed: ${visibleText(result.message ?? 'unknown error')}.`;
@@ -187,13 +187,8 @@ function resultDetails(result: CleanupResult): string[] {
   return lines;
 }
 
-export interface FooterOptions {
-  /** The view shows what was freed as a big figure: the status does not say it again. */
-  freedShown?: boolean;
-}
-
 /** What the footer says now, from the flow's state. */
-export function footerStatus(store: CleanupStore, options: FooterOptions = {}): FooterStatus {
+export function footerStatus(store: CleanupStore): FooterStatus {
   const phase = store.phase;
   const notes = planNotes(store.plan, (id) => store.suggestions.find((item) => item.id === id)?.title ?? id, {
     refused: false,
@@ -222,8 +217,9 @@ export function footerStatus(store: CleanupStore, options: FooterOptions = {}): 
     }
 
     case 'done': {
-      // The way on (rescan) is the toast's and the button's: the footer says only what happened.
-      const text = resultText(phase.result, options.freedShown);
+      // What was freed and the way on (Rescan) are the toast's: the footer says only what the toast does not, as
+      // what was moved to the trash, a problem or a tool that did not run.
+      const text = resultText(phase.result, true);
       const failed = phase.result.kind === 'failed' || phase.result.withProblems > 0;
 
       return {

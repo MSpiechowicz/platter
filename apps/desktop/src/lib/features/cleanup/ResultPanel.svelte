@@ -19,7 +19,7 @@
   const result = $derived(store.phase.kind === 'done' ? store.phase.result : undefined);
   const bars = $derived(resultBars(basis, result?.freed));
   // The big figure above already says what was freed, so the sentence under the bars does not repeat it.
-  const status = $derived(footerStatus(store, { freedShown: true }));
+  const status = $derived(footerStatus(store));
   const canUndo = $derived(store.actions.includes('undo'));
 
   // A bar's share of the whole volume, or of what the scan counted for a folder.

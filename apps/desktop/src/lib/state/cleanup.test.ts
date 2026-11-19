@@ -449,7 +449,7 @@ describe('the run', () => {
     expect(store.freedTotal).toBe(result.freed);
     expect(scan.state.status === 'ready' && scan.state.outdated && scan.state.scanId === scanId).toBe(true);
     expect(store.outdated).toBe(true);
-    expect(store.actions).toEqual(['rescan']);
+    expect(store.actions).toEqual([]);
     expect(store.canCleanSafe).toBe(false);
     expect(store.canCleanSelected).toBe(false);
   });
@@ -504,7 +504,7 @@ describe('the run', () => {
 
     expect(store.phase.result.trashed).toBeGreaterThan(0);
     expect(store.phase.result.undoable).toBe(true);
-    expect(store.actions).toEqual(['undo', 'rescan']);
+    expect(store.actions).toEqual(['undo']);
     // Moving to the trash frees nothing yet.
     expect(store.freedTotal).toBe(0);
 
@@ -517,7 +517,7 @@ describe('the run', () => {
     expect(store.phase.result.undo?.restored).toBe(store.phase.result.trashed);
     expect(store.phase.result.undo?.failures).toEqual([]);
     expect(store.phase.result.undoable).toBe(false);
-    expect(store.actions).toEqual(['rescan']);
+    expect(store.actions).toEqual([]);
   });
 
   it('shows each failure of an undo and keeps undo available for another click', async () => {
@@ -605,7 +605,7 @@ describe('the run', () => {
     expect(store.phase.result.undo).toEqual(before);
     expect(store.phase.result.undo?.error).toBeUndefined();
     expect(store.phase.result.undoable).toBe(true);
-    expect(store.actions).toEqual(['undo', 'rescan']);
+    expect(store.actions).toEqual(['undo']);
   });
 
   it('does not offer undo for a cleanup that moved nothing to the trash', async () => {
@@ -787,7 +787,7 @@ describe('events', () => {
     }
 
     expect(store.phase.result).toMatchObject({ kind: 'failed', message: 'the disk is full', undoable: true });
-    expect(store.actions).toEqual(['undo', 'rescan']);
+    expect(store.actions).toEqual(['undo']);
     expect(scan.state.status === 'ready' && scan.state.outdated).toBe(true);
     expect(store.freedTotal).toBe(0);
   });

@@ -371,7 +371,7 @@ describe('cleaning what is marked', () => {
     expect(startCleanup).toHaveBeenCalledOnce();
     expect(store.phase.result.trashed).toBe(2);
     expect(store.phase.result.undoable).toBe(true);
-    expect(store.actions).toEqual(['undo', 'rescan']);
+    expect(store.actions).toEqual(['undo']);
     // The scan no longer describes the disk: nothing can be marked or cleaned on it.
     expect(scan.state.status === 'ready' && scan.state.outdated).toBe(true);
     expect(store.canMark).toBe(false);
@@ -388,7 +388,7 @@ describe('cleaning what is marked', () => {
 
     expect(store.phase.result.undo?.restored).toBe(2);
     expect(store.phase.result.undoable).toBe(false);
-    expect(store.actions).toEqual(['rescan']);
+    expect(store.actions).toEqual([]);
   });
 
   it('keeps the marks when the review is cancelled, and starts nothing', async () => {

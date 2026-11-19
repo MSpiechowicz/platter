@@ -2,6 +2,7 @@
   import { fade, fly } from 'svelte/transition';
   import { motion } from '../../state/motion.svelte';
   import { ui } from '../../state/ui.svelte';
+  import Button from './Button.svelte';
   import Icon, { type IconName } from './Icon.svelte';
 
   const ICONS: Record<'ok' | 'info' | 'error', IconName> = { ok: 'check', info: 'info', error: 'alert' };
@@ -25,14 +26,15 @@
         {#if toast.description}<p>{toast.description}</p>{/if}
         {#if toast.action}
           {@const action = toast.action}
-          <button
-            class="ta"
-            type="button"
-            onclick={() => {
-              ui.dismiss(toast.id);
-              action.run();
-            }}>{action.label}</button
-          >
+          <div class="ta">
+            <Button
+              variant="primary"
+              onclick={() => {
+                ui.dismiss(toast.id);
+                action.run();
+              }}>{action.label}</Button
+            >
+          </div>
         {/if}
       </div>
       <button class="tx" type="button" aria-label="Close" onclick={() => ui.dismiss(toast.id)}>
@@ -93,20 +95,9 @@
     color: var(--muted);
   }
 
+  /* The app's own button, at its full size: the one thing to do next. */
   .ta {
-    margin-top: 10px;
-    padding: 5px 12px;
-    border-radius: 6px;
-    border: 1px solid var(--tc);
-    background: color-mix(in srgb, var(--tc) 14%, transparent);
-    color: var(--tc);
-    font-size: 12.5px;
-    font-weight: 600;
-    transition: background 0.15s;
-  }
-
-  .ta:hover {
-    background: color-mix(in srgb, var(--tc) 26%, transparent);
+    margin-top: 12px;
   }
 
   .tx {
