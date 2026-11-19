@@ -43,7 +43,7 @@
     { icon: 'offline', title: 'Offline', text: 'Runs on this machine' },
     {
       icon: 'download',
-      title: `${fmt.size(status.model.bytes)}, once`,
+      title: fmt.size(status.model.bytes),
       text: visibleText(status.model.name),
     },
     { icon: 'lock', title: 'Your files stay here', text: 'Nothing is uploaded' },
@@ -136,7 +136,7 @@
       <ul class="facts">
         {#each facts as fact (fact.title)}
           <li class="fact">
-            <Icon name={fact.icon} />
+            <Icon name={fact.icon} size={22} stroke={1.7} />
             <div><b>{fact.title}</b><small>{fact.text}</small></div>
           </li>
         {/each}
@@ -237,6 +237,7 @@
   }
 
   .fact :global(svg) {
+    flex: none;
     color: var(--accent);
   }
 

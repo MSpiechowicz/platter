@@ -42,7 +42,7 @@ describe('AdvisorWelcome', () => {
     for (const text of [
       'Offline',
       'Runs on this machine',
-      '2.7 GB, once',
+      '2.7 GB',
       'Qwen3.5-4B',
       'Your files stay here',
       'Nothing is uploaded',
@@ -58,7 +58,7 @@ describe('AdvisorWelcome', () => {
     setup(statusOf('notDownloaded'));
 
     expect(screen.getByRole('button', { name: /^Download Qwen3\.5-4B \(2\.\d GiB\)$/ })).toBeTruthy();
-    expect(screen.getByText(/^2\.\d GiB, once$/)).toBeTruthy();
+    expect(screen.getByText(/^2\.\d GiB$/)).toBeTruthy();
   });
 
   it('asks for the download once per press, with no web dialog of its own', async () => {
