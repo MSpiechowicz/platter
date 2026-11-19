@@ -20,23 +20,34 @@
 <Card title="What you clean most" hint={`LAST ${days} DAYS`} grow class="most">
   <!-- A scrolling region must take the keyboard, or its rows cannot be reached without a mouse. -->
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <div class="scroll" role="region" tabindex="0" aria-label="Items cleaned most">
-    <ul>
-      {#each rows as row (row.name)}
-        <li>
-          <div class="line">
-            <span class="name">{visibleText(row.name)}</span>
-            <span class="muted">{timesText(row.count)}</span>
-          </div>
-          <div class="bar" aria-hidden="true"><i style="width: {row.share * 100}%"></i></div>
-          <div class="last">last on {formatDay(row.last, today)}</div>
-        </li>
-      {/each}
-    </ul>
-  </div>
+  {#if rows.length === 0}
+    <p class="empty">Nothing cleaned in the last {days} days. What you clean most shows up here.</p>
+  {:else}
+    <div class="scroll" role="region" tabindex="0" aria-label="Items cleaned most">
+      <ul>
+        {#each rows as row (row.name)}
+          <li>
+            <div class="line">
+              <span class="name">{visibleText(row.name)}</span>
+              <span class="muted">{timesText(row.count)}</span>
+            </div>
+            <div class="bar" aria-hidden="true"><i style="width: {row.share * 100}%"></i></div>
+            <div class="last">last on {formatDay(row.last, today)}</div>
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
 </Card>
 
 <style>
+  .empty {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+
   /* Positioned, so anything visually hidden inside is clipped by the region and does not stretch the page. */
   .scroll {
     position: relative;

@@ -130,7 +130,13 @@
         today={data.today}
         thin={data.thin}
       />
-      <div class="split" bind:this={row} style={fill.cap === undefined ? undefined : `height: ${fill.cap}px`}>
+      <!-- With no cleanups there is nothing to scroll: the row is as tall as its cards, not stretched to the bottom. -->
+      <div
+        class="split"
+        class:empty={data.cleanups.length === 0}
+        bind:this={row}
+        style={fill.cap === undefined || data.cleanups.length === 0 ? undefined : `height: ${fill.cap}px`}
+      >
         <CleanupsTable
           cleanups={data.cleanups}
           today={data.today}
@@ -150,9 +156,7 @@
         </CleanupsTable>
 
         <div class="side">
-          {#if data.cleanups.length > 0}
-            <CleanedMostCard cleanups={data.cleanups} today={data.today} days={data.days} />
-          {/if}
+          <CleanedMostCard cleanups={data.cleanups} today={data.today} days={data.days} />
           <ReadyNowCard
             {known}
             scanned={scanId !== undefined}
@@ -201,6 +205,10 @@
 
   /* The list gives way and scrolls inside, so "Ready to clean now" under it stays within the row. */
   .side > :global(.most) {
+    min-height: 0;
+  }
+
+  .split.empty {
     min-height: 0;
   }
 

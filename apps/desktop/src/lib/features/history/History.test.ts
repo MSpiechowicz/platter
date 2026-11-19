@@ -498,11 +498,21 @@ describe('what you clean most', () => {
     expect(items.join(' ')).not.toContain(';');
   });
 
-  it('is not there when nothing was cleaned', async () => {
+  it('says it is empty when nothing was cleaned, with no list to scroll', async () => {
     await open(mock('empty'));
 
+    expect(screen.getByText('What you clean most')).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Items cleaned most' })).toBeNull();
-    expect(screen.queryByText('What you clean most')).toBeNull();
+    expect(screen.getByText(/^Nothing cleaned in the last \d+ days\./)).toBeTruthy();
+  });
+
+  it('does not stretch the row of an empty history down the page', async () => {
+    await open(mock('empty'));
+
+    const row = document.querySelector('.split') as HTMLElement;
+
+    expect(row.classList.contains('empty')).toBe(true);
+    expect(row.style.height).toBe('');
   });
 });
 
