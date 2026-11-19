@@ -2,11 +2,13 @@
 
 use std::path::{Path, PathBuf};
 
-use platter_cleanup::{CleanupAction, CleanupOptions, CleanupPlan, Refusal, plan_cleanup};
+use platter_cleanup::{CleanupAction, CleanupOptions, CleanupPlan, Refusal, fenced, plan_cleanup};
 use platter_core::dto::Verdict;
 use platter_core::testing::{FakeFs, NOW};
-use platter_core::{CancelToken, Environment, Os, ScanConfig, Tree, UserDir, scan};
-use platter_rules::{Matcher, Rule, RuleSet};
+use platter_core::{
+    CancelToken, Environment, ModelLabel, ModelVerdict, NodeId, Os, ScanConfig, Tree, UserDir, scan,
+};
+use platter_rules::{Matcher, Rule, RuleSet, evaluate_with};
 
 const DAY: i64 = 86_400;
 
@@ -496,7 +498,8 @@ fn rust_target_outcome(fs: &FakeFs) -> Result<Vec<String>, Refusal> {
 #[test]
 fn nothing_inside_a_folder_of_snapshots_is_cleaned_wherever_it_is() {
     // Snapper keeps `.snapshots` at the root of every subvolume it covers, timeshift its own folder. (The
-    // rule for `/.snapshots` itself claims that folder whole, so name rules never look inside it.)
+    // rule for `/.snapshots` itself claims that folder whole, so name rules never look inside it.) The
+    // fence of the protected places keeps the name rules out of the others.
     for place in [
         "/home/.snapshots/9/snapshot/u/a",
         "/data/.snapshots/3/snapshot/a",
@@ -508,11 +511,8 @@ fn nothing_inside_a_folder_of_snapshots_is_cleaned_wherever_it_is() {
             .file(&format!("{place}/Cargo.toml"), 1);
         aged(&mut fs, &format!("{place}/target/x"), 10, 90);
 
-        assert!(
-            matches!(rust_target_outcome(&fs), Err(Refusal::Protected(_))),
-            "{place}: {:?}",
-            rust_target_outcome(&fs)
-        );
+        // Not found at all, so not refused either: nothing in a protected place is offered.
+        assert_eq!(rust_target_outcome(&fs), Ok(Vec::new()), "{place}");
     }
 
     // The same project outside any snapshot is planned.
@@ -1007,4 +1007,80 @@ fn downloads_is_not_a_protected_personal_folder() {
         plan.refused
     );
     assert_eq!(plan.groups().len(), 1);
+}
+
+/// Python caches in a settings folder (Blender's add-ons keep theirs in `~/.config/blender`) and in a project.
+fn caches_in_config_and_code() -> FakeFs {
+    let mut fs = FakeFs::new();
+    fs.file("/home/u/.config/blender/addons/a/__pycache__/m.pyc", 40)
+        .file("/home/u/.config/blender/addons/a/__pycache__/n.pyc", 40)
+        .file("/home/u/.config/app/cachey/blob", 70)
+        .file("/home/u/code/py/__pycache__/m.pyc", 30)
+        .file("/home/u/code/py/scratch/blob", 50);
+    fs
+}
+
+fn node_at(tree: &Tree, path: &str) -> NodeId {
+    (0..u32::try_from(tree.len()).unwrap())
+        .map(NodeId)
+        .find(|&node| tree.path_bytes(node) == path.as_bytes())
+        .unwrap_or_else(|| panic!("{path} is in the tree"))
+}
+
+#[test]
+fn a_name_match_in_a_protected_place_is_neither_planned_nor_refused() {
+    let fs = caches_in_config_and_code();
+    let tree = scan_at(&fs, "/home/u");
+
+    let plan = plan_cleanup(
+        &tree,
+        &env(),
+        &RuleSet::builtin(),
+        &["python-cache"],
+        &fs,
+        &CleanupOptions::default(),
+    );
+
+    assert_eq!(paths(&plan), ["/home/u/code/py/__pycache__"]);
+    assert!(plan.refused.is_empty(), "{:?}", plan.refused);
+}
+
+#[test]
+fn the_suggestions_leave_out_what_lies_in_a_protected_place() {
+    let fs = caches_in_config_and_code();
+    let tree = scan_at(&fs, "/home/u");
+    let labels = [
+        ModelLabel {
+            node: node_at(&tree, "/home/u/.config/app/cachey"),
+            verdict: ModelVerdict::Review,
+            reason: "temporary".to_owned(),
+        },
+        ModelLabel {
+            node: node_at(&tree, "/home/u/code/py/scratch"),
+            verdict: ModelVerdict::Review,
+            reason: "temporary".to_owned(),
+        },
+    ];
+
+    let suggestions = evaluate_with(&tree, &env(), &fenced(RuleSet::builtin(), &env()), &labels);
+    let shown = |id: &str| -> (u64, u64) {
+        suggestions
+            .suggestions
+            .iter()
+            .find(|suggestion| suggestion.id == id)
+            .map(|suggestion| (suggestion.allocated, suggestion.items))
+            .unwrap_or_default()
+    };
+
+    assert_eq!(shown("python-cache"), (30, 1), "only the cache of the project");
+    assert_eq!(shown("advisor"), (50, 1), "only the label outside the settings");
+
+    // Without the fence both caches are found (the plan would refuse the one in `~/.config`).
+    let unfenced = evaluate_with(&tree, &env(), &RuleSet::builtin(), &[]);
+    let python = unfenced
+        .suggestions
+        .iter()
+        .find(|suggestion| suggestion.id == "python-cache")
+        .unwrap();
+    assert_eq!(python.items, 2);
 }

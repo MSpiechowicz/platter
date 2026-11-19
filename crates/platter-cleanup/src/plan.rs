@@ -8,6 +8,7 @@ use crate::action::{CleanupAction, CleanupOptions, action_for};
 use crate::guard::{Guard, MarkerGroup, Refusal, VerifiedTarget};
 use crate::kept::KeptFolders;
 use crate::path::{PathStyle, display};
+use crate::protect::fenced;
 
 /// The verified targets of one selected rule and how they are cleaned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,7 +208,9 @@ pub fn plan_cleanup_with(
         options: *options,
         ..CleanupPlan::default()
     };
-    let found = matches(tree, env, rules);
+    // What lies in a protected place is not found at all, as the suggestions do not show it: the plan
+    // then does not list it as refused.
+    let found = matches(tree, env, &fenced(rules.clone(), env));
 
     for id in selected {
         if !found.iter().any(|rule| rule.id == *id) {

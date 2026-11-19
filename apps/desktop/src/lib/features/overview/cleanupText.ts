@@ -74,10 +74,21 @@ export function actionText(group: PlanGroupDto): string {
 
 const more = (count: number, what: string): string => `… and ${count} more ${what}`;
 
-/** The refusals and the rules that matched nothing: why part of the selection is not in the plan. */
-export function planNotes(plan: CleanupPlanDto | undefined, titleOf: (ruleId: string) => string): string[] {
+/**
+ * The refusals and the rules that matched nothing: why part of the selection is not in the plan. `refused: false`
+ * leaves the refusals out, for the footer: a toast already said how many and why, and paths do not fit there.
+ */
+export function planNotes(
+  plan: CleanupPlanDto | undefined,
+  titleOf: (ruleId: string) => string,
+  { refused = true }: { refused?: boolean } = {},
+): string[] {
   if (!plan) {
     return [];
+  }
+
+  if (!refused) {
+    return plan.notFound.length > 0 ? [foundNothing(plan, titleOf)] : [];
   }
 
   const lines = plan.refused
@@ -90,10 +101,14 @@ export function planNotes(plan: CleanupPlanDto | undefined, titleOf: (ruleId: st
   }
 
   if (plan.notFound.length > 0) {
-    lines.push(`Found nothing for: ${plan.notFound.map((id) => visibleText(titleOf(id))).join(', ')}`);
+    lines.push(foundNothing(plan, titleOf));
   }
 
   return lines;
+}
+
+function foundNothing(plan: CleanupPlanDto, titleOf: (ruleId: string) => string): string {
+  return `Found nothing for: ${plan.notFound.map((id) => visibleText(titleOf(id))).join(', ')}`;
 }
 
 /** `freedShown`: the caller writes what was freed as a figure of its own, so the sentence leaves it out. */
@@ -180,7 +195,9 @@ export interface FooterOptions {
 /** What the footer says now, from the flow's state. */
 export function footerStatus(store: CleanupStore, options: FooterOptions = {}): FooterStatus {
   const phase = store.phase;
-  const notes = planNotes(store.plan, (id) => store.suggestions.find((item) => item.id === id)?.title ?? id);
+  const notes = planNotes(store.plan, (id) => store.suggestions.find((item) => item.id === id)?.title ?? id, {
+    refused: false,
+  });
   const actions = store.actions;
 
   switch (phase.kind) {

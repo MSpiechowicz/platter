@@ -13,7 +13,7 @@ use crate::found::Found;
 use crate::plan::{Plan, Role, kept_root, named_of};
 use crate::reason::{Facts, render};
 use crate::resolve::{has_sibling_file, same_os_str, workspace_root};
-use crate::rule::{Files, Matcher, Named, Rule, RuleSet};
+use crate::rule::{Fence, Files, Matcher, Named, Rule, RuleSet};
 
 /// The result of [`evaluate`]: what could be cleaned, labelled by verdict.
 pub type Suggestions = SuggestionsDto;
@@ -69,7 +69,7 @@ pub fn evaluate_with_units(
         };
     };
 
-    let advisor = advisor_found(tree, rules.rules(), &verdicts, &found, labels);
+    let advisor = advisor_found(tree, rules.rules(), rules.fence(), &verdicts, &found, labels);
     assemble(tree, env, rules.rules(), &verdicts, found, advisor, units)
 }
 
@@ -77,6 +77,7 @@ pub fn evaluate_with_units(
 fn advisor_found(
     tree: &Tree,
     rules: &[Rule],
+    fence: Option<&Fence>,
     verdicts: &[Verdict],
     found: &[Found],
     labels: &[ModelLabel],
@@ -93,6 +94,7 @@ fn advisor_found(
         .filter(|label| label.verdict == ModelVerdict::Review)
         .map(|label| label.node)
         .filter(|&node| listable(tree, &explainer, node))
+        .filter(|&node| !fence.is_some_and(|fence| fence.blocks(&tree.path_bytes(node))))
         .collect();
     nodes.sort_unstable();
     nodes.dedup();
@@ -189,6 +191,7 @@ pub(crate) fn run(tree: &Tree, env: &Environment, rules: &RuleSet) -> Option<(Ve
         tree,
         env,
         rules: rules.rules(),
+        fence: rules.fence(),
         verdicts: &verdicts,
         plan,
         found: rules.rules().iter().map(|_| Found::default()).collect(),
@@ -220,6 +223,8 @@ struct Walker<'a> {
     tree: &'a Tree,
     env: &'a Environment,
     rules: &'a [Rule],
+    /// Where no name rule may match (see [`Fence`]).
+    fence: Option<&'a Fence>,
     /// The verdict of each rule on this machine (see `effective_verdict`).
     verdicts: &'a [Verdict],
     plan: Plan,
@@ -268,7 +273,16 @@ impl Walker<'_> {
     fn visit(&mut self, node: NodeId, set: usize) -> Option<usize> {
         match self.tree.kind(node) {
             NodeKind::Dir => {
-                if let Some((rule, name)) = self.matching_rule(node) {
+                let (matched, fenced) = self.matching_rule(node);
+
+                // A name match the fence blocks is not entered, as no match is: the walk stays as short as
+                // without the fence, and nothing inside matches by name either. A kept folder inside is
+                // still reached, as for any match.
+                if fenced && !self.plan.holds_keep(node) {
+                    return None;
+                }
+
+                if let Some((rule, name)) = matched {
                     // A kept folder is never entered, whatever is in it, and it is kept whatever its size: a
                     // folder of empty files or of hard links charged elsewhere has no bytes of its own (nor
                     // has any folder where the filesystem gives a directory no blocks). Only a folder with
@@ -320,11 +334,12 @@ impl Walker<'_> {
         }
     }
 
-    /// The first rule, in table order, that matches this directory, with the index of the matched name.
+    /// The first rule, in table order, that matches this directory, with the index of the matched name, and
+    /// whether a name rule matched that the fence blocks (then no name rule is the answer).
     ///
     /// The scan root is only ever matched by a `keep` claim. Whatever else claims it (a scan of
     /// `~/.cache` itself) is not offered: the folder the user chose to look at is not a suggestion.
-    fn matching_rule(&self, node: NodeId) -> Option<(usize, Option<usize>)> {
+    fn matching_rule(&self, node: NodeId) -> (Option<(usize, Option<usize>)>, bool) {
         // The scan root has no parent in the tree, so a name rule cannot check its surroundings.
         let is_root = self.tree.parent(node).is_none();
         let mut best: Option<(usize, Option<usize>)> = None;
@@ -338,7 +353,7 @@ impl Walker<'_> {
             };
             let keep = claims().find(|anchor| self.rules[anchor.rule].verdict == Verdict::Keep);
             if let Some(anchor) = keep {
-                return Some((anchor.rule, None));
+                return (Some((anchor.rule, None)), false);
             }
 
             if !is_root {
@@ -347,7 +362,7 @@ impl Walker<'_> {
         }
 
         if is_root {
-            return None;
+            return (None, false);
         }
 
         for &index in &self.plan.named {
@@ -358,12 +373,21 @@ impl Walker<'_> {
             if let Some(named) = named_of(&self.rules[index])
                 && let Some(name) = self.named_match(named, node)
             {
+                // Asked only now, for a folder that matched, so few paths are ever built. A fenced folder
+                // is matched by no name rule; a path rule that claims it still does.
+                if self
+                    .fence
+                    .is_some_and(|fence| fence.blocks(&self.tree.path_bytes(node)))
+                {
+                    return (best, best.is_none());
+                }
+
                 best = Some((index, Some(name)));
                 break;
             }
         }
 
-        best
+        (best, false)
     }
 
     /// Index of the name in `rule.names` that `node` carries, if the rule's conditions hold.

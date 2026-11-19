@@ -1179,6 +1179,15 @@ impl<'a> Lens<'a> {
         false
     }
 
+    /// Whether the fence of the rules (see [`platter_rules::Fence`]) blocks everything inside `node`: asked
+    /// about a name below it, since a place that only may not be a target itself blocks no name inside.
+    fn is_fenced_inside(&self, node: NodeId) -> bool {
+        self.review.rules().fence().is_some_and(|fence| {
+            let inside = self.tree.path_of(node).join("x");
+            fence.blocks(inside.as_os_str().as_encoded_bytes())
+        })
+    }
+
     fn is_dir(&self, node: NodeId) -> bool {
         self.tree.contains(node) && self.tree.kind(node) == NodeKind::Dir
     }
@@ -1514,6 +1523,20 @@ impl<'a> Lens<'a> {
         // A scope that Platter could not read is not covered by any rule, but the answer is about it.
         if Self::is_given(scope) && self.tree.is_unreadable(node) {
             found.subject = true;
+            found.rows.push(self.row(node));
+
+            return found;
+        }
+
+        // No name rule matches in a protected place (the rules are fenced off from them), so a folder there
+        // is covered by none: the guard answers about it, as it would about a match, never "your call". Only
+        // where nothing inside may be cleaned either: `/var/cache` is no target, but what is in it may be.
+        if Self::is_given(scope)
+            && self.is_fenced_inside(node)
+            && let Some(detail) = self.review.guard(node)
+        {
+            found.subject = true;
+            found.notes.push(detail);
             found.rows.push(self.row(node));
 
             return found;

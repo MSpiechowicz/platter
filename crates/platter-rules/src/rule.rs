@@ -1,5 +1,8 @@
 //! What a rule is: plain data. Adding a rule is one entry in `table.rs`; nothing here does anything.
 
+use std::fmt;
+use std::sync::Arc;
+
 use platter_core::dto::Verdict;
 use platter_core::{Category, Os, UserDir, UserRule, UserVerdict};
 
@@ -274,7 +277,45 @@ impl Rule {
 pub struct RuleSet {
     rules: Vec<Rule>,
     user: Vec<UserRule>,
+    fence: Option<Fence>,
 }
+
+/// The places a name rule and a model label never match: a folder whose path the fence blocks is not a
+/// suggestion, whatever it is called (a `__pycache__` in `~/.config`). Rules about one exact folder are not
+/// fenced: the cleanup guard decides about those, and lets a tool clean what only it may. The fence is
+/// asked only about a folder that matched, never about every folder of the scan.
+#[derive(Clone)]
+pub struct Fence(Arc<Blocks>);
+
+/// Whether a fence blocks a path.
+type Blocks = dyn Fn(&[u8]) -> bool + Send + Sync;
+
+impl Fence {
+    /// A fence that blocks every path (native bytes, as [`Tree::path_bytes`](platter_core::Tree::path_bytes)
+    /// writes it) for which `blocks` says yes.
+    pub fn new(blocks: impl Fn(&[u8]) -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(blocks))
+    }
+
+    pub fn blocks(&self, path: &[u8]) -> bool {
+        (self.0)(path)
+    }
+}
+
+impl fmt::Debug for Fence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Fence")
+    }
+}
+
+/// Two fences are the same only when they are one value: a closure cannot be compared.
+impl PartialEq for Fence {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Fence {}
 
 impl RuleSet {
     /// A custom set of rules, with no user rules.
@@ -282,7 +323,19 @@ impl RuleSet {
         Self {
             rules,
             user: Vec::new(),
+            fence: None,
         }
+    }
+
+    /// This set with `fence` around the places no name rule and no model label may match (see [`Fence`]).
+    pub fn fenced(mut self, fence: Fence) -> Self {
+        self.fence = Some(fence);
+        self
+    }
+
+    /// The fence of this set, when it has one.
+    pub fn fence(&self) -> Option<&Fence> {
+        self.fence.as_ref()
     }
 
     /// The rules Platter ships with.

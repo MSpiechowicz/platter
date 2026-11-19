@@ -39,7 +39,7 @@ use platter_ai::{
 use platter_ai::{AdvisorWorker, Engine, Fetch, WorkerConfig};
 #[cfg(feature = "advisor")]
 use platter_ai::{ProcessEngine, RealSpawner};
-use platter_cleanup::{CandidateLimits, Protected, label_candidates, with_real_keeps};
+use platter_cleanup::{CandidateLimits, Protected, fenced, label_candidates, with_real_keeps};
 use platter_core::dto::{
     ApiErrorCode, OsDto, ScanId, SuggestionDto, SuggestionSource, SuggestionsDto, Verdict,
 };
@@ -1313,10 +1313,13 @@ impl<'a> Review<'a> {
     ) -> Self {
         // A folder kept through a link is kept where it really is too, as the suggestions see it, so the
         // labels listed, the folders sent to the model and the answers agree with the plan.
-        let rules = with_real_keeps(
-            RuleSet::builtin().with_user(user.clone()),
-            env.home.as_deref(),
-            probe,
+        let rules = fenced(
+            with_real_keeps(
+                RuleSet::builtin().with_user(user.clone()),
+                env.home.as_deref(),
+                probe,
+            ),
+            &env,
         );
         let explainer = Explainer::new(tree, &env, &rules);
 

@@ -40,4 +40,4 @@ pub use plan::{
     ADVISOR, CleanupPlan, LeftOut, MARKED, NEEDS_ADMIN_OFF, PlanGroup, Refused, plan_cleanup,
     plan_cleanup_with, plan_labelled, plan_labelled_with, plan_marked,
 };
-pub use protect::{PROTECTED_LEARNING_BUDGET, Protected};
+pub use protect::{PROTECTED_LEARNING_BUDGET, Protected, fenced};

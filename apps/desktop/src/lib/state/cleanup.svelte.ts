@@ -644,6 +644,11 @@ export class CleanupStore {
       return;
     }
 
+    if (plan.refused.length + plan.refusedMore > 0) {
+      // The rest is cleaned: the toast only says what stays, the footer keeps to the run.
+      this.#ui.toast('Part of the selection is left out', visibleText(refusedSummary(plan)), 'info');
+    }
+
     if (plan.groups.some((group) => group.verdict === 'review')) {
       this.phase = { kind: 'review', plan };
       return;

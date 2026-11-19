@@ -43,4 +43,4 @@ pub use platter_core::dto::{SuggestionDto, SuggestionSource, SuggestionsDto, Ver
 pub use platter_core::units::Units;
 pub use platter_core::{Environment, Os};
 pub use resolve::workspace_root;
-pub use rule::{Age, Files, FilesIn, Matcher, Named, Rule, RuleSet};
+pub use rule::{Age, Fence, Files, FilesIn, Matcher, Named, Rule, RuleSet};

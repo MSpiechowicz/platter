@@ -15,6 +15,7 @@ import { advisor } from '../../state/advisor.svelte';
 import { CleanupStore } from '../../state/cleanup.svelte';
 import { ScanStore } from '../../state/scan.svelte';
 import { settings } from '../../state/settings.svelte';
+import { ui } from '../../state/ui.svelte';
 import AdvisorCard from './AdvisorCard.svelte';
 
 const GB = 1_000_000_000;
@@ -814,7 +815,7 @@ describe('AdvisorCard cleaning', () => {
     expect(screen.getByText('268 GB', { selector: 'b' }).classList.contains('stale')).toBe(true);
   });
 
-  it('shows the refusals and the rules that matched nothing as plain text, not hidden', async () => {
+  it('says the refusals in a toast and the rules that matched nothing in the footer', async () => {
     const context = await fixture((ids) =>
       planOf([group(ids[0] as string, 'safe', 1)], {
         refused: [{ ruleId: 'trash', path: '/home/demo/.local/share/Trash', reason: 'it is a link' }],
@@ -827,8 +828,12 @@ describe('AdvisorCard cleaning', () => {
     await fireEvent.click(button('Clean selected (2)'));
     await waitFor(() => expect(context.api.startCleanup).toHaveBeenCalled());
 
-    expect(footer().textContent).toContain('Not cleaned: /home/demo/.local/share/Trash (it is a link)');
-    expect(footer().textContent).toContain('… and 2 more not cleaned');
+    expect(ui.toasts.at(-1)).toMatchObject({
+      title: 'Part of the selection is left out',
+      description: '3 items were left out. Why: it is a link.',
+      kind: 'info',
+    });
+    expect(footer().textContent).not.toContain('Not cleaned:');
     expect(footer().textContent).toContain('Found nothing for: Title of snapshots');
   });
 });

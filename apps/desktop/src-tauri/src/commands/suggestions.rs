@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use platter_cleanup::with_real_keeps;
+use platter_cleanup::{fenced, with_real_keeps};
 use platter_core::dto::{ScanId, SuggestionsDto};
 use platter_core::{EntryProbe, Units};
 use platter_platform::Platform;
@@ -88,7 +88,10 @@ pub(crate) fn suggestions_with(
         units,
         |tree, labels| {
             let env = platform.environment_for(tree.root_path());
-            let rules = with_real_keeps(user_rules.rule_set(), env.home.as_deref(), probe);
+            let rules = fenced(
+                with_real_keeps(user_rules.rule_set(), env.home.as_deref(), probe),
+                &env,
+            );
 
             evaluate_with_units(tree, &env, &rules, labels, units)
         },

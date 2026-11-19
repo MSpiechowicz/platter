@@ -349,9 +349,11 @@ fn a_second_path_to_the_home_does_not_get_past_the_protected_places() {
             .filter(|line| line.starts_with("  rust-target  ") && !line.contains(": "))
             .collect();
         assert_eq!(planned.len(), 1, "only the ordinary project: {out}");
+        // The second path is the home here, so the protected places are fenced off by their paths: the
+        // other two are not offered at all (and the guard would refuse them by identity if they were).
         assert!(
-            out.contains("protected"),
-            "the other two are refused as protected: {out}"
+            !out.contains("/.config/tool/p/target") && !out.contains("/Documents/q/target"),
+            "the other two are left alone: {out}"
         );
 
         // The suggestions know the second path too: Documents there is kept, not a place to clean.

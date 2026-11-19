@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use platter_core::{EntryProbe, Environment, UserDir};
+use platter_rules::{Fence, RuleSet};
 
 use crate::look::{Looked, look_up};
 use crate::path::PathStyle;
@@ -192,6 +193,18 @@ const WINDOWS_DRIVE_INSIDE: &[&str] = &["$Recycle.Bin", "System Volume Informati
 
 /// The folder below `%SystemRoot%` that only an owning tool may clean (`DISM`), by name.
 const WINDOWS_TOOL_FOLDER: &str = "WinSxS";
+
+/// `rules` with a fence around the protected places of `env` (see [`Fence`]): a folder a name rule or a
+/// model label finds in one (a `__pycache__` in `~/.config`) is not offered at all, rather than offered
+/// and then refused by the plan. The fence asks what the plan's guard asks of a path, by the path alone;
+/// the guard still checks every target, by identity too. Without a known home no place can be told
+/// apart, so nothing is fenced: every plan is refused then anyway.
+pub fn fenced(rules: RuleSet, env: &Environment) -> RuleSet {
+    match Protected::for_environment(env) {
+        Some(protected) => rules.fenced(Fence::new(move |path| protected.refuses(path).is_some())),
+        None => rules,
+    }
+}
 
 /// The protected places of one machine, as components.
 #[derive(Debug, Clone, PartialEq, Eq)]
