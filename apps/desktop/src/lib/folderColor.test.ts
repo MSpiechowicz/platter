@@ -38,34 +38,29 @@ describe('childColors', () => {
   it('turns slate when the palette is used up', () => {
     const colors = childColors(
       null,
-      Array.from({ length: 11 }, (_, index) => ({ id: index + 1, allocated: 100 - index })),
+      Array.from({ length: PALETTE.length + 3 }, (_, index) => ({ id: index + 1, allocated: 100 - index })),
     );
 
-    expect([...colors.values()].slice(0, 8)).toEqual([...PALETTE]);
-    expect([...colors.values()].slice(8)).toEqual([SLATE, SLATE, SLATE]);
+    expect([...colors.values()].slice(0, PALETTE.length)).toEqual([...PALETTE]);
+    expect([...colors.values()].slice(PALETTE.length)).toEqual([SLATE, SLATE, SLATE]);
 
-    // Below a parent with a palette colour, seven colours are left after the one it passes on.
+    // Below a parent with a palette colour, all but one colour are left after the one it passes on.
     const below = childColors(
       PALETTE[0] as string,
-      Array.from({ length: 10 }, (_, index) => ({ id: index + 1, allocated: 100 - index })),
+      Array.from({ length: PALETTE.length + 2 }, (_, index) => ({ id: index + 1, allocated: 100 - index })),
     );
 
     expect([...below.values()]).toEqual([PALETTE[0], ...PALETTE.slice(1), SLATE, SLATE]);
   });
 
   it('reuses the colour of the smallest folder above when the palette is used up (the macOS root)', () => {
-    // The macOS root: Users, Applications, System, Library, opt, private, usr, then tiny ones. Every colour is used.
+    // The macOS root: Users, Applications, System, Library, opt, private, usr, then tiny ones (bin, sbin, cores,
+    // ...), more folders than the palette has colours. Every colour is used.
     const GB = 1e9;
+    const sizes = [480, 67, 49, 30, 8.6, 8.4, 1.7].map((size) => size * GB);
     const root = kids(
-      480 * GB,
-      67 * GB,
-      49 * GB,
-      30 * GB,
-      8.6 * GB,
-      8.4 * GB,
-      1.7 * GB,
-      0.01 * GB,
-      0.001 * GB,
+      ...sizes,
+      ...Array.from({ length: PALETTE.length - sizes.length + 1 }, (_, index) => 1000 - index),
     );
     const rootColors = childColors(null, root);
     const users = rootColors.get(1) as string;
@@ -78,8 +73,8 @@ describe('childColors', () => {
     expect(home.get(1)).toBe(users);
     expect(home.get(2)).not.toBe(applications);
     // Projects takes the colour of the smallest folder of the root that has one, then Parallels the next smallest.
-    expect(home.get(2)).toBe(rootColors.get(8));
-    expect(home.get(3)).toBe(rootColors.get(7));
+    expect(home.get(2)).toBe(rootColors.get(PALETTE.length));
+    expect(home.get(3)).toBe(rootColors.get(PALETTE.length - 1));
   });
 
   it('breaks ties by id, whatever order the children come in', () => {

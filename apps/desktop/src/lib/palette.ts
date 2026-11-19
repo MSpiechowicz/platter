@@ -2,8 +2,8 @@
 export const SLATE = '#66728a';
 
 /**
- * One colour per folder, handed out biggest first. These are the accent hues of app.css
- * (`--cyan`, `--pink`, ...). No green: green means "safe" in this app, and nothing here is.
+ * One colour per folder, handed out biggest first. The first eight are the accent hues of app.css (`--cyan`,
+ * `--pink`, ...), then orange, magenta, sky and lemon. No green: green means "safe" in this app, and nothing here is.
  */
 export const PALETTE: readonly string[] = [
   '#3ec5d8',
@@ -14,6 +14,11 @@ export const PALETTE: readonly string[] = [
   '#c98a6b',
   '#b58bd0',
   '#cdbf94',
+  // Handed out after the eight above, so only smaller folders get them. The macOS root alone has more than eight.
+  '#e0853f',
+  '#cf5fc4',
+  '#8ab8e8',
+  '#d8cf55',
 ];
 
 /**
