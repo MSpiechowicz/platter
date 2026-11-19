@@ -9,6 +9,10 @@ name: Release
 #   release is published at once, so installed copies are offered the update).
 # - A tag pushed by hand (git tag -a v0.2.0 -m "..." && git push origin v0.2.0) makes a draft that is
 #   published by hand after the packages were tried.
+#
+# No tests run here: CI ran them on Linux, Windows and macOS before version.yml tagged the commit, and the
+# release commit only raises the version. A tag pushed by hand is not checked by CI: push it on a commit
+# whose CI run passed.
 on:
   push:
     tags: ["v*"]
@@ -213,15 +217,6 @@ jobs:
       - name: Build the setup
         run: pnpm -C apps/desktop tauri build --ci
 
-      # A red Windows test must not ship a signed setup: nothing below uploads the setup unless the tests pass
-      # (the sign job needs this job). It runs after the build, which made the frontend that the desktop crate
-      # embeds. This job sees no secret, and the tests run the code of the workspace and its dependencies.
-      - name: Test
-        # The Recycle Bin tests change the bin's settings in the registry: only on this thrown-away runner.
-        env:
-          PLATTER_TEST_CHANGE_RECYCLE_BIN: '1'
-        run: cargo test --locked --workspace
-
       - name: Collect the setup
         run: |
           mkdir packages
@@ -300,11 +295,6 @@ jobs:
       - name: Build the app
         run: pnpm -C apps/desktop tauri build --ci --target aarch64-apple-darwin
 
-      # A red macOS test must not ship an app: nothing below uploads it unless the tests pass. It runs after
-      # the build, which made the frontend that the desktop crate embeds.
-      - name: Test
-        run: cargo test --locked --workspace
-
       # The updater takes a tarball of the app bundle. It is made here, not by Tauri, because Tauri signs its
       # own updater files with the key, which this job must not see: the sign job signs the tarball.
       - name: Collect the app and the dmg
@@ -381,7 +371,7 @@ jobs:
           name: packages-windows
           path: windows
 
-      # Only a Mac build that passed (build and tests) is used.
+      # Only a Mac build that passed is used.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.macos.result == 'success'
         with:
