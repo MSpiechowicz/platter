@@ -230,7 +230,11 @@ fn opening_records_nothing_in_the_history() {
     let (data, dir) = (tempfile::tempdir().unwrap(), sample_dir());
     let (scanned, _) = saved_scan(data.path(), dir.path());
     let history = |state: &AppState| tauri::async_runtime::block_on(overview(state, 30)).unwrap();
-    assert!(history(&scanned).volume.is_some(), "a scan that ran is on record");
+    // Linux records a scan of a temporary folder under its volume; elsewhere the test runner's folder may not
+    // be on a volume the history knows. What matters below holds everywhere.
+    if cfg!(target_os = "linux") {
+        assert!(history(&scanned).volume.is_some(), "a scan that ran is on record");
+    }
 
     let restarted = AppState::for_test().with_last_scan_dir(data.path());
     open_now(&restarted).unwrap().unwrap();
@@ -422,9 +426,12 @@ fn a_scan_whose_mounts_are_not_the_ones_it_saw_is_opened_outdated_and_the_file_i
     assert_eq!(opened.totals.files, 2, "the scan is there to look at");
 }
 
-/// A probe that gives every mount another id, as a restart does.
+/// A probe that gives every mount another id, as a restart does. Linux only, like the test that uses it: only
+/// Linux reports mount ids.
+#[cfg(target_os = "linux")]
 struct Remounted<'a>(&'a platter_platform::Platform);
 
+#[cfg(target_os = "linux")]
 impl EntryProbe for Remounted<'_> {
     fn probe(&self, path: &[u8]) -> std::io::Result<Vec<ProbedEntry>> {
         let mut found = self.0.entry_probe.probe(path)?;

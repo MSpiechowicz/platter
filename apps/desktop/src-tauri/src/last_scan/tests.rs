@@ -21,11 +21,19 @@ fn tree_at(now: i64, file: &str) -> Tree {
     scan(&fs, Path::new("/"), &config, &CancelToken::new(), &|_| {}).unwrap()
 }
 
+/// Options of a whole-disk scan, with paths that are absolute on the platform the tests run on (`/` has no
+/// drive on Windows, so it is not absolute there and a saved scan with it is refused).
 fn options() -> ScanOptions {
+    let (root, excluded) = if cfg!(windows) {
+        ("C:\\", "C:\\Windows")
+    } else {
+        ("/", "/proc")
+    };
+
     ScanOptions {
-        root: "/".to_owned(),
+        root: root.to_owned(),
         one_file_system: true,
-        excluded: vec!["/proc".to_owned()],
+        excluded: vec![excluded.to_owned()],
     }
 }
 
@@ -102,7 +110,7 @@ fn the_scan_is_two_files_in_the_folder_the_tree_compressed_and_the_sidecar_in_js
         sidecar_json(dir.path()),
         json!({
             "version": 1,
-            "options": { "root": "/", "oneFileSystem": true, "excluded": ["/proc"] },
+            "options": { "root": options().root, "oneFileSystem": true, "excluded": options().excluded },
             "scannedAt": 1_700_000_000,
             "outdated": false,
         })
