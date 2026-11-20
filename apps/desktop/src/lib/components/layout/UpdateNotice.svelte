@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { tooltip } from '../ui/tooltip.svelte';
   import type { UpdateAction, UpdateInfo, UpdatePhase } from '../../state/update.svelte';
   import Bar from '../ui/Bar.svelte';
@@ -18,6 +19,29 @@
   }
 
   let { info, phase, progress, indeterminate = false, collapsed, onaction }: Props = $props();
+
+  /** How long the full bar stays after the download or install is done, before "Restart to finish" replaces it. */
+  const FULL_BAR_HOLD_MS = 700;
+
+  // The phase on screen. It follows `phase`, except that the progress stays a moment after it ends, so the bar
+  // is seen to reach the end instead of the button cutting it off.
+  let view = $state<UpdatePhase>(untrack(() => phase));
+
+  $effect.pre(() => {
+    const next = phase;
+    const shown = untrack(() => view);
+    const busy = shown === 'downloading' || shown === 'installing';
+
+    if (next !== 'ready' || !busy) {
+      view = next;
+
+      return;
+    }
+
+    const timer = setTimeout(() => (view = next), FULL_BAR_HOLD_MS);
+
+    return () => clearTimeout(timer);
+  });
 
   /** What the main button does: install the update here, or open the release page. */
   const mainAction = $derived<UpdateAction>(info.canInstall ? 'install' : 'open');
@@ -45,35 +69,40 @@
   {:else}
     <div class="ut">
       <i></i>
-      <b>{phase === 'ready' ? 'Update ready' : 'Update available'}</b>
+      <b>{view === 'ready' ? 'Update ready' : 'Update available'}</b>
       <button type="button" class="info" aria-label="What is new" use:tooltip={notes}>
         <Icon name="info" size={15} stroke={1.5} />
       </button>
     </div>
     <div class="uv">Platter {info.next}{info.size ? ` · ${info.size}` : ''}</div>
 
-    {#if phase === 'available'}
-      <div class="ub">
-        <Button variant="primary" size="sm" onclick={() => onaction(mainAction)}>
-          {info.canInstall ? 'Install' : 'Get it'}
-        </Button>
-        <Button size="sm" onclick={() => onaction('later')}>Later</Button>
-      </div>
-    {:else if phase === 'downloading' || phase === 'installing'}
-      {@const what = phase === 'downloading' ? 'Downloading' : 'Installing'}
-      <div class="progress">
-        <Bar
-          value={progress}
-          indeterminate={indeterminate || phase === 'installing'}
-          label="{what} {info.next}"
-        />
-        <span>{what} {info.next}…</span>
-      </div>
-    {:else}
-      <div class="ub one">
-        <Button variant="primary" size="sm" onclick={() => onaction('restart')}>Restart to finish</Button>
-      </div>
-    {/if}
+    <!-- Every state takes the height of the button row, so the card does not change size between them. -->
+    <div class="act">
+      {#if view === 'available'}
+        <div class="ub">
+          <Button variant="primary" size="sm" onclick={() => onaction(mainAction)}>
+            {info.canInstall ? 'Install' : 'Get it'}
+          </Button>
+          <Button size="sm" onclick={() => onaction('later')}>Later</Button>
+        </div>
+      {:else if view === 'downloading' || view === 'installing'}
+        {@const what = view === 'downloading' ? 'Downloading' : 'Installing'}
+        <!-- Installing follows a finished download: the bar stays full instead of sliding back to a segment. -->
+        {@const done = view === 'installing' || phase === 'ready'}
+        <div class="progress">
+          <span>{what} {info.next}…</span>
+          <Bar
+            value={done ? 1 : progress}
+            indeterminate={indeterminate && !done}
+            label="{what} {info.next}"
+          />
+        </div>
+      {:else}
+        <div class="ub one">
+          <Button variant="primary" size="sm" onclick={() => onaction('restart')}>Restart to finish</Button>
+        </div>
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -126,13 +155,21 @@
     grid-template-columns: 1fr;
   }
 
-  .progress {
-    display: grid;
-    gap: 4px;
+  /* The height of a small button: its 12px text line, 5px padding and 1px border on each side. */
+  .act {
+    height: calc(12px * 1.45 + 12px);
   }
 
-  .progress :global(.bar) {
-    margin: 8px 0 0;
+  .progress {
+    height: 100%;
+    display: grid;
+    align-content: center;
+    gap: 6px;
+  }
+
+  /* Progress comes in often: a short, even motion keeps up with it instead of easing far behind. */
+  .progress :global(.bar i) {
+    transition: width 0.3s linear;
   }
 
   .info {

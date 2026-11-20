@@ -76,13 +76,37 @@ describe('UpdateNotice', () => {
     expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBeNull();
   });
 
-  it('says it is installing once the download is done', () => {
-    setup({ phase: 'installing', progress: 1 });
+  it('says it is installing once the download is done, with the bar left full', () => {
+    setup({ phase: 'installing', progress: 0.3, indeterminate: true });
 
     expect(screen.getByText('Installing 0.2.0…')).toBeTruthy();
-    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBeNull();
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('100');
     expect(screen.queryByRole('button', { name: 'Install' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Restart to finish' })).toBeNull();
+  });
+
+  it('keeps the full bar a moment after the download ends, then offers the restart', async () => {
+    vi.useFakeTimers();
+
+    try {
+      const onaction = vi.fn();
+      const { rerender } = render(UpdateNotice, {
+        props: { info, phase: 'downloading', progress: 0.3, collapsed: false, onaction },
+      });
+
+      await rerender({ phase: 'ready', progress: 1 });
+
+      expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('100');
+      expect(screen.queryByRole('button', { name: 'Restart to finish' })).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(700);
+
+      expect(screen.queryByRole('progressbar')).toBeNull();
+      expect(screen.getByText('Update ready')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Restart to finish' })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('ends with "Restart to finish"', async () => {

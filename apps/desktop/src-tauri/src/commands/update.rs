@@ -200,11 +200,21 @@ pub async fn install_update(
     };
 
     let mut received = 0_u64;
+    // One message per whole percent (per MiB without a size), not one per chunk: thousands of messages
+    // restart the bar's motion each time and make it stutter.
+    let mut sent_step = None;
     let bytes = update
         .download(
             |chunk, total| {
                 received += chunk as u64;
-                let _ = on_progress.send(UpdateProgressDto::Downloading { received, total });
+                let step = match total {
+                    Some(total) if total > 0 => received.saturating_mul(100) / total,
+                    _ => received >> 20,
+                };
+                if sent_step != Some(step) {
+                    sent_step = Some(step);
+                    let _ = on_progress.send(UpdateProgressDto::Downloading { received, total });
+                }
             },
             || {},
         )
