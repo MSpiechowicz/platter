@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
+  import AccessBanner from './lib/components/layout/AccessBanner.svelte';
   import AppShell from './lib/components/layout/AppShell.svelte';
   import OutdatedBanner from './lib/components/layout/OutdatedBanner.svelte';
   import PageBoundary from './lib/components/layout/PageBoundary.svelte';
@@ -17,6 +18,7 @@
   import ScanProgress from './lib/features/scan/ScanProgress.svelte';
   import SettingsPage from './lib/features/settings/SettingsPage.svelte';
   import StartPage from './lib/features/start/StartPage.svelte';
+  import { diskAccess } from './lib/state/access.svelte';
   import { advisor } from './lib/state/advisor.svelte';
   import { syncMotionAttribute } from './lib/state/motion.svelte';
   import {
@@ -138,6 +140,11 @@
       onupdate={onUpdate}
     />
   {/snippet}
+
+  <!-- On every page while macOS keeps Platter out of some folders, until "Not now". -->
+  {#if diskAccess.shown}
+    <AccessBanner />
+  {/if}
 
   {#if outdated}
     <OutdatedBanner />

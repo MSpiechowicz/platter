@@ -11,6 +11,7 @@ import type {
   CleanupEvent,
   CleanupId,
   CleanupPlanDto,
+  DiskAccess,
   ExternalLink,
   EntryMatchDto,
   FolderMatchDto,
@@ -207,5 +208,9 @@ export function createTauriApi(): Api {
     restartApp: () => callVoid('restart_app'),
 
     openExternal: (link: ExternalLink) => callVoid('open_external', { link }),
+
+    diskAccess: () => call<DiskAccess>('disk_access'),
+
+    openDiskAccessSettings: () => callVoid('open_disk_access_settings'),
   };
 }

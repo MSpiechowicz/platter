@@ -2,6 +2,7 @@
 //!
 //! - [`app_dirs`]: the app's config and data folders, and private files in them.
 //! - [`cpu`]: physical cores, for sizing a thread pool.
+//! - [`disk_access`]: whether macOS lets Platter into every folder (Full Disk Access).
 //! - [`environment`]: the home directory, clock and OS that a finished scan is judged against.
 //! - [`generic`]: `DirSource` on plain `std::fs`; works everywhere.
 //! - `linux` (Linux only): the fast `DirSource` plus default exclusions.
@@ -26,6 +27,7 @@
 
 pub mod app_dirs;
 pub mod cpu;
+pub mod disk_access;
 pub mod environment;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) mod fd_budget;

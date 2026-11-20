@@ -111,6 +111,11 @@ export interface TestHooks {
   history: HookHistory | null;
   /** Show this theme instead of the saved one (`theme=light`, `theme=dark`, `theme=system`); not saved. */
   theme: HookTheme | null;
+  /**
+   * The mock has no Full Disk Access (`access=missing`), so the notice asking for it is shown. Use it with
+   * `os=macos`: opening the settings is refused on the other systems, as in the app.
+   */
+  access: boolean;
 }
 
 const VIEWS: readonly string[] = [
@@ -155,6 +160,7 @@ const NO_HOOKS: TestHooks = {
   rules: null,
   history: null,
   theme: null,
+  access: false,
 };
 
 function isInsideTauri(): boolean {
@@ -224,6 +230,7 @@ export function parseHooks(search: string, insideTauri: boolean = isInsideTauri(
     history: history !== null && HISTORY_STATES.includes(history) ? (history as HookHistory) : null,
     rules: params.get('rules') === 'broken' ? 'broken' : params.has('rules') ? 'seed' : null,
     theme: theme === 'dark' || theme === 'light' || theme === 'system' ? theme : null,
+    access: params.get('access') === 'missing',
   };
 }
 

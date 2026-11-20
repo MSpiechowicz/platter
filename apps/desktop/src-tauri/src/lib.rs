@@ -130,6 +130,8 @@ pub fn run() {
             commands::system::pick_folder,
             commands::system::pick_excluded_folder,
             commands::system::open_external,
+            commands::system::disk_access,
+            commands::system::open_disk_access_settings,
             commands::update::check_update,
             commands::update::install_update,
             commands::update::restart_app,

@@ -10,6 +10,7 @@ import type {
   CleanupEvent,
   CleanupId,
   CleanupPlanDto,
+  DiskAccess,
   ExternalLink,
   EntryMatchDto,
   FolderMatchDto,
@@ -295,6 +296,12 @@ export interface Api {
 
   /** Opens one of the fixed project pages in the system browser (`target=_blank` does nothing inside the Tauri window). */
   openExternal(link: ExternalLink): Promise<void>;
+
+  /** Whether macOS lets Platter into every folder. Asked at start and each time the window comes back into focus. */
+  diskAccess(): Promise<DiskAccess>;
+
+  /** Opens the Full Disk Access list of System Settings. `invalid` outside macOS. */
+  openDiskAccessSettings(): Promise<void>;
 }
 
 export class ApiRequestError extends Error implements ApiError {

@@ -2,6 +2,7 @@ use std::path::Path;
 
 use platter_core::NodeId;
 use platter_core::dto::ScanId;
+use platter_platform::disk_access::{DiskAccess, current_disk_access};
 use platter_platform::paths::node_path;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
@@ -155,6 +156,53 @@ pub async fn open_external(link: ExternalLink) -> CommandResult<()> {
         .map_err(|error| CommandError::io(format!("cannot open the page in the browser: {error}")))
 }
 
+/// Whether macOS lets Platter into every folder, as the UI receives it: `'granted' | 'missing' | 'unknown'`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiskAccessDto {
+    Granted,
+    Missing,
+    Unknown,
+}
+
+impl From<DiskAccess> for DiskAccessDto {
+    fn from(access: DiskAccess) -> Self {
+        match access {
+            DiskAccess::Granted => Self::Granted,
+            DiskAccess::Missing => Self::Missing,
+            DiskAccess::Unknown => Self::Unknown,
+        }
+    }
+}
+
+/// Whether Platter has Full Disk Access. Always `granted` outside macOS. The UI asks at start and each time the
+/// window comes back into focus, so the notice goes once the user switches the access on.
+#[tauri::command]
+pub async fn disk_access() -> CommandResult<DiskAccessDto> {
+    Ok(tauri::async_runtime::spawn_blocking(current_disk_access)
+        .await?
+        .into())
+}
+
+/// The Full Disk Access list of System Settings (Privacy & Security).
+const DISK_ACCESS_SETTINGS: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+
+/// Opens the Full Disk Access list in System Settings. macOS only.
+///
+/// The address is a constant here, like the pages of `open_external`: the webview cannot pass a URL.
+#[tauri::command]
+pub async fn open_disk_access_settings() -> CommandResult<()> {
+    if !cfg!(target_os = "macos") {
+        return Err(CommandError::invalid(
+            "Full Disk Access is a setting of macOS only",
+        ));
+    }
+
+    tauri::async_runtime::spawn_blocking(|| tauri_plugin_opener::open_url(DISK_ACCESS_SETTINGS, None::<&str>))
+        .await?
+        .map_err(|error| CommandError::io(format!("cannot open System Settings: {error}")))
+}
+
 #[cfg(test)]
 mod tests {
     use platter_core::dto::ApiErrorCode;
@@ -238,5 +286,20 @@ mod tests {
             ExternalLink::License.url(),
             "https://www.gnu.org/licenses/gpl-3.0.html"
         );
+    }
+
+    #[test]
+    fn the_disk_access_reaches_the_ui_in_its_wire_form() {
+        let wire = |access| serde_json::to_string(&DiskAccessDto::from(access)).unwrap();
+
+        assert_eq!(wire(DiskAccess::Granted), "\"granted\"");
+        assert_eq!(wire(DiskAccess::Missing), "\"missing\"");
+        assert_eq!(wire(DiskAccess::Unknown), "\"unknown\"");
+    }
+
+    #[test]
+    fn the_settings_address_is_the_full_disk_access_list() {
+        assert!(DISK_ACCESS_SETTINGS.starts_with("x-apple.systempreferences:"));
+        assert!(DISK_ACCESS_SETTINGS.ends_with("?Privacy_AllFiles"));
     }
 }

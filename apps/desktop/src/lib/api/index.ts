@@ -62,6 +62,8 @@ function lazyApi(load: () => Promise<Api>): Api {
     restartApp: async () => (await impl()).restartApp(),
     openInFileManager: async (scan, node) => (await impl()).openInFileManager(scan, node),
     openExternal: async (link) => (await impl()).openExternal(link),
+    diskAccess: async () => (await impl()).diskAccess(),
+    openDiskAccessSettings: async () => (await impl()).openDiskAccessSettings(),
   };
 }
 
@@ -108,6 +110,7 @@ function selectApi(): Api {
     advisor: advisorHooks(),
     update: hooks.update ? { offer: { canInstall: hooks.update !== 'package' } } : undefined,
     history: hooks.history ? { variant: hooks.history } : undefined,
+    access: hooks.access ? 'missing' : undefined,
     userRules:
       hooks.rules === 'broken'
         ? { broken: true }

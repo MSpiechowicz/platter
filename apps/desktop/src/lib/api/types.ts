@@ -10,6 +10,12 @@ export type NodeId = number;
 /** One of the fixed project pages the backend can open in the browser. The UI never passes a URL. */
 export type ExternalLink = 'source' | 'issues' | 'license' | 'releases';
 
+/**
+ * Whether macOS lets Platter into every folder (Full Disk Access). Always `granted` on Linux and Windows. `unknown`
+ * when the check could not tell, and then no notice is shown.
+ */
+export type DiskAccess = 'granted' | 'missing' | 'unknown';
+
 /** An update the release server offers. */
 export interface UpdateOffer {
   version: string;

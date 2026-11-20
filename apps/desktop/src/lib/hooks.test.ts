@@ -28,11 +28,18 @@ const ALL_OFF = {
   rules: null,
   history: null,
   theme: null,
+  access: false,
 };
 
 describe('parseHooks', () => {
   it('is all off without a query', () => {
     expect(parseHooks('', false)).toEqual(ALL_OFF);
+  });
+
+  it('reads a missing Full Disk Access, and nothing else as one', () => {
+    expect(parseHooks('?access=missing', false).access).toBe(true);
+    expect(parseHooks('?access', false).access).toBe(false);
+    expect(parseHooks('?access=granted', false).access).toBe(false);
   });
 
   it('reads flags and values', () => {

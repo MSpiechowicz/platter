@@ -1,6 +1,7 @@
 import { setMockAdvisorState } from './api/mock-advisor';
 import type { ScanId } from './api/types';
 import { hooks } from './hooks';
+import { diskAccess } from './state/access.svelte';
 import { advisor } from './state/advisor.svelte';
 import { opening, type SavedScanSummary } from './state/opening.svelte';
 import { platform } from './state/platform.svelte';
@@ -19,6 +20,9 @@ export async function bootstrap(): Promise<void> {
     // Assigned directly, so the choice is not saved.
     settings.sidebarCollapsed = true;
   }
+
+  // Whether macOS lets Platter into every folder: asked now and each time the window comes back into focus.
+  diskAccess.start();
 
   // The update check and the advisor go on beside the opening screen, which waits for neither.
   const background = inBackground(startBackground());

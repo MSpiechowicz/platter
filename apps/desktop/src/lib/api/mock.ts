@@ -16,6 +16,7 @@ import type {
   AgeBucket,
   Category,
   ChildrenPage,
+  DiskAccess,
   ExternalLink,
   LastScanDto,
   NodeId,
@@ -171,6 +172,11 @@ export interface MockOptions {
   userRules?: MockUserRulesOptions;
   /** Test hook: the history the History view shows (see `mock-history.ts`). */
   history?: MockHistoryOptions;
+  /**
+   * Test hook: what the Full Disk Access check answers (default: `granted`). Opening the settings switches it to
+   * `granted`, as if the user turned the access on there.
+   */
+  access?: DiskAccess;
   /** Test hook: the update the mock finds (default: none; see `mock-update.ts`). */
   update?: MockUpdateOptions;
   /** Test hook: a scan saved by an earlier run, which `openLastScan` opens (default: none). */
@@ -352,6 +358,7 @@ export function createMockApi(options: MockOptions = {}): Api {
   const demoVolumes = { windows: MOCK_WINDOWS_VOLUMES, macos: MOCK_MAC_VOLUMES, linux: MOCK_VOLUMES };
   const demoHomes = { windows: 'C:\\Users\\demo', macos: '/Users/demo', linux: '/home/demo' };
   const os = options.os ?? 'linux';
+  let access: DiskAccess = options.access ?? 'granted';
   const volumes = options.volumes ?? demoVolumes[os];
   const demoHome = demoHomes[os];
   const warnings = options.warnings;
@@ -687,6 +694,18 @@ export function createMockApi(options: MockOptions = {}): Api {
 
     async openExternal(link) {
       window.open(EXTERNAL_URLS[link], '_blank', 'noopener');
+    },
+
+    async diskAccess() {
+      return access;
+    },
+
+    async openDiskAccessSettings() {
+      if (os !== 'macos') {
+        throw new ApiRequestError('invalid', 'Full Disk Access is a setting of macOS only');
+      }
+
+      access = 'granted';
     },
   };
 }

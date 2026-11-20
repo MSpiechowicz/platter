@@ -95,8 +95,9 @@
       d="M2 8.2a8 8 0 0 1 3-1.8M14 8.2a8 8 0 0 0-3.4-1.9M4.6 10.4a4.5 4.5 0 0 1 2-1.1M11.4 10.4a4.5 4.5 0 0 0-1.9-1.1M8 13h.01M2.5 2.5l11 11"
     />
   {:else if name === 'lock'}
-    <rect x="3.5" y="7" width="9" height="6.5" rx="1.5" />
-    <path d="M5.5 7V5.2a2.5 2.5 0 0 1 5 0V7M8 9.8v1" />
+    <rect x="2.75" y="7" width="10.5" height="7.25" rx="2" />
+    <path d="M5 7V5a3 3 0 0 1 6 0v2" />
+    <circle cx="8" cy="10.6" r="1" fill="currentColor" stroke="none" />
   {/if}
 </svg>
 
