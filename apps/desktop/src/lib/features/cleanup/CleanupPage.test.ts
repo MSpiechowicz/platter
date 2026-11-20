@@ -239,7 +239,7 @@ describe('the Cleanup view', () => {
     expect(within(main()).getByRole('button', { name: 'All' }).getAttribute('aria-pressed')).toBe('false');
   });
 
-  it('cleans the safe items, goes to the Clean step and shows the result with Scan again', async () => {
+  it('cleans the safe items, goes to the Clean step and shows the result, with the Rescan in the banner', async () => {
     render(App);
     await openCleanup();
 
@@ -248,16 +248,18 @@ describe('the Cleanup view', () => {
     expect(await screen.findByRole('heading', { name: 'Result' }, { timeout: 3000 })).toBeTruthy();
     expect(steps().querySelectorAll('.dot svg')).toHaveLength(3);
     expect(within(main()).getByText('freed')).toBeTruthy();
-    expect(within(main()).getByRole('button', { name: 'Scan again' })).toBeTruthy();
+    // The only Rescan is the outdated banner's, not the result card's.
+    expect(screen.getAllByRole('button', { name: 'Rescan' })).toHaveLength(1);
+    expect(within(main()).queryByRole('button', { name: 'Scan again' })).toBeNull();
     expect(within(main()).getByText('Before')).toBeTruthy();
     expect(within(main()).getByText('After')).toBeTruthy();
   });
 
-  it('"Scan again" shows the Scan step while it runs, and comes back to Review of the new scan', async () => {
+  it("the banner's Rescan shows the Scan step while it runs, and comes back to Review of the new scan", async () => {
     render(App);
     await openCleanup();
     await fireEvent.click(await screen.findByRole('button', { name: /^Clean safe ·/ }, { timeout: 3000 }));
-    await fireEvent.click(await screen.findByRole('button', { name: 'Scan again' }, { timeout: 3000 }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Rescan' }, { timeout: 3000 }));
 
     expect(await screen.findByText('files read')).toBeTruthy();
     expect(currentStep()).toBe('Scan');
@@ -293,10 +295,15 @@ describe('the Cleanup view', () => {
     // The Overview: the Reclaimable card and the Advisor's sums, current until something is cleaned.
     await screen.findAllByText('Pacman package cache', undefined, { timeout: 3000 });
     expect(stale('.rec, .recr, .gsum')).not.toContain(true);
+    expect(main().querySelector('.topr')).not.toBeNull();
+    expect(within(main()).queryAllByText('OLD SCAN')).toHaveLength(0);
 
     await fireEvent.click(await screen.findByRole('button', { name: /^Clean safe ·/ }, { timeout: 3000 }));
     await waitFor(() => expect(cleanup.phase.kind).toBe('done'), { timeout: 3000 });
 
+    // The status pill and its Rescan button give way to the banner, and every card of the scan says it is old.
+    expect(main().querySelector('.topr')).toBeNull();
+    expect(within(main()).getAllByText('OLD SCAN')).toHaveLength(6);
     expect(stale('.rec')).toEqual([true]);
     expect(stale('.recr').filter(Boolean).length).toBeGreaterThanOrEqual(3);
     expect(screen.getByText('Already freed').closest('.recr')?.classList.contains('stale')).toBe(false);
@@ -310,7 +317,8 @@ describe('the Cleanup view', () => {
     expect(screen.getByText('Disk after cleanup').parentElement?.classList.contains('stale')).toBe(true);
 
     // A new scan describes the disk again.
-    await fireEvent.click(within(main()).getByRole('button', { name: 'Scan again' }));
+    // The way on is the Rescan of the outdated banner.
+    await fireEvent.click(screen.getByRole('button', { name: 'Rescan' }));
     await waitFor(() => expect(currentStep()).toBe('Review'), { timeout: 3000 });
     await screen.findByText('Selected to free');
 
@@ -320,6 +328,8 @@ describe('the Cleanup view', () => {
     await screen.findAllByText('Pacman package cache', undefined, { timeout: 3000 });
 
     expect(stale('.rec, .recr, .gsum')).not.toContain(true);
+    expect(main().querySelector('.topr')).not.toBeNull();
+    expect(within(main()).queryAllByText('OLD SCAN')).toHaveLength(0);
   });
 
   it('shows its Scan step, without the list, while the scan runs', async () => {

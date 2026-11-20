@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Api } from '../../api/client';
@@ -17,6 +17,7 @@ import { ScanStore } from '../../state/scan.svelte';
 import { settings } from '../../state/settings.svelte';
 import { ui } from '../../state/ui.svelte';
 import AdvisorCard from './AdvisorCard.svelte';
+import AdvisorList from './AdvisorList.svelte';
 
 const GB = 1_000_000_000;
 
@@ -115,28 +116,40 @@ async function fixture(plan: (ids: string[]) => CleanupPlanDto): Promise<Fixture
 const safePlan = (ids: string[]): CleanupPlanDto =>
   planOf(ids.map((id) => group(id, DATA.suggestions.find((item) => item.id === id)?.verdict ?? 'safe', 1)));
 
+type ShowProps = Partial<{
+  suggestions: SuggestionsDto | undefined;
+  loading: boolean;
+  error: unknown;
+  onretry: () => void;
+  onopen: (id: number) => void;
+}>;
+
+const listProps = (context: Pick<Fixture, 'store' | 'scanId'>, props: ShowProps) => ({
+  suggestions: DATA,
+  scanId: context.scanId,
+  store: context.store,
+  loading: false,
+  error: undefined,
+  onretry: () => {},
+  onopen: () => {},
+  ...props,
+});
+
 function show(
   context: Pick<Fixture, 'store' | 'scanId'>,
-  props: Partial<{
-    suggestions: SuggestionsDto | undefined;
-    loading: boolean;
-    error: unknown;
-    onretry: () => void;
-    onopen: (id: number) => void;
-  }> = {},
+  props: ShowProps & { outdated?: boolean } = {},
 ): void {
-  render(AdvisorCard, {
-    props: {
-      suggestions: DATA,
-      scanId: context.scanId,
-      store: context.store,
-      loading: false,
-      error: undefined,
-      onretry: () => {},
-      onopen: () => {},
-      ...props,
-    },
-  });
+  const { outdated, ...rest } = props;
+
+  render(AdvisorCard, { props: { ...listProps(context, rest), outdated } });
+}
+
+/**
+ * The list on its own. Once a cleanup has run, the Overview shows the hero in its place, so what the list does with
+ * an outdated scan (the Cleanup view still shows it that way) is tested without the card.
+ */
+function showList(context: Pick<Fixture, 'store' | 'scanId'>, props: ShowProps = {}): void {
+  render(AdvisorList, { props: listProps(context, props) });
 }
 
 const button = (name: string | RegExp): HTMLButtonElement =>
@@ -418,7 +431,7 @@ describe('AdvisorCard', () => {
   it('lets a disabled row neither tick nor open while the scan is outdated', async () => {
     const onopen = vi.fn();
 
-    show(context, { onopen });
+    showList(context, { onopen });
     context.scan.markOutdated(context.scanId);
     await waitFor(() => expect(checkbox('Title of target').disabled).toBe(true));
 
@@ -633,11 +646,10 @@ describe('AdvisorCard cleaning', () => {
     expect(button('All').disabled).toBe(true);
   });
 
-  it('shows what was freed, offers Undo only when it can, and Rescan; the clean buttons stay off', async () => {
+  it('shows what was freed, offers Undo only when it can, and no Rescan; the clean buttons stay off', async () => {
     const context = await fixture(safePlan);
-    const rescan = vi.spyOn(context.scan, 'rescan').mockResolvedValue();
 
-    show(context);
+    showList(context);
     await fireEvent.click(button('Clean selected (2)'));
     await waitFor(() => expect(context.api.startCleanup).toHaveBeenCalled());
 
@@ -653,24 +665,14 @@ describe('AdvisorCard cleaning', () => {
       canUndo: false,
     });
 
-    // What was freed and the way on are a toast with its own Rescan button. The footer repeats neither.
-    await waitFor(() =>
-      expect(ui.toasts.at(-1)).toMatchObject({
-        title: 'Freed 1.2 GB',
-        description: 'The disk changed. Rescan to clean again.',
-        kind: 'ok',
-        action: { label: 'Rescan' },
-      }),
-    );
+    // What was freed is a toast with no button: Rescan is the outdated banner's. The footer repeats neither.
+    await waitFor(() => expect(ui.toasts.at(-1)).toMatchObject({ title: 'Freed 1.2 GB', kind: 'ok' }));
+    expect(ui.toasts.at(-1)?.action).toBeUndefined();
     expect(footer().textContent).not.toContain('Freed');
-    expect(footer().textContent).not.toContain('The disk changed.');
     expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Rescan' })).toBeNull();
     expect(button('Clean safe · 105 GB').disabled).toBe(true);
     expect(button('Clean selected (2)').disabled).toBe(true);
-
-    ui.toasts.at(-1)?.action?.run();
-    expect(rescan).toHaveBeenCalledOnce();
   });
 
   it('offers Undo after a cleanup that moved things to the trash, and shows each failure as text', async () => {
@@ -681,7 +683,7 @@ describe('AdvisorCard cleaning', () => {
       { path: '/home/demo/\u202Eb', restored: false, error: 'already exists' },
     ]);
 
-    show(context);
+    showList(context);
     await fireEvent.click(button('Clean selected (2)'));
     await waitFor(() => expect(context.api.startCleanup).toHaveBeenCalled());
     context.send({
@@ -718,7 +720,7 @@ describe('AdvisorCard cleaning', () => {
   it('says what went wrong when the cleanup failed', async () => {
     const context = await fixture(safePlan);
 
-    show(context);
+    showList(context);
     await fireEvent.click(button('Clean selected (2)'));
     await waitFor(() => expect(context.api.startCleanup).toHaveBeenCalled());
     context.send({
@@ -747,21 +749,22 @@ describe('AdvisorCard cleaning', () => {
   it('disables the clean buttons with one sentence while the scan is outdated', async () => {
     const context = await fixture(safePlan);
 
-    show(context);
+    showList(context);
     context.scan.markOutdated(context.scanId);
 
-    await waitFor(() => expect(footer().textContent).toContain('The disk changed. Rescan to clean again.'));
+    await waitFor(() => expect(footer().textContent).toContain('Cleaning is paused until you rescan.'));
     expect(button('Clean safe · 105 GB').disabled).toBe(true);
     expect(button('Clean selected (2)').disabled).toBe(true);
     expect(checkbox('Title of target').disabled).toBe(true);
-    expect(button('Rescan')).toBeTruthy();
+    // Rescan is the banner's alone.
+    expect(screen.queryByRole('button', { name: 'Rescan' })).toBeNull();
   });
 
   it('greys out the group sums and the row sizes once the scan is outdated, with a tooltip, and nothing else', async () => {
     const context = await fixture(safePlan);
     const note = 'From the scan before the cleanup — rescan to update';
 
-    show(context);
+    showList(context);
 
     const sizes = (): HTMLElement[] => [
       screen.getByText('2 items · 105 GB'),
@@ -791,7 +794,7 @@ describe('AdvisorCard cleaning', () => {
   it('does not grey a size twice when its row is already shown as cleaned', async () => {
     const context = await fixture(safePlan);
 
-    show(context);
+    showList(context);
     await fireEvent.click(button('Clean selected (2)'));
     await waitFor(() => expect(context.api.startCleanup).toHaveBeenCalled());
     context.send({ type: 'groupStarted', ruleId: 'target', targets: 1 });
@@ -891,5 +894,190 @@ describe('AdvisorCard and hard links', () => {
         'Reason of target. 3 files are also linked from elsewhere, so the space freed can differ.',
       ),
     ).toBeTruthy();
+  });
+});
+
+describe('AdvisorCard while the scan is outdated', () => {
+  /** A cleanup that freed `freed` bytes, run through the store, then the card shown over the old scan. */
+  async function cleaned(freed: number, canUndo = false): Promise<Fixture> {
+    const context = await fixture(safePlan);
+
+    context.store.load(context.scanId, DATA);
+    void context.store.cleanSafe();
+    await waitFor(() => expect(context.api.startCleanup).toHaveBeenCalled());
+    context.send({
+      type: 'finished',
+      cleanupId: 77,
+      outdatedScan: context.scanId,
+      cleaned: 2,
+      withProblems: 0,
+      freed,
+      cancelled: false,
+      toolsNotRun: [],
+      canUndo,
+    });
+    await waitFor(() => expect(context.store.phase.kind).toBe('done'));
+
+    return context;
+  }
+
+  const svg = (): Element => screen.getByRole('img');
+
+  beforeEach(() => {
+    settings.reduceMotion = true;
+  });
+
+  afterEach(() => {
+    settings.reduceMotion = false;
+  });
+
+  it('replaces the list, the Select control and the footer with a note, a PAUSED tag and no buttons', async () => {
+    const context = await fixture(safePlan);
+
+    show(context, { outdated: true });
+
+    expect(screen.getByRole('heading', { name: /^Advisor/ }).textContent).toContain('PAUSED');
+    expect(screen.getByRole('heading', { name: /^Advisor/ }).textContent).not.toContain('RULES');
+    expect(screen.getByText('The scan is out of date')).toBeTruthy();
+    expect(screen.getByText('Rescan from the banner above to see what is left.')).toBeTruthy();
+    expect(screen.queryAllByRole('button')).toEqual([]);
+    expect(screen.queryAllByRole('checkbox')).toEqual([]);
+    expect(screen.queryByText('Select')).toBeNull();
+    expect(screen.queryByText('SELECTED')).toBeNull();
+    expect(screen.queryByText('Title of target')).toBeNull();
+  });
+
+  it('says what the last cleanup freed and when, when this session ran it', async () => {
+    const context = await cleaned(27_000_000_000);
+
+    show(context, { outdated: true });
+
+    expect(
+      screen.getByText(/^You cleaned 27 GB just now\. These suggestions came from the scan before that/),
+    ).toBeTruthy();
+  });
+
+  it('says it in general words after a restart, when nothing is known of the cleanup', async () => {
+    const context = await fixture(safePlan);
+
+    show(context, { outdated: true });
+
+    expect(screen.getByText(/^A cleanup changed the disk after this scan\./)).toBeTruthy();
+    expect(screen.queryByText(/You cleaned/)).toBeNull();
+  });
+
+  it('says it in general words when the cleanup freed nothing', async () => {
+    const context = await cleaned(0);
+
+    show(context, { outdated: true });
+
+    expect(screen.getByText(/^A cleanup changed the disk after this scan\./)).toBeTruthy();
+  });
+
+  it('says it in general words once the cleanup was undone', async () => {
+    const context = await cleaned(27_000_000_000, true);
+
+    vi.spyOn(context.api, 'undoCleanup').mockResolvedValue([{ path: '/home/demo/a', restored: true }]);
+    await context.store.undo();
+    show(context, { outdated: true });
+
+    expect(screen.getByText(/^A cleanup changed the disk after this scan\./)).toBeTruthy();
+  });
+
+  it('offers Undo under the note while the cleanup can be put back, and not otherwise', async () => {
+    const context = await cleaned(27_000_000_000, true);
+
+    show(context, { outdated: true });
+
+    const undo = button('Undo');
+
+    expect(screen.getAllByRole('button')).toEqual([undo]);
+    expect(
+      screen.getByText('Rescan from the banner above to see what is left.').compareDocumentPosition(undo) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    cleanup();
+
+    const plain = await cleaned(27_000_000_000, false);
+
+    show(plain, { outdated: true });
+
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+  });
+
+  it('puts the cleanup back on a click, once, and then the Undo is gone and the scan stays outdated', async () => {
+    const context = await cleaned(27_000_000_000, true);
+
+    vi.spyOn(context.api, 'undoCleanup').mockResolvedValue([{ path: '/home/demo/a', restored: true }]);
+    show(context, { outdated: true });
+
+    await fireEvent.click(button('Undo'));
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull());
+    expect(context.api.undoCleanup).toHaveBeenCalledOnce();
+    expect(context.api.undoCleanup).toHaveBeenCalledWith(77);
+    expect(screen.getByRole('status').textContent).toContain('Put back 1 item.');
+    expect(screen.getByText('The scan is out of date')).toBeTruthy();
+    expect(screen.queryAllByRole('button')).toEqual([]);
+  });
+
+  it('says what could not be put back, and offers Undo again for it', async () => {
+    const context = await cleaned(27_000_000_000, true);
+
+    vi.spyOn(context.api, 'undoCleanup').mockResolvedValue([
+      { path: '/home/demo/a', restored: true },
+      { path: '/home/demo/\u202Eb', restored: false, error: 'already exists' },
+    ]);
+    show(context, { outdated: true });
+
+    await fireEvent.click(button('Undo'));
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Not put back:'));
+    expect(screen.getByRole('status').textContent).toContain('(already exists)');
+    expect(button('Undo')).toBeTruthy();
+  });
+
+  it('says why an undo failed, and keeps quiet when the user declined the backend dialog', async () => {
+    const context = await cleaned(27_000_000_000, true);
+    const undoCleanup = vi.spyOn(context.api, 'undoCleanup');
+
+    undoCleanup.mockRejectedValueOnce({ code: 'cancelled', message: 'declined' });
+    show(context, { outdated: true });
+
+    await fireEvent.click(button('Undo'));
+
+    await waitFor(() => expect(undoCleanup).toHaveBeenCalledOnce());
+    await waitFor(() => expect(button('Undo')).toBeTruthy());
+    expect(screen.getByRole('status').textContent).toBe('');
+
+    undoCleanup.mockRejectedValueOnce({ code: 'io', message: 'the trash is locked' });
+    await fireEvent.click(button('Undo'));
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Could not undo:'));
+    expect(button('Undo')).toBeTruthy();
+  });
+
+  it('teaches the store the scan after a restart, so the Cleanup view agrees that it is outdated', async () => {
+    const context = await fixture(safePlan);
+
+    context.scan.markOutdated(context.scanId);
+    expect(context.store.scanId).toBeUndefined();
+
+    show(context, { outdated: true });
+
+    await waitFor(() => expect(context.store.scanId).toBe(context.scanId));
+    expect(context.store.outdated).toBe(true);
+  });
+
+  it('plays its animation only when motion is allowed', async () => {
+    const context = await fixture(safePlan);
+
+    show(context, { outdated: true });
+    expect(svg().classList.contains('enter')).toBe(false);
+    cleanup();
+
+    settings.reduceMotion = false;
+    show(context, { outdated: true });
+    expect(svg().classList.contains('enter')).toBe(true);
   });
 });

@@ -67,6 +67,8 @@ export interface CleanupResult {
   /** Undo is offered now: the backend can put something back and it has not been put back yet. */
   undoable: boolean;
   undo: UndoState | undefined;
+  /** When the cleanup ended, in milliseconds since the epoch (`Date.now()`). */
+  endedAt?: number;
 }
 
 export interface Progress {
@@ -84,7 +86,7 @@ export type CleanupPhase =
   | { kind: 'running'; progress: Progress; cleanupId: CleanupId | undefined; cancelling: boolean }
   | { kind: 'done'; result: CleanupResult };
 
-export type Action = 'cancel' | 'undo' | 'rescan';
+export type Action = 'cancel' | 'undo';
 
 /** Where a rule of the running (or last) cleanup stands: not reached yet, finished cleanly, or finished with problems. */
 export type GroupState = 'queued' | 'done' | 'problem';
@@ -100,7 +102,7 @@ const BAD_OUTCOMES: readonly OutcomeKind[] = ['skipped', 'failed'];
 export const NOT_CLEANED = 'Not cleaned.';
 
 /** The scan store as the flow needs it. */
-export type ScanHost = Pick<ScanStore, 'state' | 'markOutdated' | 'rescan'>;
+export type ScanHost = Pick<ScanStore, 'state' | 'markOutdated'>;
 
 /** An item the user marked in the Explorer. Only its id is ever sent; the rest is for totals and for nesting. */
 export interface Mark {
@@ -128,6 +130,8 @@ export class CleanupStore {
   /** The suggestions of `scanId` have arrived. Until then an empty list means "not known", not "none". */
   suggestionsKnown = $state(false);
   phase = $state<CleanupPhase>({ kind: 'idle' });
+  /** An undo is waiting on the backend's dialog or putting files back: a rescan now would scan half a restore. */
+  undoing = $state(false);
   /** One plain sentence about why nothing ran ("Not cleaned.", why a plan could not be made). */
   notice = $state<string | undefined>(undefined);
   /** The last plan's refusals and rules that matched nothing, to be shown as text. */
@@ -270,12 +274,12 @@ export class CleanupStore {
       return phase.cancelling || !acting ? [] : ['cancel'];
     }
 
-    // Rescan after a cleanup is the toast's button (see `#end`): the footer offers only Undo, when it can.
+    // Rescan is the button of the banner an outdated scan shows (OutdatedBanner): the footer offers only Undo.
     if (phase.kind === 'done') {
       return phase.result.undoable ? ['undo'] : [];
     }
 
-    return this.outdated ? ['rescan'] : [];
+    return [];
   }
 
   isSelected(id: string): boolean {
@@ -567,6 +571,7 @@ export class CleanupStore {
 
     // Taken off at once, so a second click cannot start a second undo.
     this.phase = { kind: 'done', result: { ...result, undoable: false } };
+    this.undoing = true;
 
     try {
       const entries = await this.#api.undoCleanup(result.cleanupId);
@@ -594,11 +599,9 @@ export class CleanupStore {
         undo: { restored: 0, failures: [], error: describeError(error) },
         undoable: !gone,
       });
+    } finally {
+      this.undoing = false;
     }
-  }
-
-  async rescan(): Promise<void> {
-    await this.#scan.rescan();
   }
 
   #after(result: CleanupResult, change: Partial<CleanupResult>): void {
@@ -835,24 +838,23 @@ export class CleanupStore {
 
     this.phase = {
       kind: 'done',
-      result: { ...result, trashed: run.trashed, problems: run.problems, undo: undefined },
+      result: {
+        ...result,
+        trashed: run.trashed,
+        problems: run.problems,
+        undo: undefined,
+        endedAt: Date.now(),
+      },
     };
 
-    // What was freed, and the way on, where it is seen: the footer keeps only the short result.
+    // What was freed, where it is seen: the footer keeps only the short result, and the way on is the banner's.
     this.#ui.toast(
       doneTitle(this.phase.result),
-      OUTDATED_TOAST,
+      undefined,
       this.phase.result.kind === 'failed' ? 'error' : 'ok',
-      {
-        label: 'Rescan',
-        run: () => void this.rescan(),
-      },
     );
   }
 }
-
-/** Under the toast a cleanup ends with: the scan no longer describes the disk. */
-export const OUTDATED_TOAST = 'The disk changed. Rescan to clean again.';
 
 /** The title of the toast a cleanup ends with. */
 function doneTitle(result: CleanupResult): string {

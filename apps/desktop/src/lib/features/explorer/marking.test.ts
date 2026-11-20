@@ -22,9 +22,7 @@ describe('markingOff', () => {
   it('says why no mark can change, in the order of what matters most', () => {
     expect(markingOff(ON)).toBeUndefined();
     expect(markingOff({ ...ON, busy: true, outdated: true })).toBe('A cleanup is in progress.');
-    expect(markingOff({ ...ON, outdated: true, loading: true })).toBe(
-      'The disk changed. Rescan to mark again.',
-    );
+    expect(markingOff({ ...ON, outdated: true, loading: true })).toBe('Marking is paused until you rescan.');
     expect(markingOff({ ...ON, loading: true })).toBe('The folder is still loading.');
   });
 });
@@ -101,7 +99,7 @@ describe('markButton', () => {
     );
     expect(markButton(target, { ...context, marked: true, blockers: { ...ON, outdated: true } })).toEqual({
       label: 'Unmark',
-      off: 'The disk changed. Rescan to mark again.',
+      off: 'Marking is paused until you rescan.',
     });
   });
 

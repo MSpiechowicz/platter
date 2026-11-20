@@ -16,16 +16,16 @@ describe('ToastHost', () => {
 
     return vi.waitFor(() => {
       expect(screen.getByText('Saved')).toBeTruthy();
-      expect(screen.queryByRole('button', { name: 'Rescan' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
     });
   });
 
   it('runs the action and closes the toast when its button is clicked', async () => {
     const run = vi.fn();
     render(ToastHost);
-    ui.toast('Freed 35 GB', 'The disk changed. Rescan to clean again.', 'ok', { label: 'Rescan', run });
+    ui.toast('Freed 35 GB', 'Moved to the trash.', 'ok', { label: 'Undo', run });
 
-    const button = await screen.findByRole('button', { name: 'Rescan' });
+    const button = await screen.findByRole('button', { name: 'Undo' });
     await fireEvent.click(button);
 
     expect(run).toHaveBeenCalledOnce();

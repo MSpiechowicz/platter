@@ -327,7 +327,7 @@ export function labelReadiness(input: {
   }
 
   if (outdated) {
-    return no('Rescan first: a cleanup changed the disk.');
+    return no('Labelling is paused until you rescan.');
   }
 
   if (labels && labels.candidates === 0) {

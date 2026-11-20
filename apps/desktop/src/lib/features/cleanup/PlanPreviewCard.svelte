@@ -222,7 +222,7 @@
       <p class="note" role="alert">{visibleText(failure)}</p>
     {:else if store.outdated}
       <!-- After a cleanup or an undo the scan no longer matches the disk, so nothing can be planned on it. -->
-      <p class="note">The scan is out of date. Scan again to see what cleaning would do.</p>
+      <p class="note">Planning is paused until you rescan.</p>
     {:else}
       <div class="wait"><Loading when={loading || shown.value} label="Planning the cleanup…" /></div>
     {/if}

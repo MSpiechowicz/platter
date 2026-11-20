@@ -205,11 +205,11 @@
 </div>
 
 <style>
-  /* The welcome fills what is left of the content area (the page has the padding of the main area around it). */
+  /* The welcome fills what is left of the content area (the page has the padding of the main area around it, and the banner of an outdated scan, when it shows). */
   .advisor-page {
     display: flex;
     flex-direction: column;
-    min-height: calc(100vh - 40px);
+    min-height: calc(100vh - 40px - var(--banner-space, 0px));
   }
 
   /* The first read of the page: one card with the spinner in its middle, as the Overview has. */
@@ -219,7 +219,7 @@
 
   @media (max-width: 900px) {
     .advisor-page {
-      min-height: calc(100vh - 32px);
+      min-height: calc(100vh - 32px - var(--banner-space, 0px));
     }
   }
 

@@ -232,7 +232,7 @@ describe('marking in the Explorer', () => {
       );
       await waitFor(() => expect(cleanup.phase.kind).toBe('done'));
       // The page opens again over the outdated scan, on the same folder; its marks are still there.
-      await waitFor(() => expect(markButton().title).toBe('The disk changed. Rescan to mark again.'));
+      await waitFor(() => expect(markButton().title).toBe('Marking is paused until you rescan.'));
 
       expect(markButton().disabled).toBe(true);
       expect(box('Projekty').disabled).toBe(true);
@@ -268,14 +268,10 @@ describe('marking in the Explorer', () => {
 
       expect(status.textContent).toContain('Moved to the trash: 2 items.');
       expect(status.textContent).toContain('This can be undone.');
-      expect(status.textContent).not.toContain('The disk changed.');
-      expect(ui.toasts.at(-1)).toMatchObject({
-        title: 'Cleanup finished',
-        description: 'The disk changed. Rescan to clean again.',
-        action: { label: 'Rescan' },
-      });
+      // What was freed is a toast, with no button of its own: Rescan is the outdated banner's.
+      expect(ui.toasts.at(-1)).toMatchObject({ title: 'Cleanup finished', description: '' });
+      expect(ui.toasts.at(-1)?.action).toBeUndefined();
       expect(within(footer()).getByRole('button', { name: 'Undo' })).toBeTruthy();
-      // Rescan is the toast's button, not the footer's.
       expect(within(footer()).queryByRole('button', { name: 'Rescan' })).toBeNull();
 
       await fireEvent.click(within(footer()).getByRole('button', { name: 'Undo' }));

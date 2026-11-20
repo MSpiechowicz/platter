@@ -26,6 +26,21 @@ function before(element: Element): Element[] {
   return siblings.slice(0, siblings.indexOf(element));
 }
 
+/** `start` and the elements above it, up to but not including `stop`; just `start` when `stop` is not above it. */
+function containersUpTo(start: Element | null, stop: Element | null): Element[] {
+  const found: Element[] = [];
+
+  for (let node = start; node && node !== stop; node = node.parentElement) {
+    found.push(node);
+
+    if (!stop) {
+      break;
+    }
+  }
+
+  return found;
+}
+
 /**
  * The height an element may have to reach the bottom of the window, down to the bottom padding of the page: with it
  * the page has no scroll bar of its own, and what is inside the element scrolls. `cap` is that height, never below
@@ -80,6 +95,10 @@ export function fillHeight(
     const grid = element.parentElement;
     const observer = new ResizeObserver(measure);
 
+    // The containers from the parent up to the page area: what comes before any of them (the page header, the banner
+    // of an outdated scan) pushes the element down just the same.
+    const containers = containersUpTo(grid, element.closest('main'));
+
     // The elements above, and the parent itself: it is as tall as they are.
     const watch = (): void => {
       observer.disconnect();
@@ -88,12 +107,13 @@ export function fillHeight(
         observer.observe(grid);
       }
 
-      for (const above of [...before(element), ...(grid ? before(grid) : [])]) {
+      for (const above of [...before(element), ...containers.flatMap(before)]) {
         observer.observe(above);
       }
     };
 
-    // What is above can be replaced (the Advisor for the result): the new elements are watched too.
+    // What is above can be replaced (the Advisor for the result) or appear (the banner): the new elements are watched
+    // too.
     const changes = new MutationObserver(() => {
       watch();
       measure();
@@ -101,8 +121,11 @@ export function fillHeight(
 
     watch();
 
-    if (grid) {
-      changes.observe(grid, { childList: true });
+    // Observing the same node twice is harmless: the observer takes it once.
+    for (const container of [grid, ...containers.map((node) => node.parentElement)]) {
+      if (container) {
+        changes.observe(container, { childList: true });
+      }
     }
 
     return () => {

@@ -427,8 +427,8 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) 320px;
     gap: 16px;
-    /* Fill the window, but never get shorter than the map and the list need. */
-    min-height: max(680px, calc(100vh - 110px));
+    /* Fill the window (less the outdated banner, when it shows), but never get shorter than the map and the list need. */
+    min-height: max(680px, calc(100vh - 110px - var(--banner-space, 0px)));
   }
 
   .wrap :global(.stage) {

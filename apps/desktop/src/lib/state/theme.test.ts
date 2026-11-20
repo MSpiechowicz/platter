@@ -199,6 +199,7 @@ describe('app.css tokens', () => {
       '--dx',
       '--d',
       '--ay',
+      '--banner-space',
       '--advisor-col',
       '--panel-col',
       '--land-ms',

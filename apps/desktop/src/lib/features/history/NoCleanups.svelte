@@ -2,6 +2,7 @@
   import Button from '../../components/ui/Button.svelte';
   import { fmt } from '../../state/fmt.svelte';
   import { platform } from '../../state/platform.svelte';
+  import { STALE_TEXT } from '../overview/cleanupText';
   import IntoTheTrash from './IntoTheTrash.svelte';
   import { kindsText } from './format';
 
@@ -14,10 +15,12 @@
     kinds: readonly string[];
     /** How many suggestions need the user's review. */
     reviewCount: number;
+    /** A cleanup ran since the scan: its figure describes the disk from before it, and is greyed. */
+    stale?: boolean;
     onreview: () => void;
   }
 
-  let { known, safeBytes, kinds, reviewCount, onreview }: Props = $props();
+  let { known, safeBytes, kinds, reviewCount, stale = false, onreview }: Props = $props();
 
   const hasSafe = $derived(safeBytes > 0);
   const offerReview = $derived(known && (hasSafe || reviewCount > 0));
@@ -29,9 +32,10 @@
     <h4>No cleanups yet</h4>
     <p>
       {#if known && hasSafe}
-        This scan found <span class="found">{fmt.size(safeBytes)}</span> Platter can free safely: {kindsText(
-          kinds,
-        )}.
+        This scan found <span class="found" class:stale title={stale ? STALE_TEXT : undefined}
+          >{fmt.size(safeBytes)}</span
+        >
+        Platter can free safely: {kindsText(kinds)}.
       {:else if known}
         This scan found nothing that is safe to free right now.
       {/if}

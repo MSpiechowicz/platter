@@ -101,14 +101,17 @@
 <div class="overview">
   <PageHeader title="STORAGE OVERVIEW" sub={subtitle}>
     <div class="status">
-      <div class="topr">
-        <Pill dot grow truncate title={statusTitle}>
-          <ScannedAgo at={ready.scannedAt} /> · <b>{formatCount(ready.totals.files)} files</b> in {formatDuration(
-            ready.elapsedMs,
-          )}
-        </Pill>
-        <Button disabled={cleanup.busy} onclick={() => scan.rescan()}>Rescan</Button>
-      </div>
+      <!-- A cleanup ran: the banner of the page asks for a rescan instead. -->
+      {#if !ready.outdated}
+        <div class="topr">
+          <Pill dot grow truncate title={statusTitle}>
+            <ScannedAgo at={ready.scannedAt} /> · <b>{formatCount(ready.totals.files)} files</b> in {formatDuration(
+              ready.elapsedMs,
+            )}
+          </Pill>
+          <Button disabled={cleanup.busy} onclick={() => scan.rescan()}>Rescan</Button>
+        </div>
+      {/if}
       {#each warnings as line (line)}
         <p class="warning">{line}</p>
       {/each}
@@ -123,8 +126,9 @@
           volume={wholeVolume}
           container={wholeVolume ? undefined : scan.volumeInfo?.volume}
           totals={ready.totals}
+          stale={ready.outdated}
         />
-        <FileTypesCard byCategory={data.summary.byCategory} />
+        <FileTypesCard byCategory={data.summary.byCategory} stale={ready.outdated} />
         <ReclaimableCard
           suggestions={suggestions.data}
           loading={suggestions.loading}
@@ -141,14 +145,16 @@
           slabs={data.slabs}
           total={wholeVolume?.total ?? ready.totals.allocated}
           onopen={(id, color) => ui.openInExplorer(id, color)}
+          stale={ready.outdated}
         />
         <div class="row2">
-          <AgeCard byAge={data.summary.byAge} total={data.summary.node.allocated} />
+          <AgeCard byAge={data.summary.byAge} total={data.summary.node.allocated} stale={ready.outdated} />
           <LargestFoldersCard
             folders={data.summary.largestDirs}
             paths={data.paths}
             colors={data.folderColors}
             onopen={(id, color) => ui.openInExplorer(id, color)}
+            stale={ready.outdated}
           />
         </div>
       </div>
@@ -162,6 +168,7 @@
           error={suggestions.error}
           onretry={retrySuggestions}
           onopen={(id) => ui.openInExplorer(id)}
+          outdated={ready.outdated}
         />
       </div>
     </div>

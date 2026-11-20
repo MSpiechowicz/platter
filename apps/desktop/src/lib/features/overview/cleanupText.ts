@@ -10,7 +10,7 @@ import { shownPath, visibleText } from './display';
  * names) goes through `visibleText` or `shownPath` here, and is only ever rendered as plain text.
  */
 
-export const OUTDATED_TEXT = 'The disk changed. Rescan to clean again.';
+export const OUTDATED_TEXT = 'Cleaning is paused until you rescan.';
 
 /** The tooltip of a figure greyed out because it describes the scan from before a cleanup. */
 export const STALE_TEXT = 'From the scan before the cleanup — rescan to update';
@@ -154,8 +154,10 @@ function resultText(result: CleanupResult, freedShown = false): string {
     parts.push(`Not run: ${result.toolsNotRun.map(visibleText).join(', ')}.`);
   }
 
-  if (result.undo && !result.undo.error) {
-    parts.push(`Put back ${itemCount(result.undo.restored)}.`);
+  const putBack = putBackText(result);
+
+  if (putBack) {
+    parts.push(putBack);
   }
 
   return parts.join(' ');
@@ -170,7 +172,22 @@ function resultDetails(result: CleanupResult): string[] {
     lines.push(more(result.problems.length - MAX_LINES, 'with problems'));
   }
 
+  return [...lines, ...undoNotes(result)];
+}
+
+/** How many items an undo put back, once it ran without an error of its own; undefined before. */
+export function putBackText(result: CleanupResult): string | undefined {
+  if (!result.undo || result.undo.error) {
+    return undefined;
+  }
+
+  return `Put back ${itemCount(result.undo.restored)}.`;
+}
+
+/** Why an undo did not put everything back: its own error, and each item that stayed in the trash. */
+export function undoNotes(result: CleanupResult): string[] {
   const undo = result.undo;
+  const lines: string[] = [];
 
   if (undo?.error) {
     lines.push(`Could not undo: ${visibleText(undo.error)}`);
@@ -217,8 +234,8 @@ export function footerStatus(store: CleanupStore): FooterStatus {
     }
 
     case 'done': {
-      // What was freed and the way on (Rescan) are the toast's: the footer says only what the toast does not, as
-      // what was moved to the trash, a problem or a tool that did not run.
+      // What was freed is the toast's: the footer says only what the toast does not, as what was moved to the
+      // trash, a problem or a tool that did not run.
       const text = resultText(phase.result, true);
       const failed = phase.result.kind === 'failed' || phase.result.withProblems > 0;
 

@@ -5,6 +5,7 @@
   import SegRing from '../../components/ui/SegRing.svelte';
   import { countUp } from '../../motion/countUp.svelte';
   import { fmt } from '../../state/fmt.svelte';
+  import { STALE_TEXT } from './cleanupText';
 
   interface Props {
     /** Set when the scan root is a whole volume: the card then shows the disk, not just the scan. */
@@ -12,9 +13,11 @@
     /** For a folder scan, the disk the folder is on: the card then says how much of it the folder takes. */
     container?: VolumeDto;
     totals: Totals;
+    /** A cleanup ran since the scan: the figures describe the disk from before it, and are greyed. */
+    stale?: boolean;
   }
 
-  let { volume, container, totals }: Props = $props();
+  let { volume, container, totals, stale = false }: Props = $props();
 
   /** The file size is worth its own figure only when it differs from the space on disk (sparse or compressed). */
   const sizeDiffers = $derived(
@@ -46,8 +49,8 @@
   const shareFigure = $derived(shareText.endsWith('%') ? shareText.slice(0, -1) : shareText);
 </script>
 
-<Card title={volume ? 'Capacity' : 'Scanned'}>
-  <div class="body">
+<Card title={volume ? 'Capacity' : 'Scanned'} tag={stale ? 'OLD SCAN' : undefined}>
+  <div class="body" class:stale title={stale ? STALE_TEXT : undefined}>
     {#if volume}
       <div class="gauge">
         <SegRing value={share} size={150} segments={56}>

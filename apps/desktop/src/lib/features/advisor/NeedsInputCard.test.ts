@@ -250,7 +250,8 @@ describe('NeedsInputCard', () => {
 
   it('keeps the button off for an outdated scan, and when nothing is left to label', () => {
     setup({ scan: { id: 1, outdated: true } });
-    expect(screen.getByText('Rescan first: a cleanup changed the disk.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Label folders' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Labelling is paused until you rescan.')).toBeTruthy();
   });
 
   it('says when no folder is left for the model', () => {

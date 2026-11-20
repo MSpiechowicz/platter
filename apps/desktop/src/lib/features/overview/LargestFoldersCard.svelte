@@ -3,6 +3,7 @@
   import Bar from '../../components/ui/Bar.svelte';
   import Card from '../../components/ui/Card.svelte';
   import { fmt } from '../../state/fmt.svelte';
+  import { STALE_TEXT } from './cleanupText';
   import { fewFoldersNote } from './folders';
 
   interface Props {
@@ -13,15 +14,17 @@
     colors: Map<NodeId, string>;
     /** A folder was opened; `color` is its own colour, when it is known. */
     onopen: (nodeId: NodeId, color?: string) => void;
+    /** A cleanup ran since the scan: the sizes describe the disk from before it, and are greyed. Folders still open. */
+    stale?: boolean;
   }
 
-  let { folders, paths, colors, onopen }: Props = $props();
+  let { folders, paths, colors, onopen, stale = false }: Props = $props();
 
   const largest = $derived(folders[0]?.allocated || 1);
   const note = $derived(fewFoldersNote(folders.length));
 </script>
 
-<Card title="Largest folders">
+<Card title="Largest folders" tag={stale ? 'OLD SCAN' : undefined}>
   <div class="fold">
     {#each folders as folder (folder.id)}
       {@const path = paths.get(folder.id) ?? folder.name}
@@ -33,8 +36,10 @@
       >
         <!-- The path is cut at its start, so the folder's own name stays visible. -->
         <span class="path mono"><bdi>{path}</bdi></span>
-        <span class="size num">{fmt.size(folder.allocated)}</span>
-        <span class="bar"
+        <span class="size num" class:stale title={stale ? STALE_TEXT : undefined}
+          >{fmt.size(folder.allocated)}</span
+        >
+        <span class="bar" class:stale title={stale ? STALE_TEXT : undefined}
           ><Bar
             value={folder.allocated / largest}
             color={colors.get(folder.id) ?? 'var(--slate)'}

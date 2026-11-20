@@ -41,7 +41,7 @@
     return api.getSuggestions(ready.scanId, units);
   });
 
-  // The store learns of a new scan here too, not only from the list: after "Scan again" the list is not on screen
+  // The store learns of a new scan here too, not only from the list: after a rescan the list may not be on screen
   // (the result is), and the result of the old scan must not stay in front of the new one.
   $effect.pre(() => {
     const id = ready.scanId;

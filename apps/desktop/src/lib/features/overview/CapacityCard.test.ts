@@ -153,4 +153,21 @@ describe('CapacityCard', () => {
     render(CapacityCard, { props: { totals: { ...totals, allocated: 900 * GB } } });
     expect(screen.queryByText(NOTE)).toBeNull();
   });
+
+  it('greys its figures and tags the card as an old scan after a cleanup, and not before', () => {
+    settings.reduceMotion = true;
+
+    const current = render(CapacityCard, { props: { volume, totals } });
+
+    expect(screen.queryByText('OLD SCAN')).toBeNull();
+    expect(document.querySelectorAll('.stale')).toHaveLength(0);
+    current.unmount();
+
+    render(CapacityCard, { props: { volume, totals, stale: true } });
+
+    expect(screen.getByText('OLD SCAN')).toBeTruthy();
+    expect(screen.getByText('740 GB').closest('.stale')?.getAttribute('title')).toMatch(
+      /scan before the cleanup/,
+    );
+  });
 });

@@ -13,7 +13,7 @@
 
   let { store }: Props = $props();
 
-  const ACTION_LABELS: Record<Action, string> = { cancel: 'Cancel', undo: 'Undo', rescan: 'Rescan' };
+  const ACTION_LABELS: Record<Action, string> = { cancel: 'Cancel', undo: 'Undo' };
 
   const items = $derived(store.outermostMarks.length);
   const total = countUp(() => store.markedBytes, 300);
@@ -25,10 +25,8 @@
   function run(action: Action): void {
     if (action === 'cancel') {
       void store.cancel();
-    } else if (action === 'undo') {
-      void store.undo();
     } else {
-      void store.rescan();
+      void store.undo();
     }
   }
 </script>

@@ -2,6 +2,7 @@
   import Card from '../../components/ui/Card.svelte';
   import { fmt } from '../../state/fmt.svelte';
   import { percentText } from '../../format';
+  import { STALE_TEXT } from './cleanupText';
   import type { NodeId } from '../../api/types';
   import type { Slab } from './slabs';
   import { layoutStack, STACK_VIEWBOX, type PlacedSlab } from './stack';
@@ -12,9 +13,11 @@
     total: number;
     /** A slab was opened; `color` is the colour of its folder. */
     onopen: (nodeId: NodeId, color: string) => void;
+    /** A cleanup ran since the scan: the drawing shows the disk from before it, and is greyed. */
+    stale?: boolean;
   }
 
-  let { slabs, total, onopen }: Props = $props();
+  let { slabs, total, onopen, stale = false }: Props = $props();
 
   const layout = $derived(layoutStack(slabs, total));
 
@@ -25,8 +28,13 @@
     `color-mix(in srgb, ${color} ${percent}%, var(--bg))`;
 </script>
 
-<Card title="What is on the disk" hint="layer thickness = space used" grow>
-  <div class="frame">
+<Card
+  title="What is on the disk"
+  hint="layer thickness = space used"
+  tag={stale ? 'OLD SCAN' : undefined}
+  grow
+>
+  <div class="frame" class:stale title={stale ? STALE_TEXT : undefined}>
     <svg
       class="stack"
       class:hov={hot !== null}

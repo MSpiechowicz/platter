@@ -33,7 +33,7 @@
   const shown = delayed(() => !suggestions && !error && loading);
 </script>
 
-<Card title="Reclaimable" class="reclaimable">
+<Card title="Reclaimable" tag={stale ? 'OLD SCAN' : undefined} class="reclaimable">
   {#if suggestions && !shown.value}
     <div
       class="rec"

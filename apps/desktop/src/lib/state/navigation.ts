@@ -89,7 +89,8 @@ export function isPageAvailable(page: Page, status: ScanState['status']): boolea
 
 /**
  * A finished scan takes the user to its Overview, unless they are in Settings, History or the Advisor view (they are
- * not waiting for the scan), or in Cleanup, where "Scan again" is meant to come back to the review of the new scan.
+ * not waiting for the scan), or in Cleanup, where the banner's Rescan is meant to come back to the review of the new
+ * scan.
  */
 export function pageAfterScan(page: Page): Page {
   return page === 'settings' || page === 'history' || page === 'cleanup' || page === 'advisor'

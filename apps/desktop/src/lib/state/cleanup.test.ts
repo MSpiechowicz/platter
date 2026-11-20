@@ -414,8 +414,8 @@ describe('planning', () => {
 });
 
 describe('the run', () => {
-  it('shows progress, then the result: scan outdated, "Already freed" grown, undo and rescan offered', async () => {
-    const { api, scan, store, scanId } = await setup();
+  it('shows progress, then the result: scan outdated, "Already freed" grown, and a toast with no button', async () => {
+    const { api, scan, store, scanId, toast } = await setup();
     const seen: number[] = [];
     const startCleanup = api.startCleanup.bind(api);
 
@@ -449,7 +449,11 @@ describe('the run', () => {
     expect(store.freedTotal).toBe(result.freed);
     expect(scan.state.status === 'ready' && scan.state.outdated && scan.state.scanId === scanId).toBe(true);
     expect(store.outdated).toBe(true);
+    // Rescan is the outdated banner's button: neither the footer nor the toast offers one.
     expect(store.actions).toEqual([]);
+    expect(toast).toHaveBeenCalledOnce();
+    expect(toast.mock.calls[0]).toHaveLength(3);
+    expect(result.endedAt).toBeGreaterThan(0);
     expect(store.canCleanSafe).toBe(false);
     expect(store.canCleanSelected).toBe(false);
   });
@@ -575,6 +579,43 @@ describe('the run', () => {
     }
   });
 
+  it('says an undo is running from the click until the backend answers, whatever it answers', async () => {
+    for (const answer of ['restored', 'declined', 'failed'] as const) {
+      let reply: (entries: Awaited<ReturnType<Api['undoCleanup']>>) => void = () => {};
+      let refuse: (error: Error) => void = () => {};
+      const { store } = await setup((api) => ({
+        ...api,
+        undoCleanup: () =>
+          new Promise((resolve, reject) => {
+            reply = resolve;
+            refuse = reject;
+          }),
+      }));
+
+      store.select('none');
+      store.toggle(TRASH_RULE);
+      await store.cleanSelected();
+      await store.confirmReview();
+      await vi.waitFor(done(store));
+
+      expect(store.undoing).toBe(false);
+
+      const undo = store.undo();
+
+      expect(store.undoing).toBe(true);
+
+      if (answer === 'restored') {
+        reply([{ path: '/home/demo/b', restored: true }]);
+      } else {
+        refuse(new ApiRequestError(answer === 'declined' ? 'cancelled' : 'io', answer));
+      }
+
+      await undo;
+
+      expect(store.undoing).toBe(false);
+    }
+  });
+
   it('a declined Undo dialog ("cancelled") says nothing and keeps undo offered, also after an earlier partial undo', async () => {
     const undoCleanup = vi
       .fn<Api['undoCleanup']>()
@@ -624,12 +665,12 @@ describe('the run', () => {
     expect(store.phase.result.undo).toBeUndefined();
   });
 
-  it('rescans on request, and the next scan starts without the old result', async () => {
+  it('the next scan starts without the old result', async () => {
     const { scan, store, data } = await setup();
 
     await store.cleanSelected();
     await vi.waitFor(done(store));
-    await store.rescan();
+    await scan.rescan();
     await vi.waitFor(() => expect(scan.state.status).toBe('ready'));
 
     if (scan.state.status !== 'ready') {

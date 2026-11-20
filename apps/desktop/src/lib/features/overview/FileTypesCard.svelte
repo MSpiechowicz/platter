@@ -5,13 +5,16 @@
   import { tooltip } from '../../components/ui/tooltip.svelte';
   import { percentText } from '../../format';
   import { fmt } from '../../state/fmt.svelte';
+  import { STALE_TEXT } from './cleanupText';
   import { typeRows, type TypeRow } from './fileTypes';
 
   interface Props {
     byCategory: SummaryDto['byCategory'];
+    /** A cleanup ran since the scan: the rows describe the disk from before it, and are greyed. */
+    stale?: boolean;
   }
 
-  let { byCategory }: Props = $props();
+  let { byCategory, stale = false }: Props = $props();
 
   const rows = $derived(typeRows(byCategory));
   const largest = $derived(rows[0]?.allocated ?? 1);
@@ -20,8 +23,8 @@
     (row.folded ?? []).map((entry) => `${entry.label}: ${fmt.size(entry.allocated)}`);
 </script>
 
-<Card title="By file type">
-  <div class="types">
+<Card title="By file type" tag={stale ? 'OLD SCAN' : undefined}>
+  <div class="types" class:stale title={stale ? STALE_TEXT : undefined}>
     {#each rows as row (row.key)}
       {#if row.folded}
         <div
@@ -33,7 +36,7 @@
           {@render cells(row)}
         </div>
       {:else}
-        <div class="type" title="{percentText(row.share)} of the scanned space">
+        <div class="type" title={stale ? STALE_TEXT : `${percentText(row.share)} of the scanned space`}>
           {@render cells(row)}
         </div>
       {/if}

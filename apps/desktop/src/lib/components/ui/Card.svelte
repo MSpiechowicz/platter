@@ -6,6 +6,8 @@
     title?: string;
     /** Small grey note on the right of the title. */
     hint?: string;
+    /** A warning pill in the place of the hint, for a card whose figures should not be trusted as they are. */
+    tag?: string;
     /** Take the spare height of a flex column. */
     grow?: boolean;
     /** Buttons on the right of the title; the header keeps the height it has without them. */
@@ -13,7 +15,7 @@
     children: Snippet;
   }
 
-  let { title, hint, grow = false, actions, class: className = '', children, ...rest }: Props = $props();
+  let { title, hint, tag, grow = false, actions, class: className = '', children, ...rest }: Props = $props();
 
   const headingId = $props.id();
 </script>
@@ -23,7 +25,10 @@
     <div class="head">
       <h3 id={headingId}>
         {title}
-        {#if hint}
+        {#if tag}
+          <span class="sp"></span>
+          <span class="tag">{tag}</span>
+        {:else if hint}
           <span class="sp"></span>
           <span class="hint">{hint}</span>
         {/if}
@@ -95,5 +100,17 @@
     color: var(--dim);
     white-space: nowrap;
     font-weight: 500;
+  }
+
+  .tag {
+    padding: 0 6px;
+    border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+    border-radius: 5px;
+    color: var(--amber);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    font-weight: 700;
+    text-transform: uppercase;
+    white-space: nowrap;
   }
 </style>

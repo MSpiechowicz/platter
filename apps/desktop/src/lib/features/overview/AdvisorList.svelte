@@ -52,7 +52,7 @@
     { value: 'none', label: 'None' },
   ];
 
-  const ACTION_LABELS: Record<Action, string> = { cancel: 'Cancel', undo: 'Undo', rescan: 'Rescan' };
+  const ACTION_LABELS: Record<Action, string> = { cancel: 'Cancel', undo: 'Undo' };
 
   // The suggestions become the store's rows before the first paint, so the safe ones are ticked from the start.
   $effect.pre(() => {
@@ -79,10 +79,8 @@
   function run(action: Action): void {
     if (action === 'cancel') {
       void store.cancel();
-    } else if (action === 'undo') {
-      void store.undo();
     } else {
-      void store.rescan();
+      void store.undo();
     }
   }
 </script>

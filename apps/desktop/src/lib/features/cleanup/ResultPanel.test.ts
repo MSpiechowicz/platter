@@ -103,13 +103,13 @@ describe('ResultPanel', () => {
     expect(screen.getByText('Not measured')).toBeTruthy();
   });
 
-  it('offers Undo only when something can be put back, and "Scan again" always', async () => {
+  it('offers Undo only when something can be put back, and never a Rescan (the banner has it)', async () => {
     const without = await ended({ canUndo: false });
 
     render(ResultPanel, { props: { store: without.store, basis } });
 
     expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Scan again' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Rescan|Scan again/ })).toBeNull();
   });
 
   it('asks the store to undo when Undo is clicked', async () => {
@@ -144,16 +144,6 @@ describe('ResultPanel', () => {
     expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
   });
 
-  it('scans again through the store', async () => {
-    const context = await ended();
-    const rescan = vi.spyOn(context.store, 'rescan').mockResolvedValue();
-
-    render(ResultPanel, { props: { store: context.store, basis } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Scan again' }));
-
-    expect(rescan).toHaveBeenCalledOnce();
-  });
-
   it('shows problems as plain text with control characters made visible', async () => {
     const context = await fixture();
 
@@ -176,6 +166,6 @@ describe('ResultPanel', () => {
 
     render(ResultPanel, { props: { store: context.store, basis } });
 
-    expect(screen.queryByRole('button', { name: 'Scan again' })).toBeNull();
+    expect(screen.queryByRole('button')).toBeNull();
   });
 });

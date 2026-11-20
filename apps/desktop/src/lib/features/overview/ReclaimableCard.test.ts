@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SuggestionDto, SuggestionsDto } from '../../api/types';
 import { settings } from '../../state/settings.svelte';
@@ -175,6 +175,17 @@ describe('ReclaimableCard after a cleanup, until a rescan', () => {
     expect(rowOf('Already freed').getAttribute('title')).toBeNull();
     expect(rowOf('Already freed').textContent).toContain('5.0 GB');
     expect(screen.getByRole('heading', { name: 'Biggest wins' }).classList.contains('stale')).toBe(false);
+  });
+
+  it('tags the card as an old scan only while the figures are old', () => {
+    show();
+
+    expect(screen.queryByText('OLD SCAN')).toBeNull();
+    cleanup();
+
+    show({ stale: true });
+
+    expect(screen.getByText('OLD SCAN')).toBeTruthy();
   });
 
   it('keeps every figure on screen: nothing is removed or guessed', () => {

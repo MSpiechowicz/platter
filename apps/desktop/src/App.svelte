@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import AppShell from './lib/components/layout/AppShell.svelte';
+  import OutdatedBanner from './lib/components/layout/OutdatedBanner.svelte';
   import PageBoundary from './lib/components/layout/PageBoundary.svelte';
   import Sidebar, { type NavItem } from './lib/components/layout/Sidebar.svelte';
   import ToastHost from './lib/components/ui/ToastHost.svelte';
@@ -59,6 +60,17 @@
   const collapsed = $derived(settings.sidebarCollapsed || viewport.narrow);
   const scanState = $derived(scan.state);
   const screen = $derived(resolveScreen(scanState, ui.page));
+
+  // A cleanup ran on the ready scan: the pages that show its figures say so, and the banner holds the only Rescan.
+  const outdated = $derived(
+    scanState.status === 'ready' &&
+      scanState.outdated &&
+      (screen.id === 'overview' ||
+        screen.id === 'explorer' ||
+        screen.id === 'cleanup' ||
+        screen.id === 'advisor' ||
+        screen.id === 'history'),
+  );
 
   const items = $derived(
     NAV.map((item) => {
@@ -126,6 +138,10 @@
       onupdate={onUpdate}
     />
   {/snippet}
+
+  {#if outdated}
+    <OutdatedBanner />
+  {/if}
 
   <!-- One boundary per page: a page that fails shows a card, and going elsewhere starts afresh. -->
   {#if screen.id === 'settings'}

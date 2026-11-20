@@ -231,7 +231,7 @@ describe('labelReadiness', () => {
     expect(reason({ status: statusOf('downloading') })).toBe('Download the model first.');
     expect(reason({ enabled: false })).toBe('The local model is switched off in Settings.');
     expect(reason({ status: statusOf('loading') })).toBeUndefined();
-    expect(reason({ outdated: true })).toBe('Rescan first: a cleanup changed the disk.');
+    expect(reason({ outdated: true })).toBe('Labelling is paused until you rescan.');
     expect(reason({ labels: labelsOf({ candidates: 0 }) })).toBe(
       'No folder is left for the model: the rules cover the rest.',
     );

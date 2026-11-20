@@ -1,10 +1,12 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Api } from '../../api/client';
 import type { HistorySampleDto } from '../../api/types';
 import { ApiRequestError } from '../../api/client';
 import { createMockHistory, type MockHistoryVariant } from '../../api/mock-history';
 import { LOADING_DELAY_MS, LOADING_MIN_VISIBLE_MS } from '../../state/delayed.svelte';
+import { CleanupStore } from '../../state/cleanup.svelte';
+import { createMockApi } from '../../api/mock';
 import { HistoryStore } from '../../state/history.svelte';
 import { settings } from '../../state/settings.svelte';
 import { ui } from '../../state/ui.svelte';
@@ -276,6 +278,43 @@ describe('the Cleanups card without a cleanup', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Review suggestions' }));
 
     expect(ui.page).toBe('cleanup');
+  });
+
+  it('greys the figure of the scan once a cleanup made it old', async () => {
+    const setup = await withSuggestions();
+
+    setup.scan.markOutdated(setup.scanId);
+    await open(mock('empty'), setup);
+
+    const figure = document.querySelector('.found') as HTMLElement;
+
+    expect(figure.textContent).toBe('105 GB');
+    expect(figure.classList.contains('stale')).toBe(true);
+    expect(figure.getAttribute('title')).toMatch(/scan before the cleanup/);
+  });
+
+  it('greys the figure after a restart too, when the outdated scan was restored and the store knows no scan yet', async () => {
+    const setup = await withSuggestions();
+
+    setup.scan.markOutdated(setup.scanId);
+
+    // A store that was never loaded: its scan is unset, as it is right after the app starts.
+    const fresh = new CleanupStore(
+      { ...createMockApi({ durationMs: 0 }), getSuggestions: async () => DATA },
+      setup.scan,
+    );
+
+    await open(mock('empty'), { ...setup, store: fresh });
+
+    const figure = await waitFor(() => {
+      const found = document.querySelector('.found') as HTMLElement | null;
+
+      expect(found).not.toBeNull();
+
+      return found as HTMLElement;
+    });
+
+    expect(figure.classList.contains('stale')).toBe(true);
   });
 
   it('offers the review when nothing is safe but something needs review', async () => {
@@ -565,6 +604,26 @@ describe('Ready to clean now', () => {
     expect(sizeOf('Needs your review')).toBe('268 GB');
     expect(screen.queryByRole('button', { name: 'Go to Cleanup' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Review in Cleanup' })).toBeTruthy();
+  });
+
+  it('greys the bar and rows and tags the card once a cleanup made the scan old', async () => {
+    const current = await withSuggestions();
+
+    await open(mock(), current);
+
+    expect(screen.queryByText('OLD SCAN')).toBeNull();
+    expect(document.querySelectorAll('.stale')).toHaveLength(0);
+    cleanup();
+
+    const old = await withSuggestions();
+
+    old.scan.markOutdated(old.scanId);
+    await open(mock(), old);
+
+    expect(screen.getByRole('heading', { name: /^Ready to clean now/ }).textContent).toContain('OLD SCAN');
+    expect(screen.getByText('Safe to clean').closest('.recr')?.classList.contains('stale')).toBe(true);
+    expect(screen.getByText('Needs your review').closest('.recr')?.classList.contains('stale')).toBe(true);
+    expect(screen.getByRole('img', { name: /safe to clean/ }).classList.contains('stale')).toBe(true);
   });
 
   it('asks for a scan when there is none, and offers no button', async () => {

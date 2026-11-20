@@ -40,6 +40,15 @@
 
   const data = $derived(store.data);
 
+  /**
+   * A cleanup ran on the scan: the suggestions describe the disk from before it. The scan store says it from the
+   * first frame. The suggestions say it once they have adopted the scan.
+   */
+  const stale = $derived(
+    suggestions.outdated ||
+      (scan.state.status === 'ready' && scan.state.scanId === scanId && scan.state.outdated),
+  );
+
   // The Overview and the Cleanup view fetch the suggestions, so they are usually here already. Opened straight on
   // History, this fetches them once.
   $effect(() => {
@@ -150,6 +159,7 @@
               {safeBytes}
               kinds={safe.slice(0, 3).map((item) => visibleText(item.title))}
               {reviewCount}
+              {stale}
               onreview={() => ui.go('cleanup')}
             />
           {/snippet}
@@ -162,6 +172,7 @@
             scanned={scanId !== undefined}
             {safeBytes}
             {reviewBytes}
+            {stale}
             ongo={() => ui.go('cleanup')}
           />
         </div>

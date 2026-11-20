@@ -96,4 +96,19 @@ describe('FileTypesCard', () => {
     }
     expect(container.querySelector('section')?.classList.contains('grow')).toBe(false);
   });
+
+  it('greys its rows and tags the card as an old scan after a cleanup, and not before', () => {
+    const current = render(FileTypesCard, { byCategory: categories(3) });
+
+    expect(screen.queryByText('OLD SCAN')).toBeNull();
+    expect(document.querySelectorAll('.stale')).toHaveLength(0);
+    current.unmount();
+
+    render(FileTypesCard, { byCategory: categories(3), stale: true });
+
+    expect(screen.getByText('OLD SCAN')).toBeTruthy();
+    expect(screen.getByText('100 GB').closest('.stale')?.getAttribute('title')).toMatch(
+      /scan before the cleanup/,
+    );
+  });
 });

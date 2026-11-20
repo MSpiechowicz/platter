@@ -297,6 +297,7 @@ describe('PlanPreviewCard', () => {
     await settle(1000);
 
     expect(screen.queryByRole('table')).toBeNull();
+    expect(screen.getByText('Planning is paused until you rescan.')).toBeTruthy();
     expect(api.planCleanup).toHaveBeenCalledTimes(1);
   });
 

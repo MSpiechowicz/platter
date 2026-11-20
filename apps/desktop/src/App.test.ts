@@ -332,6 +332,80 @@ describe('the app', () => {
   });
 });
 
+describe('the app: outdated scan', () => {
+  const banner = (): HTMLElement | null => screen.queryByRole('status', { name: 'This scan is out of date' });
+
+  beforeEach(async () => {
+    await waitFor(() => expect(scan.state.status).not.toBe('scanning'), { timeout: 3000 });
+    scan.reset();
+    opening.skip();
+    ui.go('scan');
+    settings.set('sidebarCollapsed', false);
+    settings.set('rescanOnOpen', false);
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  async function outdatedScan(): Promise<void> {
+    await startScan();
+    await waitFor(() => expect(scan.state.status).toBe('ready'), { timeout: 3000 });
+
+    if (scan.state.status === 'ready') {
+      scan.markOutdated(scan.state.scanId);
+    }
+  }
+
+  it('shows the banner on Overview, Explorer, Cleanup, Advisor and History, and not on Scan or Settings', async () => {
+    render(App);
+    await outdatedScan();
+
+    for (const name of ['Overview', 'Explorer', 'Cleanup', 'Advisor', 'History']) {
+      await fireEvent.click(nav(name));
+
+      expect(await screen.findByRole('status', { name: 'This scan is out of date' }), name).toBeTruthy();
+    }
+
+    for (const name of ['Scan', 'Settings']) {
+      await fireEvent.click(nav(name));
+
+      expect(banner(), name).toBeNull();
+    }
+  });
+
+  it('shows no banner for a scan that is up to date', async () => {
+    render(App);
+    await startScan();
+    await waitFor(() => expect(scan.state.status).toBe('ready'), { timeout: 3000 });
+    await fireEvent.click(nav('Overview'));
+
+    expect(await screen.findByText('STORAGE OVERVIEW')).toBeTruthy();
+    expect(banner()).toBeNull();
+  });
+
+  it('holds the only Rescan of the Overview, and a click starts the new scan, which takes the banner away', async () => {
+    render(App);
+    await outdatedScan();
+    await fireEvent.click(nav('Overview'));
+
+    const rescans = await screen.findAllByRole('button', { name: 'Rescan' });
+
+    expect(rescans).toHaveLength(1);
+    expect(within(banner() as HTMLElement).getByRole('button', { name: 'Rescan' })).toBe(rescans[0]);
+
+    const rescan = vi.spyOn(scan, 'rescan');
+
+    await fireEvent.click(rescans[0] as HTMLElement);
+
+    expect(rescan).toHaveBeenCalledOnce();
+    expect(await screen.findByText('files read')).toBeTruthy();
+    expect(banner()).toBeNull();
+
+    // Let it finish: a running scan would leak into the next test.
+    await screen.findByText(/^Scanned /, undefined, { timeout: 3000 });
+    expect(banner()).toBeNull();
+  });
+});
+
 const shell = (): HTMLElement => document.querySelector('.app') as HTMLElement;
 const openingScreen = (): HTMLElement | null => screen.queryByRole('region', { name: 'Opening Platter' });
 

@@ -78,14 +78,12 @@
       <p class="detail">{line}</p>
     {/each}
 
-    <!-- Undo only when the backend can put something back; "Scan again" keeps its place either way. -->
-    <div class="btns">
-      {#if canUndo}
+    <!-- Undo only when the backend can put something back. The way on, Rescan, is the outdated banner's. -->
+    {#if canUndo}
+      <div class="btns">
         <Button onclick={() => void store.undo()}>Undo</Button>
-      {/if}
-
-      <Button variant="primary" onclick={() => void store.rescan()}>Scan again</Button>
-    </div>
+      </div>
+    {/if}
   {/if}
 </Card>
 
@@ -141,19 +139,12 @@
   }
 
   .btns {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
     margin-top: auto;
     padding-top: 14px;
   }
 
-  /* "Scan again" stays in the right column, so it does not move when Undo goes away. */
-  .btns > :global(:last-child) {
-    grid-column: 2;
-  }
-
   .btns :global(.btn) {
+    width: 100%;
     padding: 9px 8px;
   }
 </style>

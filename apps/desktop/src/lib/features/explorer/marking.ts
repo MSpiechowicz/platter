@@ -27,7 +27,7 @@ export function markingOff(blockers: Blockers): string | undefined {
   }
 
   if (blockers.outdated) {
-    return 'The disk changed. Rescan to mark again.';
+    return 'Marking is paused until you rescan.';
   }
 
   if (blockers.loading) {

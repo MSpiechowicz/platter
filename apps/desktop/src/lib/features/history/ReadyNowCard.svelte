@@ -2,6 +2,7 @@
   import Button from '../../components/ui/Button.svelte';
   import Card from '../../components/ui/Card.svelte';
   import { fmt } from '../../state/fmt.svelte';
+  import { STALE_TEXT } from '../overview/cleanupText';
 
   interface Props {
     /** The suggestions of the scan are known. Without a scan, or until they are, the card says how to get them. */
@@ -12,10 +13,12 @@
     safeBytes: number;
     /** What the scan found that needs the user's review, in bytes. */
     reviewBytes: number;
+    /** A cleanup ran since the scan: the bar and its rows describe the disk from before it, and are greyed. */
+    stale?: boolean;
     ongo: () => void;
   }
 
-  let { known, scanned, safeBytes, reviewBytes, ongo }: Props = $props();
+  let { known, scanned, safeBytes, reviewBytes, stale = false, ongo }: Props = $props();
 
   const total = $derived(safeBytes + reviewBytes);
   const hasSafe = $derived(safeBytes > 0);
@@ -23,7 +26,7 @@
 
 <!-- The bar and rows are those of the Overview's Reclaimable card, so the two read the same. The button keeps its
      usual size, bottom right, and is plain when only a review is left. -->
-<Card title="Ready to clean now">
+<Card title="Ready to clean now" tag={stale && known && total > 0 ? 'OLD SCAN' : undefined}>
   {#if !known && scanned}
     <!-- The Cleanup view reads them again and offers its own retry. -->
     <p class="note">What can be cleaned could not be read.</p>
@@ -35,6 +38,8 @@
   {:else}
     <div
       class="rec"
+      class:stale
+      title={stale ? STALE_TEXT : undefined}
       role="img"
       aria-label="{fmt.size(safeBytes)} safe to clean, {fmt.size(reviewBytes)} to review"
     >
@@ -44,12 +49,12 @@
       </div>
     </div>
 
-    <div class="recr">
+    <div class="recr" class:stale title={stale ? STALE_TEXT : undefined}>
       <i style="background:var(--green)"></i>
       <span>Safe to clean</span>
       <span class="num">{fmt.size(safeBytes)}</span>
     </div>
-    <div class="recr">
+    <div class="recr" class:stale title={stale ? STALE_TEXT : undefined}>
       <i style="background:var(--amber)"></i>
       <span>Needs your review</span>
       <span class="num">{fmt.size(reviewBytes)}</span>
