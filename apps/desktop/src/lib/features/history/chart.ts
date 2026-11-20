@@ -63,7 +63,10 @@ export interface ChartModel {
   without: EndLabel;
   /** What the cleanups saved so far: the gap at the right end. */
   saved: number;
-  /** Where the "saved" bracket and its text sit (the middle of the two dots). Undefined when nothing was saved. */
+  /**
+   * Where the "saved" bracket and its text sit. The text is between the two dots, or moved up or down off the lines that
+   * run under it. Undefined when nothing was saved.
+   */
   savedBracket?: { x: number; y1: number; y2: number; textY: number };
 }
 
@@ -157,6 +160,64 @@ export function spreadLabels(ys: readonly number[], gap: number, lo: number, hi:
 }
 
 const fixed = (value: number): string => value.toFixed(1);
+
+/** The "saved" text, as room in drawing units: as wide as "999.9 GB saved", and its glyphs above and below the middle. */
+const SAVED_TEXT = { gap: 10, width: 112, above: 8, below: 6, clear: 3 } as const;
+
+/** Whether a line runs through the box from `x0` to `x1` and `top` to `bottom`. */
+export function crosses(
+  points: readonly { x: number; y: number }[],
+  x0: number,
+  x1: number,
+  top: number,
+  bottom: number,
+): boolean {
+  return points.some((a, index) => {
+    const b = points[index + 1];
+
+    if (!b) {
+      return false;
+    }
+
+    const from = Math.max(x0, Math.min(a.x, b.x));
+    const to = Math.min(x1, Math.max(a.x, b.x));
+
+    if (from > to) {
+      return false;
+    }
+
+    const at = (px: number): number => (b.x === a.x ? a.y : a.y + ((px - a.x) / (b.x - a.x)) * (b.y - a.y));
+    const ys = b.x === a.x ? [a.y, b.y] : [at(from), at(to)];
+
+    return Math.max(...ys) >= top && Math.min(...ys) <= bottom;
+  });
+}
+
+/** The middle of the "saved" text: as near `middle` as it can be with no line through it, within the plot. */
+function savedTextY(
+  lines: readonly (readonly { x: number; y: number }[])[],
+  right: number,
+  middle: number,
+): number {
+  const x1 = right - SAVED_TEXT.gap + SAVED_TEXT.clear;
+  const x0 = right - SAVED_TEXT.gap - SAVED_TEXT.width - SAVED_TEXT.clear;
+  const clear = (y: number): boolean =>
+    y - SAVED_TEXT.above >= CHART.top &&
+    y + SAVED_TEXT.below <= CHART.bottom &&
+    !lines.some((line) =>
+      crosses(line, x0, x1, y - SAVED_TEXT.above - SAVED_TEXT.clear, y + SAVED_TEXT.below + SAVED_TEXT.clear),
+    );
+
+  for (let step = 0; step <= CHART.bottom - CHART.top; step += 1) {
+    for (const y of step === 0 ? [middle] : [middle - step, middle + step]) {
+      if (clear(y)) {
+        return y;
+      }
+    }
+  }
+
+  return middle;
+}
 
 const pathOf = (points: readonly { x: number; y: number }[]): string =>
   points.map((point, index) => `${index === 0 ? 'M' : 'L'}${fixed(point.x)},${fixed(point.y)}`).join('');
@@ -253,7 +314,7 @@ export function layoutChart(input: ChartInput, unit: number): ChartModel | undef
           x: usedEnd.x,
           y1: withoutEnd.y + 8,
           y2: usedEnd.y - 8,
-          textY: (withoutEnd.y + usedEnd.y) / 2,
+          textY: savedTextY([usedPoints, withoutPoints], usedEnd.x, (withoutEnd.y + usedEnd.y) / 2),
         }
       : undefined,
   };

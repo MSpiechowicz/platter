@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { HistoryCleanupDto, HistorySampleDto } from '../../api/types';
 import {
   CHART,
+  crosses,
   dayNumber,
   dayText,
   layoutChart,
@@ -130,6 +131,42 @@ describe('layoutChart', () => {
     expect(model?.markers).toHaveLength(1);
     expect(model?.markers[0]?.x).toBeCloseTo(points[3]?.[0] as number, 0);
     expect(model?.savedBracket?.x).toBe(CHART.right);
+  });
+
+  it('moves the "saved" text off a line that climbs into the end', () => {
+    // A small saving at the end of a steep rise: the middle of the two dots is on the rising line.
+    const model = layoutChart(
+      {
+        samples: [sample(days[0], 1525), sample(days[1], 1260), sample(days[2], 1295), sample(days[3], 1378)],
+        without: [1525, 1260, 1295, 1414].map((v) => v * GB),
+        cleanups: [cleanup(1, days[3], 36)],
+      },
+      10 * GB,
+    );
+    const bracket = model?.savedBracket;
+    expect(bracket).toBeDefined();
+
+    const pointsOf = (path: string) =>
+      [...path.matchAll(/[ML]([\d.]+),([\d.]+)/g)].map((m) => ({ x: Number(m[1]), y: Number(m[2]) }));
+    const textY = bracket?.textY ?? 0;
+    const x1 = (bracket?.x ?? 0) - 10;
+
+    for (const path of [model?.usedPath ?? '', model?.withoutPath ?? '']) {
+      expect(crosses(pointsOf(path), x1 - 112, x1, textY - 8, textY + 6)).toBe(false);
+    }
+  });
+
+  it('keeps the "saved" text between the dots when no line runs there', () => {
+    const model = layoutChart(
+      {
+        samples: [sample(days[0], 1400), sample(days[1], 1400), sample(days[2], 1300), sample(days[3], 1300)],
+        without: [1400, 1400, 1400, 1400].map((v) => v * GB),
+        cleanups: [cleanup(1, days[2], 100)],
+      },
+      10 * GB,
+    );
+
+    expect(model?.savedBracket?.textY).toBeCloseTo(((model?.without.y ?? 0) + (model?.used.y ?? 0)) / 2, 5);
   });
 
   it('puts the two end labels apart even when the lines end close together', () => {
