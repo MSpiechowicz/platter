@@ -13,6 +13,22 @@
 
   let banner: HTMLElement | undefined = $state();
 
+  const titleId = $props.id();
+
+  /*
+   * What a screen reader says when the banner comes. A live region that arrives with its words already in it is
+   * often not read, so it starts empty and gets them once it is on the page.
+   */
+  const SAID = 'This scan is out of date. Cleaning is paused until you rescan.';
+
+  let said = $state('');
+
+  $effect(() => {
+    const timer = setTimeout(() => (said = SAID), 100);
+
+    return () => clearTimeout(timer);
+  });
+
   // Pages that fill the window (the Advisor, the Explorer) take this space off their height, so the banner does not
   // make them scroll. It follows the banner as it wraps in a narrow window.
   $effect(() => {
@@ -42,11 +58,13 @@
   });
 </script>
 
-<section class="banner" role="status" aria-label="This scan is out of date" bind:this={banner}>
+<section class="banner" aria-labelledby={titleId} bind:this={banner}>
   <span class="mark"><Icon name="refresh" size={16} stroke={1.8} /></span>
 
+  <p class="vh" role="status">{said}</p>
+
   <div class="words">
-    <b>This scan is out of date</b>
+    <b id={titleId}>This scan is out of date</b>
     <p>The disk changed after the cleanup. Figures are from before it and cleaning is paused.</p>
   </div>
 
@@ -89,5 +107,14 @@
     margin-top: 2px;
     font-size: 13px;
     color: var(--muted);
+  }
+
+  .vh {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 </style>

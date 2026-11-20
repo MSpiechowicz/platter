@@ -24,6 +24,14 @@
 
   let { freed, endedAt, onundo, undone = [] }: Props = $props();
 
+  let report: HTMLElement | undefined = $state();
+
+  // Undo goes away once clicked. The keyboard moves to the lines that say how it went, not to the top of the page.
+  function undo(): void {
+    report?.focus({ preventScroll: true });
+    onundo?.();
+  }
+
   /** The words change by the minute, so it looks again once a minute. */
   const REFRESH_MS = 60_000;
 
@@ -110,7 +118,7 @@
     <p class="note three">Rescan from the banner above to see what is left.</p>
 
     <!-- The live region stays in place either way, so a screen reader announces the lines when they come. -->
-    <div class="report" role="status">
+    <div class="report" role="status" tabindex="-1" bind:this={report}>
       {#each undone as line, index (index)}
         <p class="detail">{line}</p>
       {/each}
@@ -118,7 +126,7 @@
 
     {#if onundo}
       <div class="acts four">
-        <Button size="sm" onclick={onundo}>Undo</Button>
+        <Button size="sm" onclick={undo}>Undo</Button>
       </div>
     {/if}
   </div>
@@ -162,6 +170,11 @@
     margin-top: 12px;
     color: var(--dim);
     font-size: 12px;
+  }
+
+  /* It takes the keyboard after Undo only to keep it on the card: no ring on words that cannot be used. */
+  .report:focus {
+    outline: none;
   }
 
   .detail {

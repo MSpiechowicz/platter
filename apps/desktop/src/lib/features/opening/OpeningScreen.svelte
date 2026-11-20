@@ -127,9 +127,16 @@
 </section>
 
 <style>
+  /*
+   * As wide as the window, scrollbar included: the page laid out behind it can grow a scrollbar while the steps run
+   * (a saved scan opens its Overview), and centring on what is left would jump the logo and the steps sideways.
+   */
   .screen {
     position: fixed;
-    inset: 0;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 100vw;
     z-index: 50;
     display: grid;
     place-items: center;

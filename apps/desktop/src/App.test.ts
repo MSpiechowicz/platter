@@ -333,7 +333,7 @@ describe('the app', () => {
 });
 
 describe('the app: outdated scan', () => {
-  const banner = (): HTMLElement | null => screen.queryByRole('status', { name: 'This scan is out of date' });
+  const banner = (): HTMLElement | null => screen.queryByRole('region', { name: 'This scan is out of date' });
 
   beforeEach(async () => {
     await waitFor(() => expect(scan.state.status).not.toBe('scanning'), { timeout: 3000 });
@@ -362,7 +362,7 @@ describe('the app: outdated scan', () => {
     for (const name of ['Overview', 'Explorer', 'Cleanup', 'Advisor', 'History']) {
       await fireEvent.click(nav(name));
 
-      expect(await screen.findByRole('status', { name: 'This scan is out of date' }), name).toBeTruthy();
+      expect(await screen.findByRole('region', { name: 'This scan is out of date' }), name).toBeTruthy();
     }
 
     for (const name of ['Scan', 'Settings']) {

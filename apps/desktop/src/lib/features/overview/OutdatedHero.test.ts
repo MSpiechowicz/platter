@@ -44,6 +44,21 @@ describe('OutdatedHero', () => {
     expect(onundo).toHaveBeenCalledOnce();
   });
 
+  it('keeps the keyboard on the card when Undo goes away after the click', async () => {
+    const { rerender } = render(OutdatedHero, { props: { onundo: () => {} } });
+
+    const undo = screen.getByRole('button', { name: 'Undo' });
+
+    undo.focus();
+    await fireEvent.click(undo);
+    // The store takes Undo off once it is clicked.
+    await rerender({ onundo: undefined, undone: ['Put back 1 item.'] });
+
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('status'));
+    expect(document.activeElement?.textContent).toContain('Put back 1 item.');
+  });
+
   it('lists how an undo went, as plain text', () => {
     render(OutdatedHero, { props: { undone: ['Put back 1 item.', 'Not put back: ~/b (already exists)'] } });
 

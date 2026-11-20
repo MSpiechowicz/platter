@@ -18,11 +18,29 @@ describe('OutdatedBanner', () => {
 
     render(OutdatedBanner);
 
-    expect(screen.getByRole('status', { name: 'This scan is out of date' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'This scan is out of date' })).toBeTruthy();
 
     await fireEvent.click(screen.getByRole('button', { name: 'Rescan' }));
 
     expect(rescan).toHaveBeenCalledOnce();
+  });
+
+  it('fills its live region only once it is on the page, so a screen reader reads it out', async () => {
+    vi.useFakeTimers();
+
+    try {
+      render(OutdatedBanner);
+
+      const live = screen.getByRole('status');
+
+      expect(live.textContent).toBe('');
+
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect(live.textContent).toBe('This scan is out of date. Cleaning is paused until you rescan.');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps Rescan off while a cleanup is running', () => {
