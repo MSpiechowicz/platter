@@ -273,11 +273,15 @@ a {
   transition: none !important;
 }
 
-/* One scrollbar for the whole app: thin, flat, never touching the content.
-   WebKitGTK (the app window on Linux) only honours the ::-webkit rules. */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--line) transparent;
+/* One scrollbar for the whole app: thin, flat, never touching the content. It is drawn by the ::-webkit rules
+   below in every app window (WebKitGTK on Linux, WKWebView on macOS, WebView2 on Windows). The standard properties
+   are only for an engine without them: where both are known, setting scrollbar-width or scrollbar-color makes the
+   engine ignore the ::-webkit rules and draw its own bar, which on macOS is the wide grey one with a track. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+  }
 }
 
 ::-webkit-scrollbar {
