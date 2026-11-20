@@ -13,6 +13,19 @@ See what's eating your disk, and clean it up safely. Linux, Windows and macOS, f
 
 Nothing leaves your computer. The only network calls are the optional model download and the update check.
 
+## Screenshots
+
+The screenshots show made-up sample data, not a real disk.
+
+![Overview: capacity, file types, what can be reclaimed, and the layered view of the disk](docs/screenshots/overview.png)
+
+| | |
+| --- | --- |
+| ![Explorer: folders as 3D columns](docs/screenshots/explorer-3d.png) | ![Cleanup: what is selected to free and what stays on disk](docs/screenshots/cleanup.png) |
+| **Explorer.** Every folder as a column you can rotate, or as a flat map. | **Cleanup.** Pick what to free, and see what happens to each item before anything is deleted. |
+| ![Advisor: an answer about the scan, each folder with its verdict](docs/screenshots/advisor.png) | ![History: disk usage with and without the cleanups](docs/screenshots/history.png) |
+| **Advisor.** Ask about the scan. Each folder in the answer carries its verdict. | **History.** How the disk grows, and how much the cleanups saved. |
+
 ## Install
 
 Each command downloads the latest release from GitHub, checks it against the release's `SHA256SUMS` and installs it. The Linux and Windows builds are for 64-bit x86. The Mac build is for Apple Silicon.
