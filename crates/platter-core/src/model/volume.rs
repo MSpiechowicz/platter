@@ -11,4 +11,7 @@ pub struct Volume {
     pub total: u64,
     pub available: u64,
     pub removable: bool,
+    /// The filesystem compresses what is written to it (btrfs with `compress=`). A file then takes less
+    /// space on the disk than the scan counts for it, so deleting it frees less than its size.
+    pub compressed: bool,
 }

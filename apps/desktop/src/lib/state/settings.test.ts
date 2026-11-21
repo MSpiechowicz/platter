@@ -181,7 +181,7 @@ describe('SettingsStore', () => {
         advisorUnloadAfter: 'never',
         advisorLogQuestions: 'no',
         advisorUseGpu: 'no',
-        updateCheck: 'hourly',
+        updateCheck: 'everyMinute',
         extra: 1,
       }),
     );

@@ -11,7 +11,7 @@ import { isThemeChoice, type ThemeChoice } from './theme.svelte';
 export type ExplorerView = 'flat' | '3d';
 
 /** How often Platter looks for a new version in the background. `never` turns off only the automatic checks. */
-export type UpdateSchedule = 'sixHours' | 'daily' | 'weekly' | 'never';
+export type UpdateSchedule = 'halfHour' | 'hourly' | 'sixHours' | 'daily' | 'weekly' | 'never';
 
 export interface SettingsData {
   units: SizeUnits;
@@ -45,7 +45,14 @@ export interface SettingsData {
   theme: ThemeChoice;
 }
 
-const UPDATE_SCHEDULES: readonly UpdateSchedule[] = ['sixHours', 'daily', 'weekly', 'never'];
+const UPDATE_SCHEDULES: readonly UpdateSchedule[] = [
+  'halfHour',
+  'hourly',
+  'sixHours',
+  'daily',
+  'weekly',
+  'never',
+];
 
 const UNLOAD_AFTER: readonly UnloadAfter[] = ['oneMinute', 'fiveMinutes', 'windowClose'];
 

@@ -58,3 +58,40 @@ export function groupVolumes(volumes: readonly VolumeDto[]): VolumeGroup[] {
     return { volume, alsoMountedAt: [...new Set(others)] };
   });
 }
+
+/**
+ * The disk a device node is a partition of: `/dev/nvme0n1p2` and `/dev/nvme0n1p1` are both on `/dev/nvme0n1`,
+ * `/dev/sda1` is on `/dev/sda`, `/dev/disk3s1s1` (macOS) on `/dev/disk3`. Anything else (a drive letter, a network
+ * share, a mapped device) is taken as its own disk.
+ */
+function diskOf(device: string): string {
+  const nvme = /^(\/dev\/(?:nvme\d+n\d+|mmcblk\d+|loop\d+))p\d+$/.exec(device);
+
+  if (nvme) {
+    return nvme[1] as string;
+  }
+
+  const lettered = /^(\/dev\/(?:[shv]d[a-z]+|xvd[a-z]+))\d+$/.exec(device);
+
+  if (lettered) {
+    return lettered[1] as string;
+  }
+
+  const mac = /^(\/dev\/disk\d+)(?:s\d+)+$/.exec(device);
+
+  return mac ? (mac[1] as string) : device;
+}
+
+/**
+ * How many disks the volumes are on, as a person counts them: btrfs subvolumes are one filesystem, and the
+ * partitions of one drive (a root and its `/boot`) are one disk.
+ */
+export function countDisks(volumes: readonly VolumeDto[]): number {
+  const disks = new Set(
+    groupVolumes(volumes).map(({ volume }, index) =>
+      isDeviceIdentifier(volume) ? diskOf(volume.device.trim()) : `\0alone\0${index}`,
+    ),
+  );
+
+  return disks.size;
+}

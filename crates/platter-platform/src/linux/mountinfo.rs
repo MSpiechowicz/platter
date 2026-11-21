@@ -28,6 +28,9 @@ pub struct MountEntry {
     pub read_only: bool,
     /// The mount source as the kernel reports it (a device path, `tmpfs`, `host:/export`, ...).
     pub source: OsString,
+    /// The filesystem compresses what is written to it (btrfs `compress=` or `compress-force=` among its
+    /// options), so a file takes less space on the disk than its size says.
+    pub compressed: bool,
 }
 
 /// Parses mountinfo bytes; a line that cannot be parsed is skipped, the others are kept.
@@ -57,6 +60,7 @@ fn parse_line(line: &[u8]) -> Option<MountEntry> {
     let mut right = right.split(|&byte| byte == b' ');
     let fs_type = text(right.next()?);
     let source = right.next().unwrap_or_default();
+    let compressed = right.next().is_some_and(compresses);
 
     Some(MountEntry {
         mount_id,
@@ -67,6 +71,22 @@ fn parse_line(line: &[u8]) -> Option<MountEntry> {
         fs_type,
         read_only,
         source: OsString::from_vec(unescape(source)),
+        compressed,
+    })
+}
+
+/// Whether the super options turn compression on: `compress=zstd:1`, `compress-force=lzo`, but not
+/// `compress=no` (nor `compress=none`), which turns it off.
+fn compresses(options: &[u8]) -> bool {
+    options.split(|&byte| byte == b',').any(|option| {
+        let value = option
+            .strip_prefix(b"compress-force=")
+            .or_else(|| option.strip_prefix(b"compress="));
+
+        match value {
+            Some(value) => !matches!(value, b"no" | b"none"),
+            None => option == b"compress" || option == b"compress-force",
+        }
     })
 }
 
@@ -143,7 +163,8 @@ garbage line
                 mount_point: "/proc".into(),
                 fs_type: "proc".into(),
                 read_only: false,
-                source: "proc".into()
+                source: "proc".into(),
+                compressed: false,
             }
         );
         assert_eq!(mounts[1].fs_type, "btrfs");
@@ -151,6 +172,24 @@ garbage line
         assert_eq!(mounts[1].device, "259:2");
         assert_eq!(mounts[1].root, Path::new("/@home"));
         assert_eq!(mounts[1].parent_id, 1);
+        assert!(!mounts[1].compressed);
+    }
+
+    #[test]
+    fn compression_is_read_from_the_super_options() {
+        let table = "\
+1 0 0:32 / / rw - btrfs /dev/sda2 rw,compress=zstd:1,ssd
+2 0 0:32 / /b rw - btrfs /dev/sda2 rw,compress-force=lzo
+3 0 0:32 / /c rw - btrfs /dev/sda2 rw,compress=no
+4 0 0:32 / /d rw - btrfs /dev/sda2 rw,ssd
+5 0 0:33 / /e rw - ext4 /dev/sda3
+";
+        let compressed: Vec<bool> = parse(table.as_bytes())
+            .iter()
+            .map(|mount| mount.compressed)
+            .collect();
+
+        assert_eq!(compressed, [true, true, false, false, false]);
     }
 
     #[test]

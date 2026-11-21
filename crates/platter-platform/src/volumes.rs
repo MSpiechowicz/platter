@@ -28,6 +28,8 @@ impl VolumeProvider for SystemVolumes {
             return Vec::new();
         };
 
+        let compressed = compressed_mounts();
+
         let mut volumes: Vec<Volume> = disks
             .iter()
             .filter_map(|disk| {
@@ -43,6 +45,7 @@ impl VolumeProvider for SystemVolumes {
                     &mount_point,
                     disk.is_removable(),
                 );
+                let compressed = compressed.contains(&mount_point);
                 Some(Volume {
                     id,
                     label,
@@ -52,6 +55,7 @@ impl VolumeProvider for SystemVolumes {
                     total: disk.total_space(),
                     available: disk.available_space(),
                     removable: disk.is_removable(),
+                    compressed,
                 })
             })
             .collect();
@@ -59,6 +63,25 @@ impl VolumeProvider for SystemVolumes {
         volumes.sort_by(|a, b| a.mount_point.cmp(&b.mount_point));
         volumes
     }
+}
+
+/// The mount points whose filesystem compresses what is written to it. Only Linux tells (btrfs mount
+/// options): APFS and NTFS compression is already seen per file by the scan, which counts the blocks a
+/// file really takes there.
+#[cfg(target_os = "linux")]
+fn compressed_mounts() -> Vec<std::path::PathBuf> {
+    let table = std::fs::read("/proc/self/mountinfo").unwrap_or_default();
+
+    crate::linux::mountinfo::parse(&table)
+        .into_iter()
+        .filter(|mount| mount.compressed)
+        .map(|mount| mount.mount_point)
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn compressed_mounts() -> Vec<std::path::PathBuf> {
+    Vec::new()
 }
 
 fn is_hidden(fs_type: &str, mount_point: &Path) -> bool {

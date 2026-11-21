@@ -6,7 +6,7 @@
   import { fmt } from '../../state/fmt.svelte';
   import { STALE_TEXT } from '../overview/cleanupText';
   import FlowChart from './FlowChart.svelte';
-  import { afterCleanup, chartItems, runBytes, type Basis } from './model';
+  import { afterCleanup, chartItems, compressionNote, runBytes, type Basis } from './model';
 
   interface Props {
     store: CleanupStore;
@@ -91,6 +91,26 @@
     value: after ? fmt.size(after.used) : undefined,
   });
 
+  /** On a compressed disk the sizes are larger than what goes: the line under the figures says so. */
+  const note = $derived.by(() => {
+    if (phase.kind !== 'done') {
+      return compressionNote(basis, planned, undefined, fmt.size);
+    }
+
+    // A failed run, or one whose freed space was not measured, has nothing to compare.
+    if (phase.result.kind === 'failed' || phase.result.freed === undefined) {
+      return undefined;
+    }
+
+    // Measured against what was cleaned: items that failed or were skipped are not part of the shortfall.
+    return compressionNote(
+      basis,
+      runBytes(store.suggestions, store.groups, 'done', marked),
+      phase.result.freed,
+      fmt.size,
+    );
+  });
+
   const animated = countUp(() => hero.bytes ?? 0, 300);
 </script>
 
@@ -108,6 +128,10 @@
       <b class="num">{afterText}</b>
     </div>
   </div>
+
+  {#if note}
+    <p class="note">{note}</p>
+  {/if}
 
   <FlowChart {items} total={basis.used} {freed} {stays} {stale} ontoggle={(id) => store.toggle(id)} />
 
@@ -152,6 +176,13 @@
   .hero b.unknown {
     font-size: 24px;
     line-height: 38px;
+  }
+
+  /* Sits in the hero's place under the figures: the hero gives up its bottom space to it. */
+  .note {
+    margin: -12px 0 18px;
+    font-size: 12px;
+    color: var(--dim);
   }
 
   .s {

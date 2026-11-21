@@ -1,5 +1,6 @@
 import { setMockAdvisorState } from './api/mock-advisor';
 import type { ScanId } from './api/types';
+import { countDisks } from './features/start/volumes';
 import { hooks } from './hooks';
 import { diskAccess } from './state/access.svelte';
 import { advisor } from './state/advisor.svelte';
@@ -106,7 +107,7 @@ async function openApp(ready: Promise<unknown>): Promise<void> {
     disks: async () => {
       await scan.loadVolumes();
 
-      return scan.volumes.length;
+      return countDisks(scan.volumes);
     },
     lastScan: async () => {
       restoring = scan.restore();

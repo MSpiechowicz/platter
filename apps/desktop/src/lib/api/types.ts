@@ -46,6 +46,11 @@ export interface VolumeDto {
   total: number;
   available: number;
   removable: boolean;
+  /**
+   * The filesystem compresses what is written to it (btrfs with `compress=`). Its files take less space on the disk
+   * than the scan counts for them, so a cleanup frees less than their size. Absent means no.
+   */
+  compressed?: boolean;
 }
 
 export interface ScanOptions {

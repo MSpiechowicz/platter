@@ -34,13 +34,18 @@ export const UPDATE_CHECKED_KEY = 'platter.updateCheckedAt';
 /** Wait this long after start before the first check, so it never competes with the window opening. */
 export const FIRST_CHECK_DELAY_MS = 10_000;
 
-/** How often the schedule looks at whether a check is due. */
-export const DUE_CHECK_INTERVAL_MS = 30 * 60_000;
+/**
+ * How often the schedule looks at whether a check is due. Well under the shortest interval (30 minutes): a look
+ * that comes a moment before a check is due must not push it a whole round later.
+ */
+export const DUE_CHECK_INTERVAL_MS = 5 * 60_000;
 
 const HOUR_MS = 60 * 60_000;
 
 /** The time between two automatic checks. `never` has none. */
 const SCHEDULE_MS: Record<Exclude<UpdateSchedule, 'never'>, number> = {
+  halfHour: HOUR_MS / 2,
+  hourly: HOUR_MS,
   sixHours: 6 * HOUR_MS,
   daily: 24 * HOUR_MS,
   weekly: 7 * 24 * HOUR_MS,
@@ -262,8 +267,10 @@ export class UpdaterStore {
   }
 
   /**
-   * Checks 10 seconds after start when a check is due, and then looks every 30 minutes whether one is due. Does
-   * nothing when it already runs.
+   * Checks 10 seconds after start, whenever the last check was (only `never` skips it), and then looks every 5
+   * minutes whether one is due. A start always checks because what an earlier check found is not kept: an update
+   * released since, or found the day before and not installed, must show when the app opens. Does nothing when it
+   * already runs.
    */
   start(firstCheckDelayMs = FIRST_CHECK_DELAY_MS): void {
     if (this.#timers) {
@@ -271,7 +278,7 @@ export class UpdaterStore {
     }
 
     this.#timers = {
-      first: setTimeout(() => void this.checkIfDue(), firstCheckDelayMs),
+      first: setTimeout(() => void this.checkOnStart(), firstCheckDelayMs),
       due: setInterval(() => {
         this.#refreshChecked();
         void this.checkIfDue();
@@ -287,6 +294,13 @@ export class UpdaterStore {
     clearTimeout(this.#timers.first);
     clearInterval(this.#timers.due);
     this.#timers = null;
+  }
+
+  /** The check at start: automatic, and skipped only when the setting says never. */
+  async checkOnStart(): Promise<void> {
+    if (this.#schedule() !== 'never') {
+      await this.check({ manual: false });
+    }
   }
 
   /** An automatic check when the setting asks for one and the last one is older than its interval. */

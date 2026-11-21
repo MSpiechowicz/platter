@@ -127,12 +127,14 @@ describe('UpdatesSettingsCard', () => {
     expect(screen.getByText('Platter is up to date.')).toBeTruthy();
   });
 
-  it('offers every 6 hours, daily, weekly and never, and saves the choice', async () => {
+  it('offers every 30 minutes, every hour, every 6 hours, daily, weekly and never, and saves the choice', async () => {
     render(UpdatesSettingsCard);
 
     await fireEvent.click(screen.getByRole('button', { name: /Check for updates: Daily/ }));
 
     expect(screen.getAllByRole('option').map((option) => option.textContent?.trim())).toEqual([
+      'Every 30 minutes',
+      'Every hour',
       'Every 6 hours',
       'Daily',
       'Weekly',

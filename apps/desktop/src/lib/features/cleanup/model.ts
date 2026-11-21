@@ -55,12 +55,41 @@ export interface Basis {
   used: number;
   /** The volume's size when the scan root is a whole volume. */
   capacity: number | undefined;
+  /** The disk compresses its files: a cleanup frees less than the sizes the scan counted. */
+  compressed?: boolean;
 }
 
-export function basisOf(volume: VolumeDto | undefined, scanned: number): Basis {
+/** `compressed` is the disk's, also when only a folder of it was scanned. */
+export function basisOf(volume: VolumeDto | undefined, scanned: number, compressed = false): Basis {
   return volume
-    ? { used: Math.max(0, volume.total - volume.available), capacity: volume.total }
-    : { used: scanned, capacity: undefined };
+    ? { used: Math.max(0, volume.total - volume.available), capacity: volume.total, compressed }
+    : { used: scanned, capacity: undefined, compressed };
+}
+
+/**
+ * The dim line under the figures on a compressed disk, which tells why less is freed than selected. Nothing when the
+ * disk does not compress, or when the run freed about what was planned.
+ */
+export function compressionNote(
+  basis: Basis,
+  planned: number,
+  freed: number | undefined,
+  size: (bytes: number) => string,
+): string | undefined {
+  if (!basis.compressed) {
+    return undefined;
+  }
+
+  if (freed === undefined) {
+    return 'This disk compresses its files, so they take less space than their size. Less will be freed than selected.';
+  }
+
+  // A run that freed nearly all it planned needs no excuse.
+  if (freed >= planned * 0.95) {
+    return undefined;
+  }
+
+  return `Less than the ${size(planned)} selected. This disk compresses its files, so they took less space than their size.`;
 }
 
 export interface After {

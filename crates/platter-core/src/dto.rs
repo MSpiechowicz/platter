@@ -39,6 +39,9 @@ pub struct VolumeDto {
     #[serde(serialize_with = "wire_u64")]
     pub available: u64,
     pub removable: bool,
+    /// See [`Volume::compressed`].
+    #[serde(default)]
+    pub compressed: bool,
 }
 
 impl From<&Volume> for VolumeDto {
@@ -52,6 +55,7 @@ impl From<&Volume> for VolumeDto {
             total: volume.total,
             available: volume.available,
             removable: volume.removable,
+            compressed: volume.compressed,
         }
     }
 }

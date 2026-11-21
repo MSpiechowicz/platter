@@ -52,7 +52,9 @@
 
   /** The volume when the scan root is that whole volume; a folder inside a volume does not count. */
   const wholeVolume = $derived(scan.volumeInfo?.exact ? scan.volumeInfo.volume : undefined);
-  const basis = $derived(basisOf(wholeVolume, ready.totals.allocated));
+  const basis = $derived(
+    basisOf(wholeVolume, ready.totals.allocated, scan.volumeInfo?.volume.compressed ?? false),
+  );
   const finished = $derived(cleanup.phase.kind === 'done');
 
   // The page shows nothing until what it is made of is here: the suggestions and the first preview of the selection

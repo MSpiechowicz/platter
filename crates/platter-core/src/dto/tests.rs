@@ -100,12 +100,14 @@ fn volume() {
         total: 10,
         available: 4,
         removable: false,
+        compressed: true,
     };
     assert_wire(
         &dto,
         json!({
             "id": "/home", "mountPoint": "/home", "label": "Home", "device": "/dev/nvme0n1p2",
-            "fsType": "btrfs", "total": 10, "available": 4, "removable": false
+            "fsType": "btrfs", "total": 10, "available": 4, "removable": false,
+            "compressed": true
         }),
     );
 }
@@ -387,6 +389,7 @@ fn sizes_and_counts_above_the_javascript_safe_integer_are_clamped_on_the_wire() 
         total: u64::MAX,
         available: u64::MAX,
         removable: false,
+        compressed: false,
     })
     .unwrap();
     assert_eq!((&volume["total"], &volume["available"]), (&max, &max));

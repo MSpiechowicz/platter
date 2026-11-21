@@ -292,7 +292,28 @@ describe('bootstrap: the opening screen', () => {
     const loaded = await prepare({}, undefined, { restored: true });
     const { api } = await import('./api');
 
-    vi.mocked(api.listVolumes).mockResolvedValueOnce([{}, {}] as never);
+    vi.mocked(api.listVolumes).mockResolvedValueOnce([
+      {
+        id: '/',
+        mountPoint: '/',
+        label: '',
+        device: '/dev/sda1',
+        fsType: 'ext4',
+        total: 1,
+        available: 0,
+        removable: false,
+      },
+      {
+        id: '/d',
+        mountPoint: '/d',
+        label: '',
+        device: '/dev/sdb1',
+        fsType: 'ext4',
+        total: 2,
+        available: 0,
+        removable: false,
+      },
+    ]);
     vi.useFakeTimers();
 
     const booting = loaded.bootstrap();

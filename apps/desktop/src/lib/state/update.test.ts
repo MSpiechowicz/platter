@@ -11,6 +11,7 @@ import {
 } from './update.svelte';
 
 const HOUR = 3_600_000;
+const MINUTE = 60_000;
 const START = Date.UTC(2026, 10, 17, 12);
 
 const OFFER: UpdateOffer = {
@@ -308,19 +309,25 @@ describe('UpdaterStore: the schedule', () => {
     store.stop();
   });
 
-  it('does not check at start when the last check is younger than the interval, then checks once it is older', async () => {
+  it('checks at start even when the last check is younger than the interval, then again once that is older', async () => {
     const { store, api, storage, clock } = setup();
 
     storage.setItem(UPDATE_CHECKED_KEY, String(START - 23 * HOUR));
     store.start();
     await vi.advanceTimersByTimeAsync(FIRST_CHECK_DELAY_MS);
 
-    expect(api.checkUpdate).not.toHaveBeenCalled();
+    expect(api.checkUpdate).toHaveBeenCalledTimes(1);
 
+    // The start's check is the last one now: the next is due a day after it.
     clock.now = START + 2 * HOUR;
     await vi.advanceTimersByTimeAsync(DUE_CHECK_INTERVAL_MS);
 
     expect(api.checkUpdate).toHaveBeenCalledTimes(1);
+
+    clock.now = START + 25 * HOUR;
+    await vi.advanceTimersByTimeAsync(DUE_CHECK_INTERVAL_MS);
+
+    expect(api.checkUpdate).toHaveBeenCalledTimes(2);
     store.stop();
   });
 
@@ -328,6 +335,8 @@ describe('UpdaterStore: the schedule', () => {
     ['sixHours', 5 * HOUR, 7 * HOUR],
     ['daily', 23 * HOUR, 25 * HOUR],
     ['weekly', 6 * 24 * HOUR, 8 * 24 * HOUR],
+    ['halfHour', 29 * MINUTE, 31 * MINUTE],
+    ['hourly', 59 * MINUTE, 61 * MINUTE],
   ] as const)('%s: waits for its interval', async (name, young, old) => {
     const { store, api, storage, schedule } = setup();
 
@@ -390,6 +399,8 @@ describe('UpdaterStore: the schedule', () => {
 
     await store.check();
     store.start();
+    // The start checks too: "checked" counts from that check.
+    await vi.advanceTimersByTimeAsync(FIRST_CHECK_DELAY_MS);
     clock.now += 2 * HOUR;
     await vi.advanceTimersByTimeAsync(DUE_CHECK_INTERVAL_MS);
 

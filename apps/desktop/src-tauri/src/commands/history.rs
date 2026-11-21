@@ -453,6 +453,7 @@ pub fn volume(mount_point: &str, label: &str, total: u64, available: u64) -> Vol
         total,
         available,
         removable: false,
+        compressed: false,
     }
 }
 

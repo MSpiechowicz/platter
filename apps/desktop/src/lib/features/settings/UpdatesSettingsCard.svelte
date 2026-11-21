@@ -12,6 +12,8 @@
   import { updater } from '../../state/update.svelte';
 
   const SCHEDULE_OPTIONS: { value: UpdateSchedule; label: string }[] = [
+    { value: 'halfHour', label: 'Every 30 minutes' },
+    { value: 'hourly', label: 'Every hour' },
     { value: 'sixHours', label: 'Every 6 hours' },
     { value: 'daily', label: 'Daily' },
     { value: 'weekly', label: 'Weekly' },

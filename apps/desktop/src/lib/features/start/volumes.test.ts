@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { VolumeDto } from '../../api/types';
-import { groupVolumes } from './volumes';
+import { countDisks, groupVolumes } from './volumes';
 
 const volume = (id: string, mountPoint: string, device = '/dev/nvme0n1p2', available = 400): VolumeDto => ({
   id,
@@ -80,5 +80,34 @@ describe('groupVolumes', () => {
 
   it('is empty for no volumes', () => {
     expect(groupVolumes([])).toEqual([]);
+  });
+});
+
+describe('countDisks', () => {
+  it('counts btrfs subvolumes and the partitions of one drive as one disk', () => {
+    const boot = { ...volume('boot', '/boot', '/dev/nvme0n1p1'), fsType: 'vfat', total: 2000 };
+
+    expect(
+      countDisks([
+        volume('root', '/'),
+        volume('home', '/home'),
+        volume('log', '/var/log'),
+        volume('cache', '/var/cache'),
+        boot,
+      ]),
+    ).toBe(1);
+  });
+
+  it('counts separate drives, macOS slices and devices it can not place', () => {
+    expect(
+      countDisks([
+        volume('root', '/', '/dev/sda2'),
+        { ...volume('data', '/data', '/dev/sdb1'), total: 3000 },
+        { ...volume('mac', '/Volumes/X', '/dev/disk3s1s1'), total: 4000 },
+        { ...volume('mac2', '/Volumes/Y', '/dev/disk3s5'), total: 5000 },
+        { ...volume('crypt', '/srv', '/dev/mapper/luks-1'), total: 6000 },
+        { ...volume('tmp', '/tmp', 'tmpfs'), fsType: 'tmpfs', total: 7000 },
+      ]),
+    ).toBe(5);
   });
 });

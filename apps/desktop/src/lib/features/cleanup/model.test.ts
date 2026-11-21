@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { PlanGroupDto, SuggestionDto, Verdict, VolumeDto } from '../../api/types';
 import type { GroupState } from '../../state/cleanup.svelte';
-import { afterCleanup, basisOf, chartItems, resultBars, runBytes, stepMarks, stepOf } from './model';
+import {
+  afterCleanup,
+  basisOf,
+  chartItems,
+  compressionNote,
+  resultBars,
+  runBytes,
+  stepMarks,
+  stepOf,
+} from './model';
 
 const GB = 1_000_000_000;
 
@@ -61,10 +70,32 @@ describe('stepMarks', () => {
   });
 });
 
+describe('compressionNote', () => {
+  const size = (bytes: number) => `${bytes / GB} GB`;
+  const compressed = { used: 100 * GB, capacity: 200 * GB, compressed: true };
+
+  it('says nothing on a disk that does not compress', () => {
+    expect(compressionNote({ ...compressed, compressed: false }, 126 * GB, undefined, size)).toBeUndefined();
+  });
+
+  it('warns before the run that less will be freed', () => {
+    expect(compressionNote(compressed, 126 * GB, undefined, size)).toMatch(
+      /Less will be freed than selected\.$/,
+    );
+  });
+
+  it('after the run, names what was selected when much less was freed, and nothing when about all was', () => {
+    expect(compressionNote(compressed, 126 * GB, 74 * GB, size)).toBe(
+      'Less than the 126 GB selected. This disk compresses its files, so they took less space than their size.',
+    );
+    expect(compressionNote(compressed, 100 * GB, 98 * GB, size)).toBeUndefined();
+  });
+});
+
 describe('numbers', () => {
   it('measures a whole volume by its used space and size, and a folder by what the scan counted', () => {
-    expect(basisOf(volume, 5 * GB)).toEqual({ used: 1408 * GB, capacity: 1900 * GB });
-    expect(basisOf(undefined, 5 * GB)).toEqual({ used: 5 * GB, capacity: undefined });
+    expect(basisOf(volume, 5 * GB)).toEqual({ used: 1408 * GB, capacity: 1900 * GB, compressed: false });
+    expect(basisOf(undefined, 5 * GB)).toEqual({ used: 5 * GB, capacity: undefined, compressed: false });
   });
 
   it('takes the selection off the disk, with its share of the volume', () => {
