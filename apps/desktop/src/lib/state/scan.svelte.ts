@@ -97,6 +97,19 @@ export class ScanStore {
     }
   }
 
+  /**
+   * Reads the disks again after a scan, so the used and free space shown next to it are from the same moment as
+   * the scan and not from when the app opened. Quiet: the list keeps its status, and stays as it was on a failure.
+   */
+  async #refreshVolumes(): Promise<void> {
+    try {
+      this.volumes = await this.#api.listVolumes();
+      this.volumesStatus = 'ready';
+    } catch {
+      // The figures from before are better than none.
+    }
+  }
+
   async start(options: ScanOptions): Promise<void> {
     if (this.state.status === 'scanning') {
       return;
@@ -272,6 +285,7 @@ export class ScanStore {
           warnings: event.warnings ?? [],
           outdated: false,
         };
+        void this.#refreshVolumes();
         break;
 
       case 'cancelled':

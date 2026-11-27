@@ -36,6 +36,44 @@ describe('volumes', () => {
     expect(store.volumes).toEqual([]);
   });
 
+  it('reads the disks again when a scan finishes, so free space is not from when the app opened', async () => {
+    const base = createMockApi({ durationMs: 30, tickMs: 10, now: () => NOW });
+    let free = 100;
+    const api: Api = {
+      ...base,
+      listVolumes: async () => (await base.listVolumes()).map((volume) => ({ ...volume, available: free })),
+    };
+    const store = new ScanStore(api);
+
+    await store.loadVolumes();
+    expect(store.volumeInfo).toBeUndefined();
+
+    free = 400;
+    await store.start(ROOT);
+    await vi.waitFor(() => expect(store.state.status).toBe('ready'));
+
+    await vi.waitFor(() => expect(store.volumeInfo?.volume.available).toBe(400));
+  });
+
+  it('keeps the disks it has when reading them again after a scan fails', async () => {
+    const base = createMockApi({ durationMs: 30, tickMs: 10, now: () => NOW });
+    let broken = false;
+    const api: Api = {
+      ...base,
+      listVolumes: () => (broken ? Promise.reject(new Error('no udev')) : base.listVolumes()),
+    };
+    const store = new ScanStore(api);
+
+    await store.loadVolumes();
+    broken = true;
+    await store.start(ROOT);
+    await vi.waitFor(() => expect(store.state.status).toBe('ready'));
+    await Promise.resolve();
+
+    expect(store.volumesStatus).toBe('ready');
+    expect(store.volumes).toEqual(MOCK_VOLUMES);
+  });
+
   it('matches a root to its volume, exactly or by the deepest mount point above it', () => {
     expect(findVolume(MOCK_VOLUMES, '/')).toMatchObject({ exact: true, volume: { id: 'nvme0n1p2' } });
     expect(findVolume(MOCK_VOLUMES, '/mnt/backup')).toMatchObject({ exact: true, volume: { id: 'sda1' } });
